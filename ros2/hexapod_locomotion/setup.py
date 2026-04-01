@@ -13,17 +13,15 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
-    maintainer='snail',
-    maintainer_email='snail@todo.todo',
-    description='TODO: Package description',
-    license='TODO: License declaration',
-    extras_require={
-        'test': [
-            'pytest',
-        ],
-    },
+    maintainer='Sanat Konda',
+    maintainer_email='sskonda04@gmail.com',
+    description='Hexapod locomotion and IMU nodes',
+    license='Apache-2.0',
+    tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'imu_publisher = hexapod_locomotion.imu_publisher:main',
+            'locomotion = hexapod_locomotion.locomotion:main',
         ],
     },
 )
