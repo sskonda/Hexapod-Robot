@@ -14,7 +14,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'servo_dry_run',
-            default_value='false',
+            default_value='true',
             description='When true, servo_driver logs commands instead of driving hardware.',
         ),
         DeclareLaunchArgument(

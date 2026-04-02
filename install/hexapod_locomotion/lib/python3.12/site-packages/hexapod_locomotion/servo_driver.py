@@ -33,7 +33,6 @@ class ServoDriver(Node):
         self.enable_power_control = bool(self.get_parameter('enable_power_control').value)
         self.servo_power_disable_gpio = int(self.get_parameter('servo_power_disable_gpio').value)
         self.disable_power_on_exit = bool(self.get_parameter('disable_power_on_exit').value)
-        self.dry_run_reason = 'dry_run parameter enabled' if self.dry_run else ''
 
         self.offsets = load_offsets(self.calibration_file)
         self.servo_power_disable = None
@@ -50,13 +49,6 @@ class ServoDriver(Node):
         self.get_logger().info(f'servo_driver listening on /servo_targets')
         self.get_logger().info(f'calibration_file={self.calibration_file}')
         self.get_logger().info(f'apply_offsets={self.apply_offsets}, dry_run={self.dry_run}')
-        if self.dry_run:
-            self.get_logger().warn(
-                'servo_driver is in DRY RUN mode, so the robot will not move. '
-                'Set dry_run:=false or launch with servo_dry_run:=false for hardware output.'
-            )
-            if self.dry_run_reason:
-                self.get_logger().warn(f'dry-run reason: {self.dry_run_reason}')
 
     def configure_power_control(self):
         if not self.enable_power_control or self.dry_run:
@@ -83,11 +75,8 @@ class ServoDriver(Node):
         try:
             return ServoController()
         except Exception as exc:
-            self.dry_run_reason = f'hardware init failed: {exc}'
-            self.get_logger().error(
-                'Hardware init failed, falling back to dry-run mode. '
-                'Check I2C access, the PCA9685 boards, and Python hardware dependencies. '
-                f'Original error: {exc}'
+            self.get_logger().warn(
+                f'Hardware init failed, falling back to dry-run mode: {exc}'
             )
             self.dry_run = True
             return None
