@@ -27,8 +27,10 @@ LEG_COORDINATE_MATRIX = [
     [135.0, -25.0, 0.0],
 ]
 
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
 # Change this if you want to write somewhere else.
-OUTPUT_YAML = Path('ros2/hexapod_locomotion/config/servo_calibration.yaml')
+OUTPUT_YAML = PACKAGE_ROOT / 'config' / 'servo_calibration.yaml'
 
 
 def main():
