@@ -7,7 +7,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
 
-from .calibration_store import JOINT_NAMES, load_offsets
+from .calibration import ServoController
+from .calibration_store import JOINT_CHANNELS, JOINT_NAMES, load_offsets
 
 
 class ServoDriver(Node):
@@ -20,13 +21,23 @@ class ServoDriver(Node):
         self.declare_parameter('calibration_file', default_yaml)
         self.declare_parameter('apply_offsets', True)
         self.declare_parameter('dry_run', True)
+        self.declare_parameter('relax_on_exit', False)
+        self.declare_parameter('enable_power_control', True)
+        self.declare_parameter('servo_power_disable_gpio', 4)
+        self.declare_parameter('disable_power_on_exit', False)
 
         self.calibration_file = self.get_parameter('calibration_file').value
         self.apply_offsets = bool(self.get_parameter('apply_offsets').value)
         self.dry_run = bool(self.get_parameter('dry_run').value)
+        self.relax_on_exit = bool(self.get_parameter('relax_on_exit').value)
+        self.enable_power_control = bool(self.get_parameter('enable_power_control').value)
+        self.servo_power_disable_gpio = int(self.get_parameter('servo_power_disable_gpio').value)
+        self.disable_power_on_exit = bool(self.get_parameter('disable_power_on_exit').value)
 
         self.offsets = load_offsets(self.calibration_file)
-        self.warned_not_implemented = False
+        self.servo_power_disable = None
+        self.configure_power_control()
+        self.servo = self._create_servo()
 
         self.subscription = self.create_subscription(
             JointState,
@@ -38,6 +49,37 @@ class ServoDriver(Node):
         self.get_logger().info(f'servo_driver listening on /servo_targets')
         self.get_logger().info(f'calibration_file={self.calibration_file}')
         self.get_logger().info(f'apply_offsets={self.apply_offsets}, dry_run={self.dry_run}')
+
+    def configure_power_control(self):
+        if not self.enable_power_control or self.dry_run:
+            return
+
+        try:
+            from gpiozero import OutputDevice
+
+            self.servo_power_disable = OutputDevice(self.servo_power_disable_gpio)
+            # Matches Sample_Code/Server/control.py where driving GPIO 4 low enables servo power.
+            self.servo_power_disable.off()
+            self.get_logger().info(
+                f'Servo power enabled using GPIO {self.servo_power_disable_gpio}'
+            )
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Unable to configure servo power GPIO {self.servo_power_disable_gpio}: {exc}'
+            )
+
+    def _create_servo(self):
+        if self.dry_run:
+            return None
+
+        try:
+            return ServoController()
+        except Exception as exc:
+            self.get_logger().warn(
+                f'Hardware init failed, falling back to dry-run mode: {exc}'
+            )
+            self.dry_run = True
+            return None
 
     def target_callback(self, msg: JointState):
         if len(msg.name) != len(msg.position):
@@ -64,12 +106,23 @@ class ServoDriver(Node):
         self.write_hardware(applied)
 
     def write_hardware(self, applied_targets: dict):
-        if not self.warned_not_implemented:
-            self.get_logger().warn(
-                'Hardware write is not implemented yet. '
-                'Replace write_hardware() with Freenove servo/PCA9685 calls.'
-            )
-            self.warned_not_implemented = True
+        if self.servo is None:
+            self.get_logger().warn('Servo controller is unavailable; skipping hardware write')
+            return
+
+        for joint in JOINT_NAMES:
+            if joint not in applied_targets:
+                continue
+            self.servo.set_servo_angle(JOINT_CHANNELS[joint], applied_targets[joint])
+
+    def destroy_node(self):
+        if self.servo is not None:
+            self.servo.close(relax=self.relax_on_exit)
+            self.servo = None
+        if self.servo_power_disable is not None and self.disable_power_on_exit:
+            self.servo_power_disable.on()
+        self.servo_power_disable = None
+        return super().destroy_node()
 
 
 def main(args=None):

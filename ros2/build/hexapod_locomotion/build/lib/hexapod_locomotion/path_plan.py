@@ -144,10 +144,12 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.publish_stop()
-        node.destroy_node()
         if rclpy.ok():
+            node.publish_stop()
+            node.destroy_node()
             rclpy.shutdown()
+        else:
+            node.destroy_node()
 
 
 if __name__ == '__main__':
