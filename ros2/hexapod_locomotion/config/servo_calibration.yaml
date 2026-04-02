@@ -1,5 +1,5 @@
 servo_offsets:
-  leg1_coxa: 0.0
+  leg1_coxa: 20.0
   leg1_femur: 0.0
   leg1_tibia: 0.0
   leg2_coxa: 0.0
