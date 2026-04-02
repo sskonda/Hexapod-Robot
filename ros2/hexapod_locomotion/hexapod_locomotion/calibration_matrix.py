@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
+
 try:
     from .calibration_store import (
         JOINT_NAMES,
@@ -27,10 +29,12 @@ LEG_COORDINATE_MATRIX = [
     [135.0, -25.0, 0.0],
 ]
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-
 # Change this if you want to write somewhere else.
-OUTPUT_YAML = PACKAGE_ROOT / 'config' / 'servo_calibration.yaml'
+OUTPUT_YAML = (
+    Path(get_package_share_directory('hexapod_locomotion'))
+    / 'config'
+    / 'servo_calibration.yaml'
+)
 
 
 def main():
