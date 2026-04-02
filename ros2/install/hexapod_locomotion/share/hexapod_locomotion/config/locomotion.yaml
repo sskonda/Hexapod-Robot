@@ -1,3 +1,21 @@
 /locomotion:
   ros__parameters:
     use_imu: true
+    balance_gain: 0.0
+    gait: tripod
+    control_rate_hz: 50.0
+    command_timeout_sec: 0.5
+    default_body_height_mm: -25.0
+    step_height_mm: 40.0
+    max_linear_speed_mps: 0.06
+    max_lateral_speed_mps: 0.05
+    max_yaw_rate_rad_s: 0.9
+    max_stride_x_mm: 35.0
+    max_stride_y_mm: 35.0
+    max_turn_per_cycle_deg: 25.0
+    max_body_x_shift_mm: 40.0
+    max_body_y_shift_mm: 40.0
+    max_body_z_shift_mm: 20.0
+    max_roll_deg: 15.0
+    max_pitch_deg: 15.0
+    max_yaw_deg: 15.0

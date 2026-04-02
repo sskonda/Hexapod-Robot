@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'imu_publisher = hexapod_locomotion.imu_publisher:main',
             'locomotion = hexapod_locomotion.locomotion:main',
+            'path_plan = hexapod_locomotion.path_plan:main',
             'servo_driver = hexapod_locomotion.servo_driver:main',
             'calibration = hexapod_locomotion.calibration:main',
             'calibration_matrix = hexapod_locomotion.calibration_matrix:main',
