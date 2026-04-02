@@ -1,4 +1,5 @@
 from setuptools import find_packages, setup
+from glob import glob
 
 package_name = 'hexapod_locomotion'
 
@@ -10,18 +11,22 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
+        ('share/' + package_name + '/config', glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Sanat Konda',
     maintainer_email='sskonda04@gmail.com',
-    description='Hexapod locomotion and IMU nodes',
+    description='Hexapod locomotion, IMU, calibration, and servo driver nodes',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'imu_publisher = hexapod_locomotion.imu_publisher:main',
             'locomotion = hexapod_locomotion.locomotion:main',
+            'servo_driver = hexapod_locomotion.servo_driver:main',
+            'calibration = hexapod_locomotion.calibration:main',
         ],
     },
 )

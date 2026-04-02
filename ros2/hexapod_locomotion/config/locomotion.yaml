@@ -1,0 +1,3 @@
+/locomotion:
+  ros__parameters:
+    use_imu: true
