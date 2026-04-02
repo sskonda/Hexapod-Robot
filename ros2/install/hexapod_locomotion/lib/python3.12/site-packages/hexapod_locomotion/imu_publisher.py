@@ -8,8 +8,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
-sys.path.append(os.path.join(os.path.dirname(__file__), 'vendor'))
-from Libs.mpu6050.mpu6050.mpu6050 import mpu6050
+sys.path.append(os.path.join(os.path.dirname(__file__), 'vendor', 'Libs', 'mpu6050'))
+from mpu6050.mpu6050 import mpu6050
 
 
 class ImuPublisher(Node):
@@ -60,8 +60,10 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    node.destroy_node()
-    rclpy.shutdown()
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
