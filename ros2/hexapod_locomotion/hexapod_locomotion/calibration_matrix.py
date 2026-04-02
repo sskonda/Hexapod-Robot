@@ -19,12 +19,12 @@ except ImportError:
 
 # Replace these six [x, y, z] rows with values from your calibration graph.
 LEG_COORDINATE_MATRIX = [
-    [140.0, 0.0, 0.0],
-    [140.0, 0.0, 0.0],
-    [140.0, 0.0, 0.0],
-    [140.0, 0.0, 0.0],
-    [140.0, 0.0, 0.0],
-    [140.0, 0.0, 0.0],
+    [99.0, 29.0, -17.0],
+    [102.0, -28.0, -22.0],
+    [113.0, 2.0, -7.0],
+    [124.0, -15.0, -18.0],
+    [115.0, 8.0, -7.0],
+    [135.0, -25.0, 0.0],
 ]
 
 # Change this if you want to write somewhere else.
