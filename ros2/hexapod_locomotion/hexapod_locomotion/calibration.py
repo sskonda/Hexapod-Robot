@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import os
 import sys
 import time
 from pathlib import Path
@@ -21,6 +20,10 @@ from .calibration_store import (
 
 def map_value(value, from_low, from_high, to_low, to_high):
     return (to_high - to_low) * (value - from_low) / (from_high - from_low) + to_low
+
+
+def clear_screen():
+    print('\x1b[2J\x1b[H', end='')
 
 
 class PCA9685:
@@ -103,12 +106,6 @@ class ServoController:
 
 class KeyReader:
     def __enter__(self):
-        if os.name == 'nt':
-            import msvcrt
-
-            self._msvcrt = msvcrt
-            return self
-
         import termios
         import tty
 
@@ -119,17 +116,9 @@ class KeyReader:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if os.name != 'nt':
-            self._termios.tcsetattr(self._fd, self._termios.TCSADRAIN, self._old_settings)
+        self._termios.tcsetattr(self._fd, self._termios.TCSADRAIN, self._old_settings)
 
     def read_key(self):
-        if os.name == 'nt':
-            key = self._msvcrt.getwch()
-            if key in ('\x00', '\xe0'):
-                self._msvcrt.getwch()
-                return ''
-            return key
-
         return sys.stdin.read(1)
 
 
@@ -154,6 +143,7 @@ class CalibrationNode(Node):
 
         self.offsets = load_offsets(self.calibration_file)
         self.selected_index = 0
+        self.status_message = 'Ready'
         self.publisher = self.create_publisher(JointState, '/servo_targets', 10)
         self.servo = self._create_servo()
 
@@ -167,10 +157,8 @@ class CalibrationNode(Node):
         try:
             return ServoController()
         except Exception as exc:
-            self.get_logger().warn(
-                f'Falling back to dry-run mode because hardware init failed: {exc}'
-            )
             self.dry_run = True
+            self.status_message = f'Hardware init failed, running dry-run: {exc}'
             return None
 
     def selected_joint(self):
@@ -216,11 +204,12 @@ class CalibrationNode(Node):
 
     def save(self):
         save_offsets(self.calibration_file, self.offsets)
+        self.status_message = f'Saved calibration to {self.calibration_file}'
 
     def render(self):
         angles = self.current_angles()
+        clear_screen()
         lines = [
-            '\x1b[2J\x1b[H',
             'Hexapod Servo Calibration',
             '',
             (
@@ -240,6 +229,7 @@ class CalibrationNode(Node):
             )
         if self.dry_run:
             lines.extend(['', 'Dry-run mode is active. No hardware commands are being sent.'])
+        lines.extend(['', f'Status: {self.status_message}'])
         print('\n'.join(lines), flush=True)
 
     def run(self):
@@ -270,13 +260,14 @@ class CalibrationNode(Node):
                     self.reset_all()
                 elif key == 's':
                     self.save()
-                    self.get_logger().info(f'Saved calibration to {self.calibration_file}')
                 elif key == 'q':
                     self.save()
-                    self.get_logger().info(f'Saved calibration to {self.calibration_file}')
                     break
                 elif key == 'x':
+                    self.status_message = 'Exited without saving'
                     break
+                else:
+                    self.status_message = f'Unknown key: {repr(key)}'
 
                 self.render()
 

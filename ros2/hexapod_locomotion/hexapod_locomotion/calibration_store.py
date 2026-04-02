@@ -1,4 +1,5 @@
 from pathlib import Path
+import math
 import yaml
 
 JOINT_NAMES = [
@@ -58,6 +59,68 @@ def commanded_angles(offsets: dict):
         offset = float(offsets.get(name, 0.0))
         angles[name] = min(180.0, max(0.0, REFERENCE_ANGLES[name] + offset))
     return angles
+
+
+def clamp_angle(angle):
+    return min(180.0, max(0.0, float(angle)))
+
+
+def restrict_value(value, min_value, max_value):
+    return max(min_value, min(max_value, value))
+
+
+def coordinate_to_angle(x, y, z, l1=33.0, l2=90.0, l3=110.0):
+    a = math.pi / 2 - math.atan2(z, y)
+    x_4 = l1 * math.sin(a)
+    x_5 = l1 * math.cos(a)
+    l23 = math.sqrt((z - x_5) ** 2 + (y - x_4) ** 2 + x ** 2)
+    w = restrict_value(x / l23, -1.0, 1.0)
+    v = restrict_value((l2 * l2 + l23 * l23 - l3 * l3) / (2 * l2 * l23), -1.0, 1.0)
+    u = restrict_value((l2 ** 2 + l3 ** 2 - l23 ** 2) / (2 * l3 * l2), -1.0, 1.0)
+    b = math.asin(round(w, 2)) - math.acos(round(v, 2))
+    c = math.pi - math.acos(round(u, 2))
+    return (
+        round(math.degrees(a)),
+        round(math.degrees(b)),
+        round(math.degrees(c)),
+    )
+
+
+def neutral_ik_angles():
+    a, b, c = coordinate_to_angle(0.0, 140.0, 0.0)
+    return {'coxa': float(a), 'femur': float(b), 'tibia': float(c)}
+
+
+def servo_angles_from_leg_coordinates(leg_index: int, coordinates):
+    x, y, z = coordinates
+    coxa, femur, tibia = coordinate_to_angle(-float(z), float(x), float(y))
+
+    if leg_index < 3:
+        servo_femur = 90.0 - femur
+        servo_tibia = float(tibia)
+    else:
+        servo_femur = 90.0 + femur
+        servo_tibia = 180.0 - tibia
+
+    return {
+        'coxa': clamp_angle(coxa),
+        'femur': clamp_angle(servo_femur),
+        'tibia': clamp_angle(servo_tibia),
+    }
+
+
+def offsets_from_leg_coordinates(leg_coordinates):
+    if len(leg_coordinates) != 6:
+        raise ValueError('Expected coordinates for exactly 6 legs')
+
+    offsets = zero_offsets()
+    for leg_index, coordinates in enumerate(leg_coordinates, start=1):
+        servo_angles = servo_angles_from_leg_coordinates(leg_index - 1, coordinates)
+        offsets[f'leg{leg_index}_coxa'] = servo_angles['coxa'] - REFERENCE_ANGLES[f'leg{leg_index}_coxa']
+        offsets[f'leg{leg_index}_femur'] = servo_angles['femur'] - REFERENCE_ANGLES[f'leg{leg_index}_femur']
+        offsets[f'leg{leg_index}_tibia'] = servo_angles['tibia'] - REFERENCE_ANGLES[f'leg{leg_index}_tibia']
+
+    return offsets
 
 
 def load_offsets(yaml_path: str):

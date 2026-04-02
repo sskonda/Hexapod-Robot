@@ -27,6 +27,8 @@ setup(
             'locomotion = hexapod_locomotion.locomotion:main',
             'servo_driver = hexapod_locomotion.servo_driver:main',
             'calibration = hexapod_locomotion.calibration:main',
+            'calibration_matrix = hexapod_locomotion.calibration_matrix:main',
+            'calibration_points = hexapod_locomotion.calibration_points:main',
         ],
     },
 )
