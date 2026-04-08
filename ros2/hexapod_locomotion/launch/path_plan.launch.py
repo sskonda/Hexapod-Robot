@@ -19,6 +19,8 @@ def generate_launch_description():
     forward_distance_m = LaunchConfiguration('forward_distance_m')
     backward_distance_m = LaunchConfiguration('backward_distance_m')
     linear_speed_mps = LaunchConfiguration('linear_speed_mps')
+    path_type = LaunchConfiguration('path_type')
+    square_side_m = LaunchConfiguration('square_side_m')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -56,6 +58,16 @@ def generate_launch_description():
             default_value='0.05',
             description='Linear speed for the predefined path in meters per second.',
         ),
+        DeclareLaunchArgument(
+            'path_type',
+            default_value='square',
+            description='Path type: "linear" (forward/backward) or "square" (crab-style square).',
+        ),
+        DeclareLaunchArgument(
+            'square_side_m',
+            default_value='0.5',
+            description='Side length of the square path in meters (used when path_type=square).',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(core_launch)),
             launch_arguments={
@@ -74,6 +86,8 @@ def generate_launch_description():
                 'forward_distance_m': forward_distance_m,
                 'backward_distance_m': backward_distance_m,
                 'linear_speed_mps': linear_speed_mps,
+                'path_type': path_type,
+                'square_side_m': square_side_m,
             }],
         ),
     ])
