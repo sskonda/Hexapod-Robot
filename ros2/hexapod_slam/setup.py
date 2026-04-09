@@ -28,6 +28,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'gap_following_explorer = hexapod_slam.gap_following_explorer:main',
         ],
     },
 )
