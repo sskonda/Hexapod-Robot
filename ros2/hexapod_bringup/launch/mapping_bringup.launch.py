@@ -80,6 +80,9 @@ def generate_launch_description():
     explorer_clearance_window_deg = LaunchConfiguration('explorer_clearance_window_deg')
     explorer_min_gap_width_deg = LaunchConfiguration('explorer_min_gap_width_deg')
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
+    explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
+    crab_follower_speed_mps = LaunchConfiguration('crab_follower_speed_mps')
+    crab_follower_goal_tolerance_m = LaunchConfiguration('crab_follower_goal_tolerance_m')
     odom_topic = LaunchConfiguration('odom_topic')
 
     return LaunchDescription([
@@ -218,6 +221,21 @@ def generate_launch_description():
             default_value='70.0',
             description='How aggressively the explorer avoids selecting the direction it just came from.',
         ),
+        DeclareLaunchArgument(
+            'explorer_max_replan_attempts',
+            default_value='5',
+            description='Number of consecutive obstacle stops before declaring a dead end and halting.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_speed_mps',
+            default_value='0.04',
+            description='Constant travel speed for the crab path follower in m/s.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_goal_tolerance_m',
+            default_value='0.08',
+            description='Distance from the rolling goal at which the follower considers itself arrived.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(core_launch)),
             condition=IfCondition(use_locomotion),
@@ -251,6 +269,9 @@ def generate_launch_description():
                 'explorer_clearance_window_deg': explorer_clearance_window_deg,
                 'explorer_min_gap_width_deg': explorer_min_gap_width_deg,
                 'explorer_reverse_avoidance_deg': explorer_reverse_avoidance_deg,
+                'explorer_max_replan_attempts': explorer_max_replan_attempts,
+                'crab_follower_speed_mps': crab_follower_speed_mps,
+                'crab_follower_goal_tolerance_m': crab_follower_goal_tolerance_m,
             }.items(),
         ),
     ])
