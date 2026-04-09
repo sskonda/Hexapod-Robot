@@ -5,10 +5,11 @@ import math
 from dataclasses import dataclass
 
 import rclpy
-from geometry_msgs.msg import Twist, Vector3
+from geometry_msgs.msg import TransformStamped, Twist, Vector3
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, JointState
+from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
 
@@ -134,6 +135,7 @@ class LocomotionNode(Node):
 
         self.target_publisher = self.create_publisher(JointState, 'servo_targets', 10)
         self.odom_publisher = self.create_publisher(Odometry, 'odom', 10)
+        self.tf_broadcaster = TransformBroadcaster(self)
 
         self.cmd_vel_subscription = self.create_subscription(
             Twist,
@@ -246,6 +248,23 @@ class LocomotionNode(Node):
         msg.twist.twist.linear.y = vy
         msg.twist.twist.angular.z = vtheta
         self.odom_publisher.publish(msg)
+
+        # Broadcast odom → base_link transform so slam_toolbox can locate
+        # the robot in the map.  Without this the TF tree is incomplete and
+        # SLAM silently produces garbage results.
+        tf_msg = TransformStamped()
+        tf_msg.header.stamp    = msg.header.stamp
+        tf_msg.header.frame_id = 'odom'
+        tf_msg.child_frame_id  = 'base_link'
+        tf_msg.transform.translation.x = self.odom_x_m
+        tf_msg.transform.translation.y = self.odom_y_m
+        tf_msg.transform.translation.z = 0.0
+        # Yaw-only quaternion (body never rolls or pitches in odom frame)
+        tf_msg.transform.rotation.x = 0.0
+        tf_msg.transform.rotation.y = 0.0
+        tf_msg.transform.rotation.z = math.sin(self.odom_theta_rad / 2.0)
+        tf_msg.transform.rotation.w = math.cos(self.odom_theta_rad / 2.0)
+        self.tf_broadcaster.sendTransform(tf_msg)
 
     def active_motion_command(self):
         age_sec = (self.get_clock().now() - self.last_motion_cmd_time).nanoseconds / 1e9

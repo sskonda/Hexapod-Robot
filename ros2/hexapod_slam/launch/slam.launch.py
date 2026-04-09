@@ -33,6 +33,9 @@ def generate_launch_description():
     explorer_clearance_window_deg = LaunchConfiguration('explorer_clearance_window_deg')
     explorer_min_gap_width_deg = LaunchConfiguration('explorer_min_gap_width_deg')
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
+    explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
+    crab_follower_speed_mps = LaunchConfiguration('crab_follower_speed_mps')
+    crab_follower_goal_tolerance_m = LaunchConfiguration('crab_follower_goal_tolerance_m')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -140,6 +143,21 @@ def generate_launch_description():
             default_value='70.0',
             description='How aggressively the explorer avoids selecting the direction it just came from.',
         ),
+        DeclareLaunchArgument(
+            'explorer_max_replan_attempts',
+            default_value='5',
+            description='Number of consecutive obstacle stops before declaring a dead end and halting.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_speed_mps',
+            default_value='0.04',
+            description='Constant travel speed for the crab path follower in m/s.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_goal_tolerance_m',
+            default_value='0.08',
+            description='Distance from the rolling goal at which the follower considers itself arrived.',
+        ),
         Node(
             package='slam_toolbox',
             executable='async_slam_toolbox_node',
@@ -180,6 +198,23 @@ def generate_launch_description():
                 'clearance_window_deg': explorer_clearance_window_deg,
                 'min_gap_width_deg': explorer_min_gap_width_deg,
                 'reverse_avoidance_deg': explorer_reverse_avoidance_deg,
+                'max_replan_attempts': explorer_max_replan_attempts,
+            }],
+        ),
+        Node(
+            package='hexapod_locomotion',
+            executable='crab_path_follower',
+            name='crab_path_follower',
+            output='screen',
+            condition=IfCondition(enable_explorer),
+            parameters=[{
+                'path_topic':          path_topic,
+                'odom_topic':          odom_topic,
+                'cmd_vel_topic':       'cmd_vel',
+                'constant_speed_mps':  crab_follower_speed_mps,
+                'goal_tolerance_m':    crab_follower_goal_tolerance_m,
+                'path_timeout_sec':    1.0,
+                'cmd_vel_rate_hz':     20.0,
             }],
         ),
     ])

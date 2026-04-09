@@ -53,12 +53,13 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('max_goal_distance_m', 1.25)
         self.declare_parameter('min_goal_distance_m', 0.20)
         self.declare_parameter('clearance_window_deg', 12.0)
-        self.declare_parameter('forward_bias_weight', 0.30)
+        self.declare_parameter('forward_bias_weight', 0.0)
         self.declare_parameter('gap_width_weight', 0.20)
         self.declare_parameter('reverse_penalty_weight', 1.50)
         self.declare_parameter('min_gap_width_deg', 18.0)
         self.declare_parameter('reverse_avoidance_deg', 70.0)
         self.declare_parameter('candidate_sample_count', 121)
+        self.declare_parameter('max_replan_attempts', 5)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
@@ -87,6 +88,7 @@ class GapFollowingExplorerNode(Node):
             max(0.0, float(self.get_parameter('reverse_avoidance_deg').value))
         )
         self.candidate_sample_count = max(12, int(self.get_parameter('candidate_sample_count').value))
+        self.max_replan_attempts = max(1, int(self.get_parameter('max_replan_attempts').value))
 
         self.path_publisher = self.create_publisher(Path, self.path_topic, 10)
         self.stop_point_publisher = self.create_publisher(PointStamped, self.stop_point_topic, 10)
@@ -121,6 +123,11 @@ class GapFollowingExplorerNode(Node):
         self.last_path_publish_time = None
         self.last_data_warn_time_sec = -1.0
 
+        # Dead-end detection: counts consecutive obstacle stops.  Resets to
+        # zero whenever a new heading is successfully committed.
+        self.replan_attempts = 0
+        self.mission_complete = False
+
         self.get_logger().info('Gap-following explorer ready')
         self.get_logger().info(
             f'Listening to {self.scan_topic} and {self.odom_topic}, publishing path on {self.path_topic} '
@@ -146,6 +153,10 @@ class GapFollowingExplorerNode(Node):
         )
 
     def control_loop(self):
+        # Once a dead end is declared stop publishing anything; robot is done.
+        if self.mission_complete:
+            return
+
         if not self.data_is_ready():
             return
 
@@ -158,9 +169,19 @@ class GapFollowingExplorerNode(Node):
             if selected is None:
                 selected = self.select_heading(allow_reverse=True)
             if selected is None:
+                # No traversable gap exists.  If we have already tried enough
+                # times the robot has reached a true dead end.
+                if self.replan_attempts >= self.max_replan_attempts:
+                    self.mission_complete = True
+                    self.get_logger().info(
+                        f'Dead end reached after {self.replan_attempts} obstacle stop(s) — '
+                        'no traversable gap found in any direction. Mission complete.'
+                    )
                 self.publish_stop_path()
                 return
 
+            # Successfully selected a new heading — reset the failure counter.
+            self.replan_attempts = 0
             self.active_heading_world_rad = normalize_angle(self.odom_yaw_rad + selected.angle_rad)
             self.get_logger().info(
                 f'Heading selected: {math.degrees(selected.angle_rad):.1f} deg in base frame, '
@@ -212,8 +233,10 @@ class GapFollowingExplorerNode(Node):
         return (now - self.last_path_publish_time).nanoseconds / 1e9 >= self.path_publish_period_sec
 
     def handle_replan_stop(self, clearance_m: float):
+        self.replan_attempts += 1
         self.get_logger().info(
-            f'Obstacle ahead at {clearance_m:.2f} m. Stopping, publishing decision point, and searching for a new gap.'
+            f'Obstacle ahead at {clearance_m:.2f} m — stop #{self.replan_attempts}. '
+            'Publishing decision point and searching for a new gap.'
         )
         self.last_committed_heading_world_rad = self.active_heading_world_rad
         self.active_heading_world_rad = None
