@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>hexapod_bringup</name>
+  <name>hexapod_slam</name>
   <version>0.0.0</version>
-  <description>System-level bringup launch files for the hexapod robot</description>
+  <description>SLAM launch files and configuration for the hexapod robot</description>
   <maintainer email="sskonda04@gmail.com">Sanat Konda</maintainer>
   <license>Apache-2.0</license>
 
@@ -12,8 +12,7 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-  <exec_depend>hexapod_locomotion</exec_depend>
-  <exec_depend>hexapod_slam</exec_depend>
+  <exec_depend>slam_toolbox</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

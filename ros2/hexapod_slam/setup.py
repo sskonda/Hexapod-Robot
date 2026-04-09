@@ -2,7 +2,7 @@ from glob import glob
 
 from setuptools import find_packages, setup
 
-package_name = 'hexapod_bringup'
+package_name = 'hexapod_slam'
 
 setup(
     name=package_name,
@@ -13,12 +13,13 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
+        ('share/' + package_name + '/config', glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='Sanat Konda',
     maintainer_email='sskonda04@gmail.com',
-    description='System-level bringup launch files for the hexapod robot',
+    description='SLAM launch files and configuration for the hexapod robot',
     license='Apache-2.0',
     extras_require={
         'test': [
