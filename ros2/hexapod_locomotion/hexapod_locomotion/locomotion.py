@@ -12,6 +12,7 @@ from sensor_msgs.msg import Imu, JointState
 from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
+from .kalman_filter import AngleKalmanFilter
 
 
 BASE_FOOTPOINTS = [
@@ -126,6 +127,9 @@ class LocomotionNode(Node):
 
         self.imu_roll_deg = 0.0
         self.imu_pitch_deg = 0.0
+        self.roll_filter = AngleKalmanFilter()
+        self.pitch_filter = AngleKalmanFilter()
+        self.last_imu_stamp = None
         self.last_invalid_warn_time = 0.0
         self.gait_state = None
 
@@ -195,8 +199,24 @@ class LocomotionNode(Node):
         ay = msg.linear_acceleration.y
         az = msg.linear_acceleration.z
 
-        self.imu_roll_deg = math.degrees(math.atan2(ay, az))
-        self.imu_pitch_deg = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
+        accel_roll = math.degrees(math.atan2(ay, az))
+        accel_pitch = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
+
+        gyro_roll_rate = math.degrees(msg.angular_velocity.x)
+        gyro_pitch_rate = math.degrees(msg.angular_velocity.y)
+
+        if self.last_imu_stamp is None:
+            dt = 0.1  # matches the 10 Hz publish rate in imu_publisher.py
+        else:
+            dt = (
+                msg.header.stamp.sec - self.last_imu_stamp.sec
+                + (msg.header.stamp.nanosec - self.last_imu_stamp.nanosec) * 1e-9
+            )
+            dt = max(1e-4, min(dt, 1.0))  # clamp to a sane range
+        self.last_imu_stamp = msg.header.stamp
+
+        self.imu_roll_deg = self.roll_filter.update(accel_roll, gyro_roll_rate, dt)
+        self.imu_pitch_deg = self.pitch_filter.update(accel_pitch, gyro_pitch_rate, dt)
 
     def control_loop(self):
         stance_points = self.calculate_stance_points()
