@@ -108,12 +108,15 @@ class KeyReader:
     def __enter__(self):
         import termios
         import tty
+        import os
 
         self._termios = termios
-        self._tty = open('/dev/tty', 'r')
+        self._os = os
+        self._tty = open('/dev/tty', 'rb', buffering=0)
         self._fd = self._tty.fileno()
         self._old_settings = termios.tcgetattr(self._fd)
         tty.setraw(self._fd)
+        termios.tcflush(self._fd, termios.TCIFLUSH)
         return self
 
     def __exit__(self, exc_type, exc, tb):
@@ -121,7 +124,8 @@ class KeyReader:
         self._tty.close()
 
     def read_key(self):
-        return self._tty.read(1)
+        b = self._os.read(self._fd, 1)
+        return b.decode('latin-1') if b else ''
 
 
 class CalibrationNode(Node):
