@@ -110,16 +110,18 @@ class KeyReader:
         import tty
 
         self._termios = termios
-        self._fd = sys.stdin.fileno()
+        self._tty = open('/dev/tty', 'r')
+        self._fd = self._tty.fileno()
         self._old_settings = termios.tcgetattr(self._fd)
         tty.setraw(self._fd)
         return self
 
     def __exit__(self, exc_type, exc, tb):
         self._termios.tcsetattr(self._fd, self._termios.TCSADRAIN, self._old_settings)
+        self._tty.close()
 
     def read_key(self):
-        return sys.stdin.read(1)
+        return self._tty.read(1)
 
 
 class CalibrationNode(Node):
