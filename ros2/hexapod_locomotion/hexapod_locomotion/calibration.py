@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import math
 import sys
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from .calibration_store import (
     JOINT_NAMES,
     commanded_angles,
     load_offsets,
+    offsets_from_leg_coordinates,
     save_offsets,
 )
 
@@ -128,6 +130,32 @@ class KeyReader:
         return b.decode('latin-1') if b else ''
 
 
+BASE_FOOTPOINTS = [
+    [137.1, 189.4, 0.0],
+    [225.0, 0.0, 0.0],
+    [137.1, -189.4, 0.0],
+    [-137.1, -189.4, 0.0],
+    [-225.0, 0.0, 0.0],
+    [-137.1, 189.4, 0.0],
+]
+
+LEG_MOUNT_ANGLES_DEG = [54.0, 0.0, -54.0, -126.0, 180.0, 126.0]
+LEG_X_OFFSETS_MM = [94.0, 85.0, 94.0, 94.0, 85.0, 94.0]
+LEG_Z_OFFSET_MM = 50.0
+
+
+def default_offsets():
+    leg_local = []
+    for i, point in enumerate(BASE_FOOTPOINTS):
+        angle = math.radians(LEG_MOUNT_ANGLES_DEG[i])
+        leg_local.append([
+            point[0] * math.cos(angle) + point[1] * math.sin(angle) - LEG_X_OFFSETS_MM[i],
+            -point[0] * math.sin(angle) + point[1] * math.cos(angle),
+            point[2] - LEG_Z_OFFSET_MM,
+        ])
+    return offsets_from_leg_coordinates(leg_local)
+
+
 class CalibrationNode(Node):
     def __init__(self):
         super().__init__('calibration')
@@ -147,7 +175,11 @@ class CalibrationNode(Node):
         self.step_large = float(self.get_parameter('step_large').value)
         self.relax_on_exit = bool(self.get_parameter('relax_on_exit').value)
 
-        self.offsets = load_offsets(self.calibration_file)
+        loaded = load_offsets(self.calibration_file)
+        if all(v == 0.0 for v in loaded.values()):
+            self.offsets = default_offsets()
+        else:
+            self.offsets = loaded
         self.selected_index = 0
         self.status_message = 'Ready'
         self.publisher = self.create_publisher(JointState, '/servo_targets', 10)
