@@ -1,3 +1,27 @@
+"""
+setup.py
+
+Purpose:
+    ROS 2 Python package setup script for hexapod_slam.
+
+Role:
+    - Registers the Python package with colcon / setuptools.
+    - Installs launch and config files.
+    - Declares ROS 2 console entry points for executable nodes.
+
+Key responsibilities:
+    - Package metadata
+    - Data file installation
+    - Console script registration
+
+Typical console scripts:
+    - gap_following_explorer
+    - maze_graph_builder
+    - maze_graph_planner
+    - graph_visualizer
+    - path_to_local_goal
+"""
+
 from glob import glob
 
 from setuptools import find_packages, setup

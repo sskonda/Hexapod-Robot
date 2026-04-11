@@ -1,5 +1,86 @@
 #!/usr/bin/env python3
 
+"""
+gap_following_explorer.py
+
+High-level purpose:
+    Reactive local exploration node that uses the current LiDAR scan to choose an open heading,
+    then publishes a short rolling path in front of the robot. This node is intended for
+    short-horizon obstacle avoidance and local movement, not long-term maze memory.
+
+High-level behavior:
+    - Subscribes to LaserScan and Odometry.
+    - Scores candidate headings based on obstacle clearance, gap width, and optional forward bias.
+    - Chooses a heading in the robot base frame.
+    - Publishes a short Path toward that heading.
+    - Publishes a stop/decision point when the robot reaches a wall or must replan.
+    - Can be used as a local follower beneath a higher-level maze graph planner.
+
+Inputs:
+    - /scan (sensor_msgs/msg/LaserScan)
+    - /odom (nav_msgs/msg/Odometry)
+
+Outputs:
+    - Path message for local motion
+    - PointStamped decision marker when replanning is required
+
+Publishes:
+    - path_topic (default: "path") -> nav_msgs/msg/Path
+    - stop_point_topic (default: "decision_point") -> geometry_msgs/msg/PointStamped
+
+Subscribes:
+    - scan_topic (default: "/scan") -> sensor_msgs/msg/LaserScan
+    - odom_topic (default: "odom") -> nav_msgs/msg/Odometry
+
+Key parameters:
+    - scan_topic: "/scan"
+    - odom_topic: "odom"
+    - path_topic: "path"
+    - stop_point_topic: "decision_point"
+    - control_rate_hz: 5.0
+    - path_publish_period_sec: 0.5
+    - decision_pause_sec: 0.75
+    - scan_timeout_sec: 1.0
+    - odom_timeout_sec: 1.0
+
+    Local navigation thresholds:
+    - stop_distance_m: 0.55
+        Minimum clearance before stopping and replanning.
+    - open_distance_m: 0.90
+        Preferred clearance threshold used when scoring open gaps.
+    - goal_backoff_m: 0.35
+        Distance to remain behind a detected obstacle.
+    - max_goal_distance_m: 1.25
+        Maximum forward goal distance.
+    - min_goal_distance_m: 0.20
+        Minimum forward goal distance when space is tight.
+
+    Candidate scoring parameters:
+    - clearance_window_deg: 12.0
+        Half-window around a candidate heading used to evaluate minimum clearance.
+    - forward_bias_weight: 0.0
+        Positive values prefer forward-facing headings.
+    - gap_width_weight: 0.20
+        Reward for wider openings.
+    - reverse_penalty_weight: 1.50
+        Penalty for selecting the direction the robot just came from.
+    - min_gap_width_deg: 18.0
+        Minimum angular gap width considered traversable.
+    - reverse_avoidance_deg: 70.0
+        Avoid selecting headings too close to the reverse direction.
+    - candidate_sample_count: 121
+        Number of scan samples evaluated during heading selection.
+    - max_replan_attempts: 5
+        Number of consecutive failed replans before declaring mission complete.
+
+Notes:
+    - This node is best used as a local obstacle-aware motion primitive.
+    - For maze solving, pair it with a persistent graph planner that decides which branch to take.
+    - The published Path is short-horizon and not a full global plan.
+"""
+
+
+
 import math
 from dataclasses import dataclass
 from typing import Optional
