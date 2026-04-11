@@ -1,6 +1,5 @@
-import math
 from pathlib import Path
-
+import math
 import yaml
 
 JOINT_NAMES = [
@@ -70,15 +69,6 @@ def restrict_value(value, min_value, max_value):
     return max(min_value, min(max_value, value))
 
 
-def load_calibration_data(yaml_path: str):
-    path = Path(yaml_path)
-    if not path.exists():
-        return {}
-
-    with path.open('r') as f:
-        return yaml.safe_load(f) or {}
-
-
 def coordinate_to_angle(x, y, z, l1=33.0, l2=90.0, l3=110.0):
     a = math.pi / 2 - math.atan2(z, y)
     x_4 = l1 * math.sin(a)
@@ -134,7 +124,13 @@ def offsets_from_leg_coordinates(leg_coordinates):
 
 
 def load_offsets(yaml_path: str):
-    data = load_calibration_data(yaml_path)
+    path = Path(yaml_path)
+    if not path.exists():
+        return zero_offsets()
+
+    with path.open('r') as f:
+        data = yaml.safe_load(f) or {}
+
     raw = data.get('servo_offsets', {})
     offsets = zero_offsets()
     for name in JOINT_NAMES:
@@ -144,56 +140,14 @@ def load_offsets(yaml_path: str):
     return offsets
 
 
-def load_base_footpoints(yaml_path: str):
-    data = load_calibration_data(yaml_path)
-    raw = data.get('base_footpoints')
-    if raw is None:
-        return None
-
-    if not isinstance(raw, list) or len(raw) != 6:
-        raise ValueError('base_footpoints must be a list of 6 [x, y, z] rows')
-
-    footpoints = []
-    for point in raw:
-        if not isinstance(point, (list, tuple)) or len(point) != 3:
-            raise ValueError('each base_footpoints row must contain exactly 3 values')
-        footpoints.append([float(point[0]), float(point[1]), float(point[2])])
-
-    return footpoints
-
-
 def save_offsets(yaml_path: str, offsets: dict):
     path = Path(yaml_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    data = load_calibration_data(yaml_path)
 
     cleaned = zero_offsets()
     for name in JOINT_NAMES:
         if name in offsets:
             cleaned[name] = float(offsets[name])
 
-    data['servo_offsets'] = cleaned
-
     with path.open('w') as f:
-        yaml.safe_dump(data, f, sort_keys=False)
-
-
-def save_base_footpoints(yaml_path: str, base_footpoints):
-    if not isinstance(base_footpoints, list) or len(base_footpoints) != 6:
-        raise ValueError('Expected exactly 6 base footpoints')
-
-    cleaned = []
-    for point in base_footpoints:
-        if not isinstance(point, (list, tuple)) or len(point) != 3:
-            raise ValueError('Each base footpoint must contain exactly 3 values')
-        cleaned.append([float(point[0]), float(point[1]), float(point[2])])
-
-    path = Path(yaml_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    data = load_calibration_data(yaml_path)
-    data['base_footpoints'] = cleaned
-
-    with path.open('w') as f:
-        yaml.safe_dump(data, f, sort_keys=False)
+        yaml.safe_dump({'servo_offsets': cleaned}, f, sort_keys=False)

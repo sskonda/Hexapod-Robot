@@ -3,20 +3,18 @@
 import copy
 import math
 from dataclasses import dataclass
-from pathlib import Path
 
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import TransformStamped, Twist, Vector3
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, JointState
 from tf2_ros import TransformBroadcaster
 
-from .calibration_store import JOINT_NAMES, load_base_footpoints, servo_angles_from_leg_coordinates
+from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
 from .kalman_filter import AngleKalmanFilter
 
-# Actually base angles of servo
+
 BASE_FOOTPOINTS = [
     [137.1, 189.4, 0.0],
     [225.0, 0.0, 0.0],
@@ -75,10 +73,6 @@ class LocomotionNode(Node):
     def __init__(self):
         super().__init__('locomotion')
 
-        default_calibration_file = str(
-            Path(get_package_share_directory('hexapod_locomotion')) / 'config' / 'servo_calibration.yaml'
-        )
-
         self.declare_parameter('use_imu', True)
         self.declare_parameter('balance_gain', 0.1)
         self.declare_parameter('gait', 'tripod')
@@ -100,7 +94,7 @@ class LocomotionNode(Node):
         self.declare_parameter('max_yaw_deg', 15.0)
         self.declare_parameter('yaw_correction_gain', -0.05)
         self.declare_parameter('lateral_trim_mps', 0.0)
-        self.declare_parameter('calibration_file', default_calibration_file)
+
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
         self.gait = str(self.get_parameter('gait').value).strip().lower()
@@ -126,24 +120,6 @@ class LocomotionNode(Node):
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
             self.gait = 'tripod'
-
-        self.base_footpoints = [list(point) for point in BASE_FOOTPOINTS]
-        calibration_file = str(self.get_parameter('calibration_file').value)
-        try:
-            calibrated_footpoints = load_base_footpoints(calibration_file)
-            if calibrated_footpoints is not None:
-                self.base_footpoints = calibrated_footpoints
-                self.get_logger().info(
-                    f'Base footpoints loaded from calibration file: {calibration_file}'
-                )
-            else:
-                self.get_logger().info(
-                    f'No base_footpoints found in calibration file, using defaults: {calibration_file}'
-                )
-        except Exception as exc:
-            self.get_logger().warn(
-                f'Invalid base_footpoints in calibration file ({exc}); using hardcoded defaults'
-            )
 
         self.cmd_linear_x_mps = 0.0
         self.cmd_linear_y_mps = 0.0
@@ -358,7 +334,7 @@ class LocomotionNode(Node):
 
         rotation_matrix = self.rotation_matrix(roll_deg, pitch_deg, yaw_deg)
         foot_positions = []
-        for footpoint in self.base_footpoints:
+        for footpoint in BASE_FOOTPOINTS:
             rotated = matrix_vector_multiply(rotation_matrix, footpoint)
             foot_positions.append([
                 position[0] + rotated[0],
