@@ -74,7 +74,7 @@ class LocomotionNode(Node):
         super().__init__('locomotion')
 
         self.declare_parameter('use_imu', True)
-        self.declare_parameter('balance_gain', 0.0)
+        self.declare_parameter('balance_gain', 0.1)
         self.declare_parameter('gait', 'tripod')
         self.declare_parameter('control_rate_hz', 50.0)
         self.declare_parameter('command_timeout_sec', 0.5)
@@ -92,6 +92,7 @@ class LocomotionNode(Node):
         self.declare_parameter('max_roll_deg', 15.0)
         self.declare_parameter('max_pitch_deg', 15.0)
         self.declare_parameter('max_yaw_deg', 15.0)
+        self.declare_parameter('yaw_correction_gain', 0.5)
 
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
@@ -112,6 +113,7 @@ class LocomotionNode(Node):
         self.max_roll_deg = max(0.0, float(self.get_parameter('max_roll_deg').value))
         self.max_pitch_deg = max(0.0, float(self.get_parameter('max_pitch_deg').value))
         self.max_yaw_deg = max(0.0, float(self.get_parameter('max_yaw_deg').value))
+        self.yaw_correction_gain = max(0.0, float(self.get_parameter('yaw_correction_gain').value))
 
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
@@ -127,6 +129,7 @@ class LocomotionNode(Node):
 
         self.imu_roll_deg = 0.0
         self.imu_pitch_deg = 0.0
+        self.imu_yaw_rate_rps = 0.0
         self.roll_filter = AngleKalmanFilter()
         self.pitch_filter = AngleKalmanFilter()
         self.last_imu_stamp = None
@@ -217,6 +220,8 @@ class LocomotionNode(Node):
 
         self.imu_roll_deg = self.roll_filter.update(accel_roll, gyro_roll_rate, dt)
         self.imu_pitch_deg = self.pitch_filter.update(accel_pitch, gyro_pitch_rate, dt)
+        # angular_velocity.z is already in rad/s (imu_publisher converts gyro data)
+        self.imu_yaw_rate_rps = msg.angular_velocity.z
 
     def control_loop(self):
         stance_points = self.calculate_stance_points()
@@ -247,12 +252,16 @@ class LocomotionNode(Node):
         else:
             vx = vy = vtheta = 0.0
 
+        # Use IMU gyro Z for heading — it measures actual rotation including slip,
+        # unlike the kinematic estimate which assumes the commanded turn was executed.
+        heading_rate = self.imu_yaw_rate_rps if self.use_imu else vtheta
+
         # Rotate body-frame velocity into world frame and integrate position
         cos_h = math.cos(self.odom_theta_rad)
         sin_h = math.sin(self.odom_theta_rad)
         self.odom_x_m += (vx * cos_h - vy * sin_h) * dt
         self.odom_y_m += (vx * sin_h + vy * cos_h) * dt
-        self.odom_theta_rad += vtheta * dt
+        self.odom_theta_rad += heading_rate * dt
 
         msg = Odometry()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -266,7 +275,7 @@ class LocomotionNode(Node):
         # Twist in body frame
         msg.twist.twist.linear.x = vx
         msg.twist.twist.linear.y = vy
-        msg.twist.twist.angular.z = vtheta
+        msg.twist.twist.angular.z = heading_rate
         self.odom_publisher.publish(msg)
 
         # Broadcast odom → base_link transform so slam_toolbox can locate
@@ -291,7 +300,16 @@ class LocomotionNode(Node):
         if age_sec > self.command_timeout_sec:
             return 0.0, 0.0, 0.0
 
-        return self.cmd_linear_x_mps, self.cmd_linear_y_mps, self.cmd_yaw_rate_rad_s
+        yaw_rate = self.cmd_yaw_rate_rad_s
+
+        # When no yaw is commanded but the IMU detects rotation (leg slip or imbalance),
+        # inject a counter-rotation proportional to the measured drift rate.
+        # Capped at 30% of max yaw to avoid overwhelming the translation.
+        if self.use_imu and self.yaw_correction_gain > 0.0 and abs(yaw_rate) < 1e-6:
+            correction = -self.imu_yaw_rate_rps * self.yaw_correction_gain
+            yaw_rate = clamp(correction, -self.max_yaw_rate_rad_s * 0.3, self.max_yaw_rate_rad_s * 0.3)
+
+        return self.cmd_linear_x_mps, self.cmd_linear_y_mps, yaw_rate
 
     def motion_is_zero(self, motion):
         return all(abs(value) < 1e-6 for value in motion)
