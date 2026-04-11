@@ -1,17 +1,20 @@
-# maze_graph_builder.yaml
-#
-# Purpose:
-#   Parameter file for the maze_graph_builder node.
-#
-# Role:
-#   Defines map processing thresholds, node/edge extraction settings,
-#   frontier behavior, frame names, and update rates.
-#
-# Main parameter groups:
-#   - topic names
-#   - frame names
-#   - occupancy thresholds
-#   - obstacle inflation
-#   - node merge distances
-#   - corner / junction / dead-end detection settings
-#   - frontier thresholds
+maze_graph_builder:
+  ros__parameters:
+    map_frame: "map"
+    base_frame: "base_link"
+    map_topic: "/map"
+    odom_topic: "odom"
+    update_rate_hz: 2.0
+    min_feature_observations: 2
+    node_merge_distance_m: 0.25
+    min_node_spacing_m: 0.30
+    occupied_threshold: 50
+    free_threshold: 20
+    inflation_radius_m: 0.12
+    robot_clearance_radius_m: 0.15
+    corner_angle_threshold_deg: 40.0
+    probe_distance_m: 0.50
+    candidate_grid_spacing_m: 0.20
+    min_corridor_width_m: 0.20
+    graph_save_path: "/tmp/maze_graph.json"
+    graph_autosave_period_sec: 30.0

@@ -1,8 +1,14 @@
-# graph_visualizer.yaml
-#
-# Purpose:
-#   Parameter file for the graph_visualizer node.
-#
-# Role:
-#   Defines RViz marker scales, label display options, topic names,
-#   and visualization toggles for nodes, edges, frontiers, and active targets.
+maze_graph_visualizer:
+  ros__parameters:
+    marker_frame: "map"
+    publish_rate_hz: 2.0
+    node_scale_m: 0.08
+    edge_width_m: 0.03
+    frontier_scale_m: 0.05
+    label_text_scale_m: 0.10
+    show_node_labels: true
+    show_edge_labels: false
+    show_frontiers: true
+    show_dead_ends: true
+    show_active_target: true
+    show_debug_candidates: false

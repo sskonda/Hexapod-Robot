@@ -11,7 +11,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu, JointState
 from tf2_ros import TransformBroadcaster
 
-from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
+from .calibration_store import JOINT_NAMES, REFERENCE_ANGLES, load_offsets, servo_angles_from_leg_coordinates
 from .kalman_filter import AngleKalmanFilter
 
 
@@ -28,6 +28,67 @@ LEG_MOUNT_ANGLES_DEG = [54.0, 0.0, -54.0, -126.0, 180.0, 126.0]
 LEG_X_OFFSETS_MM = [94.0, 85.0, 94.0, 94.0, 85.0, 94.0]
 LEG_Z_OFFSET_MM = 50.0
 WAVE_SEQUENCE = [5, 2, 1, 0, 3, 4]
+
+
+def forward_kinematics(ik_coxa_deg, ik_femur_deg, ik_tibia_deg, l1=33.0, l2=90.0, l3=110.0):
+    """Convert IK angles (degrees) to leg-local (x, y, z) foot position (mm).
+
+    Inverse of coordinate_to_angle(), using the same arm-length conventions.
+    c=0 is fully extended, c=180 is fully folded (knee angle convention).
+    """
+    a = math.radians(ik_coxa_deg)
+    b = math.radians(ik_femur_deg)
+    c = math.radians(ik_tibia_deg)
+    # Distance from femur joint to foot via law of cosines (knee angle = pi - c)
+    l23 = math.sqrt(l2**2 + l3**2 + 2.0 * l2 * l3 * math.cos(c))
+    # Angle at femur joint in the femur-l23 sub-triangle
+    v = max(-1.0, min(1.0, (l2**2 + l23**2 - l3**2) / (2.0 * l2 * l23)))
+    alpha = math.acos(v)
+    # Vertical component (p = -leg_z in coordinate_to_angle convention)
+    p = l23 * math.sin(b + alpha)
+    # Horizontal reach from femur joint to foot (along coxa direction)
+    h = math.sqrt(max(0.0, l23**2 - p**2))
+    leg_x = (l1 + h) * math.sin(a)
+    leg_y = (l1 + h) * math.cos(a)
+    leg_z = -p
+    return [leg_x, leg_y, leg_z]
+
+
+def footpoints_from_calibration(calibration_file):
+    """Compute body-frame foot positions from servo calibration offsets via FK.
+
+    Loads offsets from the YAML, converts servo angles -> IK angles -> leg-local
+    coordinates -> body frame, returning a list of 6 [x, y, 0] footpoints.
+    The z component is left at 0 so that body height is still controlled by
+    the default_body_height_mm parameter.
+    """
+    offsets = load_offsets(calibration_file)
+    footpoints = []
+    for leg_index in range(6):
+        n = leg_index + 1
+        srv_coxa  = REFERENCE_ANGLES[f'leg{n}_coxa']  + offsets[f'leg{n}_coxa']
+        srv_femur = REFERENCE_ANGLES[f'leg{n}_femur'] + offsets[f'leg{n}_femur']
+        srv_tibia = REFERENCE_ANGLES[f'leg{n}_tibia'] + offsets[f'leg{n}_tibia']
+
+        # Invert servo_angles_from_leg_coordinates() per-leg transforms
+        ik_coxa = srv_coxa
+        if leg_index < 3:
+            ik_femur = 90.0 - srv_femur
+            ik_tibia = srv_tibia
+        else:
+            ik_femur = srv_femur - 90.0
+            ik_tibia = 180.0 - srv_tibia
+
+        leg_x, leg_y, _ = forward_kinematics(ik_coxa, ik_femur, ik_tibia)
+
+        # Invert transform_coordinates() to get body-frame XY
+        angle = math.radians(LEG_MOUNT_ANGLES_DEG[leg_index])
+        qx = leg_x + LEG_X_OFFSETS_MM[leg_index]
+        body_x = qx * math.cos(angle) - leg_y * math.sin(angle)
+        body_y = qx * math.sin(angle) + leg_y * math.cos(angle)
+
+        footpoints.append([body_x, body_y, 0.0])
+    return footpoints
 
 
 @dataclass
@@ -94,6 +155,10 @@ class LocomotionNode(Node):
         self.declare_parameter('max_yaw_deg', 15.0)
         self.declare_parameter('yaw_correction_gain', -0.05)
         self.declare_parameter('lateral_trim_mps', 0.0)
+        self.declare_parameter(
+            'calibration_file',
+            '/home/snail/ros2_ws/install/hexapod_locomotion/share/hexapod_locomotion/config/servo_calibration.yaml',
+        )
 
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
@@ -120,6 +185,14 @@ class LocomotionNode(Node):
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
             self.gait = 'tripod'
+
+        calibration_file = str(self.get_parameter('calibration_file').value)
+        try:
+            self.base_footpoints = footpoints_from_calibration(calibration_file)
+            self.get_logger().info(f'Base footpoints loaded from calibration: {calibration_file}')
+        except Exception as exc:
+            self.get_logger().warn(f'Could not load calibration footpoints ({exc}); using hardcoded defaults')
+            self.base_footpoints = [list(fp) for fp in BASE_FOOTPOINTS]
 
         self.cmd_linear_x_mps = 0.0
         self.cmd_linear_y_mps = 0.0
@@ -334,7 +407,7 @@ class LocomotionNode(Node):
 
         rotation_matrix = self.rotation_matrix(roll_deg, pitch_deg, yaw_deg)
         foot_positions = []
-        for footpoint in BASE_FOOTPOINTS:
+        for footpoint in self.base_footpoints:
             rotated = matrix_vector_multiply(rotation_matrix, footpoint)
             foot_positions.append([
                 position[0] + rotated[0],
