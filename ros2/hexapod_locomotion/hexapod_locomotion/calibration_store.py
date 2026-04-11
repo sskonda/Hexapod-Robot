@@ -32,6 +32,20 @@ JOINT_CHANNELS = {
     'leg6_tibia': 18,
 }
 
+LOCOMOTION_BASE_FOOTPOINTS = [
+    [137.1, 189.4, 0.0],
+    [225.0, 0.0, 0.0],
+    [137.1, -189.4, 0.0],
+    [-137.1, -189.4, 0.0],
+    [-225.0, 0.0, 0.0],
+    [-137.1, 189.4, 0.0],
+]
+
+LOCOMOTION_LEG_MOUNT_ANGLES_DEG = [54.0, 0.0, -54.0, -126.0, 180.0, 126.0]
+LOCOMOTION_LEG_X_OFFSETS_MM = [94.0, 85.0, 94.0, 94.0, 85.0, 94.0]
+LOCOMOTION_LEG_Z_OFFSET_MM = 50.0
+LOCOMOTION_DEFAULT_BODY_HEIGHT_MM = -25.0
+
 REFERENCE_ANGLES = {
     name: 90.0 for name in JOINT_NAMES
 }
@@ -121,6 +135,45 @@ def offsets_from_leg_coordinates(leg_coordinates):
         offsets[f'leg{leg_index}_tibia'] = servo_angles['tibia'] - REFERENCE_ANGLES[f'leg{leg_index}_tibia']
 
     return offsets
+
+
+def locomotion_default_leg_coordinates(
+    default_body_height_mm=LOCOMOTION_DEFAULT_BODY_HEIGHT_MM,
+):
+    leg_coordinates = []
+    for leg_index, point in enumerate(LOCOMOTION_BASE_FOOTPOINTS):
+        angle = math.radians(LOCOMOTION_LEG_MOUNT_ANGLES_DEG[leg_index])
+        leg_coordinates.append([
+            point[0] * math.cos(angle) + point[1] * math.sin(angle) - LOCOMOTION_LEG_X_OFFSETS_MM[leg_index],
+            -point[0] * math.sin(angle) + point[1] * math.cos(angle),
+            point[2] + float(default_body_height_mm) - LOCOMOTION_LEG_Z_OFFSET_MM,
+        ])
+
+    return leg_coordinates
+
+
+def locomotion_default_offsets(default_body_height_mm=LOCOMOTION_DEFAULT_BODY_HEIGHT_MM):
+    return offsets_from_leg_coordinates(
+        locomotion_default_leg_coordinates(default_body_height_mm=default_body_height_mm)
+    )
+
+
+def normalize_offsets_for_locomotion(
+    offsets: dict,
+    default_body_height_mm=LOCOMOTION_DEFAULT_BODY_HEIGHT_MM,
+):
+    baseline_offsets = locomotion_default_offsets(default_body_height_mm=default_body_height_mm)
+    raw_magnitude = sum(abs(float(offsets.get(name, 0.0))) for name in JOINT_NAMES)
+    normalized = {
+        name: float(offsets.get(name, 0.0)) - baseline_offsets[name]
+        for name in JOINT_NAMES
+    }
+    normalized_magnitude = sum(abs(normalized[name]) for name in JOINT_NAMES)
+    should_normalize = raw_magnitude > 1e-6 and normalized_magnitude + 1e-6 < raw_magnitude
+    return normalized if should_normalize else {
+        name: float(offsets.get(name, 0.0))
+        for name in JOINT_NAMES
+    }
 
 
 def load_offsets(yaml_path: str):

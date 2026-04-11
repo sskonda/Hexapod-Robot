@@ -8,7 +8,12 @@ from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
 
 from .calibration import ServoController
-from .calibration_store import JOINT_CHANNELS, JOINT_NAMES, load_offsets
+from .calibration_store import (
+    JOINT_CHANNELS,
+    JOINT_NAMES,
+    load_offsets,
+    normalize_offsets_for_locomotion,
+)
 
 
 class ServoDriver(Node):
@@ -35,7 +40,8 @@ class ServoDriver(Node):
         self.disable_power_on_exit = bool(self.get_parameter('disable_power_on_exit').value)
         self.dry_run_reason = 'dry_run parameter enabled' if self.dry_run else ''
 
-        self.offsets = load_offsets(self.calibration_file)
+        raw_offsets = load_offsets(self.calibration_file)
+        self.offsets = normalize_offsets_for_locomotion(raw_offsets)
         self.servo_power_disable = None
         self.configure_power_control()
         self.servo = self._create_servo()
@@ -50,6 +56,11 @@ class ServoDriver(Node):
         self.get_logger().info(f'servo_driver listening on /servo_targets')
         self.get_logger().info(f'calibration_file={self.calibration_file}')
         self.get_logger().info(f'apply_offsets={self.apply_offsets}, dry_run={self.dry_run}')
+        if any(abs(self.offsets[name] - raw_offsets[name]) > 1e-6 for name in JOINT_NAMES):
+            self.get_logger().info(
+                'Loaded calibration looks like a neutral-pose YAML; applying offsets relative to '
+                'the locomotion default stance.'
+            )
         if self.dry_run:
             self.get_logger().warn(
                 'servo_driver is in DRY RUN mode, so the robot will not move. '
