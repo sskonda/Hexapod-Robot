@@ -92,7 +92,7 @@ class LocomotionNode(Node):
         self.declare_parameter('max_roll_deg', 15.0)
         self.declare_parameter('max_pitch_deg', 15.0)
         self.declare_parameter('max_yaw_deg', 15.0)
-        self.declare_parameter('yaw_correction_gain', 0.05)
+        self.declare_parameter('yaw_correction_gain', -0.05)
 
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
@@ -113,7 +113,7 @@ class LocomotionNode(Node):
         self.max_roll_deg = max(0.0, float(self.get_parameter('max_roll_deg').value))
         self.max_pitch_deg = max(0.0, float(self.get_parameter('max_pitch_deg').value))
         self.max_yaw_deg = max(0.0, float(self.get_parameter('max_yaw_deg').value))
-        self.yaw_correction_gain = max(0.0, float(self.get_parameter('yaw_correction_gain').value))
+        self.yaw_correction_gain = float(self.get_parameter('yaw_correction_gain').value)
 
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
@@ -305,7 +305,7 @@ class LocomotionNode(Node):
         # When no yaw is commanded but the IMU detects rotation (leg slip or imbalance),
         # inject a counter-rotation proportional to the measured drift rate.
         # Capped at 30% of max yaw to avoid overwhelming the translation.
-        if self.use_imu and self.yaw_correction_gain > 0.0 and abs(yaw_rate) < 1e-6:
+        if self.use_imu and self.yaw_correction_gain != 0.0 and abs(yaw_rate) < 1e-6:
             correction = -self.imu_yaw_rate_rps * self.yaw_correction_gain
             yaw_rate = clamp(correction, -self.max_yaw_rate_rad_s * 0.3, self.max_yaw_rate_rad_s * 0.3)
 
