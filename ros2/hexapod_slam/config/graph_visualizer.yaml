@@ -1,0 +1,8 @@
+# graph_visualizer.yaml
+#
+# Purpose:
+#   Parameter file for the graph_visualizer node.
+#
+# Role:
+#   Defines RViz marker scales, label display options, topic names,
+#   and visualization toggles for nodes, edges, frontiers, and active targets.

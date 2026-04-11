@@ -1,0 +1,17 @@
+# maze_graph_builder.yaml
+#
+# Purpose:
+#   Parameter file for the maze_graph_builder node.
+#
+# Role:
+#   Defines map processing thresholds, node/edge extraction settings,
+#   frontier behavior, frame names, and update rates.
+#
+# Main parameter groups:
+#   - topic names
+#   - frame names
+#   - occupancy thresholds
+#   - obstacle inflation
+#   - node merge distances
+#   - corner / junction / dead-end detection settings
+#   - frontier thresholds

@@ -1,0 +1,36 @@
+# maze_graph_planner.yaml
+#
+# Purpose:
+#   Parameter file for the maze_graph_planner node.
+#
+# Role:
+#   Defines the exploration strategy and scoring behavior for choosing
+#   the next graph edge or target node.
+#
+# Supported planning strategies:
+#   - dfs:
+#       Depth-first search. Prefer exploring one branch fully before
+#       backtracking. Good default for complete maze traversal.
+#   - bfs:
+#       Breadth-first search. Prefer exploring nearby unexplored branches
+#       first. Useful for more uniform outward expansion.
+#
+# Main parameter groups:
+#   - planner rate
+#   - exploration strategy
+#   - revisit penalties
+#   - unexplored branch rewards
+#   - target tolerances
+#   - blocked edge handling
+#
+# Example key parameters:
+#   planner_rate_hz: 2.0
+#   strategy: "dfs"   # supported: "dfs", "bfs"
+#   target_reached_distance_m: 0.15
+#   current_node_snap_distance_m: 0.20
+#   blocked_edge_retry_limit: 2
+#   blocked_edge_cooldown_sec: 10.0
+#   revisit_penalty_gain: 1.0
+#   unexplored_bonus_gain: 5.0
+#   heading_alignment_gain: 0.5
+#   backtrack_penalty_gain: 0.5
