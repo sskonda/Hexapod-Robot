@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
@@ -160,10 +159,7 @@ class CalibrationNode(Node):
     def __init__(self):
         super().__init__('calibration')
 
-        share_dir = Path(get_package_share_directory('hexapod_locomotion'))
-        default_yaml = str(share_dir / 'config' / 'servo_calibration.yaml')
-
-        self.declare_parameter('calibration_file', default_yaml)
+        self.declare_parameter('calibration_file', '/home/snail/ros2_ws/install/hexapod_locomotion/share/hexapod_locomotion/config/servo_calibration.yaml')
         self.declare_parameter('dry_run', False)
         self.declare_parameter('step_small', 1.0)
         self.declare_parameter('step_large', 5.0)
