@@ -93,7 +93,6 @@ class LocomotionNode(Node):
         self.declare_parameter('max_pitch_deg', 15.0)
         self.declare_parameter('max_yaw_deg', 15.0)
         self.declare_parameter('yaw_correction_gain', -0.05)
-        self.declare_parameter('lateral_trim_mps', 0.0)
 
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
@@ -115,7 +114,6 @@ class LocomotionNode(Node):
         self.max_pitch_deg = max(0.0, float(self.get_parameter('max_pitch_deg').value))
         self.max_yaw_deg = max(0.0, float(self.get_parameter('max_yaw_deg').value))
         self.yaw_correction_gain = float(self.get_parameter('yaw_correction_gain').value)
-        self.lateral_trim_mps = float(self.get_parameter('lateral_trim_mps').value)
 
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
@@ -311,15 +309,7 @@ class LocomotionNode(Node):
             correction = -self.imu_yaw_rate_rps * self.yaw_correction_gain
             yaw_rate = clamp(correction, -self.max_yaw_rate_rad_s * 0.3, self.max_yaw_rate_rad_s * 0.3)
 
-        # Apply lateral trim to cancel consistent mechanical bias (e.g. coxa servo offset).
-        # Positive = left, negative = right in ROS convention.
-        linear_y = clamp(
-            self.cmd_linear_y_mps + self.lateral_trim_mps,
-            -self.max_lateral_speed_mps,
-            self.max_lateral_speed_mps,
-        )
-
-        return self.cmd_linear_x_mps, linear_y, yaw_rate
+        return self.cmd_linear_x_mps, self.cmd_linear_y_mps, yaw_rate
 
     def motion_is_zero(self, motion):
         return all(abs(value) < 1e-6 for value in motion)
