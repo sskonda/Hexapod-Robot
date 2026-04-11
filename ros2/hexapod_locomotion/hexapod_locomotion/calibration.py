@@ -23,8 +23,16 @@ def map_value(value, from_low, from_high, to_low, to_high):
     return (to_high - to_low) * (value - from_low) / (from_high - from_low) + to_low
 
 
+_tty_out = open('/dev/tty', 'w')
+
+
+def tty_print(text):
+    _tty_out.write(text)
+    _tty_out.flush()
+
+
 def clear_screen():
-    print('\x1b[2J\x1b[H', end='')
+    tty_print('\x1b[2J\x1b[H')
 
 
 class PCA9685:
@@ -264,7 +272,7 @@ class CalibrationNode(Node):
         if self.dry_run:
             lines.extend(['', 'Dry-run mode is active. No hardware commands are being sent.'])
         lines.extend(['', f'Status: {self.status_message}'])
-        print('\n'.join(lines), flush=True)
+        tty_print('\r\n'.join(lines) + '\r\n')
 
     def run(self):
         self.apply_pose()
