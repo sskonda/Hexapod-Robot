@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import rclpy
 from geometry_msgs.msg import Twist, Vector3
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, JointState
 
@@ -36,6 +37,9 @@ class GaitCycleState:
     baseline_points: list
     points: list
     step_index: int = 0
+    odom_vx_mps: float = 0.0
+    odom_vy_mps: float = 0.0
+    odom_vtheta_rps: float = 0.0
 
 
 def clamp(value, min_value, max_value):
@@ -124,7 +128,12 @@ class LocomotionNode(Node):
         self.last_invalid_warn_time = 0.0
         self.gait_state = None
 
+        self.odom_x_m = 0.0
+        self.odom_y_m = 0.0
+        self.odom_theta_rad = 0.0
+
         self.target_publisher = self.create_publisher(JointState, 'servo_targets', 10)
+        self.odom_publisher = self.create_publisher(Odometry, 'odom', 10)
 
         self.cmd_vel_subscription = self.create_subscription(
             Twist,
@@ -194,17 +203,49 @@ class LocomotionNode(Node):
         if self.motion_is_zero(motion):
             self.gait_state = None
             self.publish_points(stance_points)
-            return
+        else:
+            if self.gait_state is None or self.gait_state.step_index >= self.gait_state.total_steps:
+                self.gait_state = self.start_gait_cycle(stance_points, motion)
 
-        if self.gait_state is None or self.gait_state.step_index >= self.gait_state.total_steps:
-            self.gait_state = self.start_gait_cycle(stance_points, motion)
+            if self.gait_state is None:
+                self.publish_points(stance_points)
+            else:
+                self.advance_gait_cycle(self.gait_state)
+                self.publish_points(self.gait_state.points)
 
-        if self.gait_state is None:
-            self.publish_points(stance_points)
-            return
+        self._publish_odometry()
 
-        self.advance_gait_cycle(self.gait_state)
-        self.publish_points(self.gait_state.points)
+    def _publish_odometry(self):
+        dt = 1.0 / self.control_rate_hz
+
+        if self.gait_state is not None:
+            vx = self.gait_state.odom_vx_mps
+            vy = self.gait_state.odom_vy_mps
+            vtheta = self.gait_state.odom_vtheta_rps
+        else:
+            vx = vy = vtheta = 0.0
+
+        # Rotate body-frame velocity into world frame and integrate position
+        cos_h = math.cos(self.odom_theta_rad)
+        sin_h = math.sin(self.odom_theta_rad)
+        self.odom_x_m += (vx * cos_h - vy * sin_h) * dt
+        self.odom_y_m += (vx * sin_h + vy * cos_h) * dt
+        self.odom_theta_rad += vtheta * dt
+
+        msg = Odometry()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'odom'
+        msg.child_frame_id = 'base_link'
+        msg.pose.pose.position.x = self.odom_x_m
+        msg.pose.pose.position.y = self.odom_y_m
+        # Quaternion from yaw only: x=0, y=0, z=sin(θ/2), w=cos(θ/2)
+        msg.pose.pose.orientation.z = math.sin(self.odom_theta_rad / 2.0)
+        msg.pose.pose.orientation.w = math.cos(self.odom_theta_rad / 2.0)
+        # Twist in body frame
+        msg.twist.twist.linear.x = vx
+        msg.twist.twist.linear.y = vy
+        msg.twist.twist.angular.z = vtheta
+        self.odom_publisher.publish(msg)
 
     def active_motion_command(self):
         age_sec = (self.get_clock().now() - self.last_motion_cmd_time).nanoseconds / 1e9
@@ -333,6 +374,9 @@ class LocomotionNode(Node):
             planar_delta_mm=planar_delta_mm,
             baseline_points=copy.deepcopy(stance_points),
             points=points,
+            odom_vx_mps=stride_x_mm * self.control_rate_hz / (total_steps * 1000.0),
+            odom_vy_mps=stride_y_mm * self.control_rate_hz / (total_steps * 1000.0),
+            odom_vtheta_rps=math.radians(turn_deg) * self.control_rate_hz / total_steps,
         )
 
     def advance_gait_cycle(self, gait_state: GaitCycleState):

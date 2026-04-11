@@ -12,6 +12,7 @@ class MotionSegment:
     name: str
     linear_x_mps: float
     duration_sec: float
+    linear_y_mps: float = 0.0
 
 
 class PathPlanNode(Node):
@@ -24,6 +25,8 @@ class PathPlanNode(Node):
         self.declare_parameter('forward_distance_m', 0.5)
         self.declare_parameter('backward_distance_m', 0.5)
         self.declare_parameter('linear_speed_mps', 0.05)
+        self.declare_parameter('path_type', 'linear')
+        self.declare_parameter('square_side_m', 0.5)
 
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
         self.publish_rate_hz = max(1.0, float(self.get_parameter('publish_rate_hz').value))
@@ -31,6 +34,8 @@ class PathPlanNode(Node):
         self.forward_distance_m = max(0.0, float(self.get_parameter('forward_distance_m').value))
         self.backward_distance_m = max(0.0, float(self.get_parameter('backward_distance_m').value))
         self.linear_speed_mps = max(0.001, abs(float(self.get_parameter('linear_speed_mps').value)))
+        self.path_type = str(self.get_parameter('path_type').value).strip().lower()
+        self.square_side_m = max(0.001, float(self.get_parameter('square_side_m').value))
 
         self.publisher = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.segments = self.build_segments()
@@ -41,16 +46,27 @@ class PathPlanNode(Node):
 
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self.control_loop)
 
-        self.get_logger().info(
-            'Path planner ready: startup delay '
-            f'{self.startup_delay_sec:.2f}s, forward {self.forward_distance_m:.2f}m, '
-            f'backward {self.backward_distance_m:.2f}m at {self.linear_speed_mps:.2f}m/s'
-        )
+        if self.path_type == 'square':
+            self.get_logger().info(
+                f'Path planner ready: square path, side={self.square_side_m:.2f}m '
+                f'at {self.linear_speed_mps:.2f}m/s (crab-style, no yaw rotation)'
+            )
+        else:
+            self.get_logger().info(
+                'Path planner ready: startup delay '
+                f'{self.startup_delay_sec:.2f}s, forward {self.forward_distance_m:.2f}m, '
+                f'backward {self.backward_distance_m:.2f}m at {self.linear_speed_mps:.2f}m/s'
+            )
 
         if not self.segments:
             self.get_logger().warn('No motion segments configured. The node will publish stop and exit.')
 
     def build_segments(self):
+        if self.path_type == 'square':
+            return self._build_square_segments()
+        return self._build_linear_segments()
+
+    def _build_linear_segments(self):
         segments = []
         if self.forward_distance_m > 0.0:
             segments.append(
@@ -70,6 +86,18 @@ class PathPlanNode(Node):
             )
         return segments
 
+    def _build_square_segments(self):
+        speed = self.linear_speed_mps
+        duration = self.square_side_m / speed
+        # Walk a square without rotating: forward, strafe right, backward, strafe left.
+        # linear.y positive = left in ROS convention, so strafe right uses negative y.
+        return [
+            MotionSegment(name='forward',      linear_x_mps=speed,  linear_y_mps=0.0,   duration_sec=duration),
+            MotionSegment(name='strafe_right', linear_x_mps=0.0,    linear_y_mps=-speed, duration_sec=duration),
+            MotionSegment(name='backward',     linear_x_mps=-speed, linear_y_mps=0.0,   duration_sec=duration),
+            MotionSegment(name='strafe_left',  linear_x_mps=0.0,    linear_y_mps=speed,  duration_sec=duration),
+        ]
+
     def elapsed_since(self, start_time):
         return (self.get_clock().now() - start_time).nanoseconds / 1e9
 
@@ -78,13 +106,14 @@ class PathPlanNode(Node):
             return self.segments[self.current_segment_index]
         return None
 
-    def publish_linear_velocity(self, linear_x_mps):
+    def publish_velocity(self, linear_x_mps, linear_y_mps=0.0):
         msg = Twist()
         msg.linear.x = float(linear_x_mps)
+        msg.linear.y = float(linear_y_mps)
         self.publisher.publish(msg)
 
     def publish_stop(self):
-        self.publish_linear_velocity(0.0)
+        self.publish_velocity(0.0, 0.0)
 
     def start_next_segment(self):
         self.current_segment_index += 1
@@ -97,7 +126,7 @@ class PathPlanNode(Node):
 
         self.get_logger().info(
             f'Starting segment "{segment.name}" for {segment.duration_sec:.2f}s '
-            f'at {segment.linear_x_mps:.2f}m/s'
+            f'(vx={segment.linear_x_mps:.2f}, vy={segment.linear_y_mps:.2f} m/s)'
         )
 
     def finish_plan(self):
@@ -133,7 +162,7 @@ class PathPlanNode(Node):
             self.start_next_segment()
             return
 
-        self.publish_linear_velocity(segment.linear_x_mps)
+        self.publish_velocity(segment.linear_x_mps, segment.linear_y_mps)
 
 
 def main(args=None):
