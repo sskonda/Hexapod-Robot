@@ -92,7 +92,7 @@ class LocomotionNode(Node):
         self.declare_parameter('max_roll_deg', 15.0)
         self.declare_parameter('max_pitch_deg', 15.0)
         self.declare_parameter('max_yaw_deg', 15.0)
-        self.declare_parameter('yaw_correction_gain', 0.0
+        self.declare_parameter('yaw_correction_gain', 0.0)
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
         self.gait = str(self.get_parameter('gait').value).strip().lower()
