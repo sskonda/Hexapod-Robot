@@ -1,19 +1,19 @@
 servo_offsets:
-  leg1_coxa: -11.0
-  leg1_femur: 25.0
+  leg1_coxa: -18.0
+  leg1_femur: 35.0
   leg1_tibia: 120.0
-  leg2_coxa: -1.0
-  leg2_femur: 22.0
+  leg2_coxa: 6.0
+  leg2_femur: 33.0
   leg2_tibia: 115.0
-  leg3_coxa: -6.0
-  leg3_femur: 45.0
-  leg3_tibia: 120.0
-  leg4_coxa: 7.0
-  leg4_femur: -24.0
-  leg4_tibia: -109.0
-  leg5_coxa: -1.0
-  leg5_femur: -44.0
-  leg5_tibia: -113.0
-  leg6_coxa: 2.0
-  leg6_femur: -43.0
-  leg6_tibia: -101.0
+  leg3_coxa: -1.0
+  leg3_femur: 40.0
+  leg3_tibia: 110.0
+  leg4_coxa: 10.0
+  leg4_femur: -27.0
+  leg4_tibia: -100.0
+  leg5_coxa: -4.0
+  leg5_femur: -35.0
+  leg5_tibia: -110.0
+  leg6_coxa: 7.0
+  leg6_femur: -32.0
+  leg6_tibia: -94.0
