@@ -36,6 +36,7 @@ def generate_launch_description():
     explorer_min_gap_width_deg = LaunchConfiguration('explorer_min_gap_width_deg')
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
     explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
+    explorer_forward_bias_weight = LaunchConfiguration('explorer_forward_bias_weight')
     crab_follower_speed_mps = LaunchConfiguration('crab_follower_speed_mps')
     crab_follower_goal_tolerance_m = LaunchConfiguration('crab_follower_goal_tolerance_m')
 
@@ -107,17 +108,17 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_stop_distance_m',
-            default_value='0.55',
+            default_value='0.65',
             description='Minimum allowed lidar clearance before stopping and replanning.',
         ),
         DeclareLaunchArgument(
             'explorer_open_distance_m',
-            default_value='0.90',
+            default_value='0.80',
             description='Preferred clearance used to score open gaps.',
         ),
         DeclareLaunchArgument(
             'explorer_goal_backoff_m',
-            default_value='0.35',
+            default_value='0.45',
             description='Distance kept between the rolling goal point and the detected obstacle.',
         ),
         DeclareLaunchArgument(
@@ -142,7 +143,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_clearance_window_deg',
-            default_value='12.0',
+            default_value='15.0',
             description='Half-width of the lidar sector used to evaluate a candidate heading.',
         ),
         DeclareLaunchArgument(
@@ -159,6 +160,11 @@ def generate_launch_description():
             'explorer_max_replan_attempts',
             default_value='5',
             description='Number of consecutive obstacle stops before declaring a dead end and halting.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_forward_bias_weight',
+            default_value='1.5',
+            description='Bias toward selecting the forward heading on startup; 0.0 disables.',
         ),
         DeclareLaunchArgument(
             'crab_follower_speed_mps',
@@ -213,6 +219,7 @@ def generate_launch_description():
                 'min_gap_width_deg': explorer_min_gap_width_deg,
                 'reverse_avoidance_deg': explorer_reverse_avoidance_deg,
                 'max_replan_attempts': explorer_max_replan_attempts,
+                'forward_bias_weight': explorer_forward_bias_weight,
             }],
         ),
         Node(

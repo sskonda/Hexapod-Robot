@@ -10,8 +10,8 @@ maze_graph_builder:
     min_node_spacing_m: 0.30
     occupied_threshold: 50
     free_threshold: 20
-    inflation_radius_m: 0.12
-    robot_clearance_radius_m: 0.15
+    inflation_radius_m: 0.20
+    robot_clearance_radius_m: 0.20
     corner_angle_threshold_deg: 40.0
     probe_distance_m: 0.50
     candidate_grid_spacing_m: 0.20

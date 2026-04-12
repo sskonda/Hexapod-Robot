@@ -131,7 +131,19 @@ def generate_launch_description():
         package="hexapod_slam",
         executable="gap_following_explorer",
         name="gap_following_explorer",
-        parameters=[{"use_sim_time": use_sim_time}],
+        parameters=[{
+            "use_sim_time": use_sim_time,
+            # Stop further from walls to avoid collisions
+            "stop_distance_m": 0.65,
+            # More lenient gap threshold so robot finds a path in tight corridors
+            "open_distance_m": 0.80,
+            # Keep rolling goal further from the detected obstacle
+            "goal_backoff_m": 0.45,
+            # Wider clearance window catches walls approached at an angle
+            "clearance_window_deg": 15.0,
+            # Bias the robot to move forward on startup instead of picking a random gap
+            "forward_bias_weight": 1.5,
+        }],
         output="screen",
         condition=IfCondition(use_explorer),
     )

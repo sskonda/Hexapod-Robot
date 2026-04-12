@@ -44,11 +44,11 @@ Key parameters:
     - odom_timeout_sec: 1.0
 
     Local navigation thresholds:
-    - stop_distance_m: 0.55
+    - stop_distance_m: 0.65
         Minimum clearance before stopping and replanning.
-    - open_distance_m: 0.90
+    - open_distance_m: 0.80
         Preferred clearance threshold used when scoring open gaps.
-    - goal_backoff_m: 0.35
+    - goal_backoff_m: 0.45
         Distance to remain behind a detected obstacle.
     - max_goal_distance_m: 1.25
         Maximum forward goal distance.
@@ -60,9 +60,9 @@ Key parameters:
         Extra buffer added beyond the robot radius when evaluating wall clearance.
 
     Candidate scoring parameters:
-    - clearance_window_deg: 12.0
+    - clearance_window_deg: 15.0
         Half-window around a candidate heading used to evaluate minimum clearance.
-    - forward_bias_weight: 0.0
+    - forward_bias_weight: 1.5
         Positive values prefer forward-facing headings.
     - gap_width_weight: 0.20
         Reward for wider openings.
@@ -132,15 +132,15 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('decision_pause_sec', 0.75)
         self.declare_parameter('scan_timeout_sec', 1.0)
         self.declare_parameter('odom_timeout_sec', 1.0)
-        self.declare_parameter('stop_distance_m', 0.55)
-        self.declare_parameter('open_distance_m', 0.90)
-        self.declare_parameter('goal_backoff_m', 0.35)
+        self.declare_parameter('stop_distance_m', 0.65)
+        self.declare_parameter('open_distance_m', 0.80)
+        self.declare_parameter('goal_backoff_m', 0.45)
         self.declare_parameter('max_goal_distance_m', 1.25)
         self.declare_parameter('min_goal_distance_m', 0.20)
         self.declare_parameter('footprint_radius_m', 0.30)
         self.declare_parameter('wall_clearance_margin_m', 0.10)
-        self.declare_parameter('clearance_window_deg', 12.0)
-        self.declare_parameter('forward_bias_weight', 0.0)
+        self.declare_parameter('clearance_window_deg', 15.0)
+        self.declare_parameter('forward_bias_weight', 1.5)
         self.declare_parameter('gap_width_weight', 0.20)
         self.declare_parameter('reverse_penalty_weight', 1.50)
         self.declare_parameter('min_gap_width_deg', 18.0)
@@ -470,7 +470,9 @@ class GapFollowingExplorerNode(Node):
         if math.isinf(range_value):
             return scan.range_max
         if range_value < scan.range_min:
-            return None
+            # Obstacle is closer than sensor's minimum range — treat as range_min
+            # so it still registers as a near obstacle rather than being ignored.
+            return scan.range_min
         if range_value > scan.range_max:
             return scan.range_max
         return range_value
