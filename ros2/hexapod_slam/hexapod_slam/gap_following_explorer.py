@@ -147,6 +147,7 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('reverse_avoidance_deg', 70.0)
         self.declare_parameter('candidate_sample_count', 121)
         self.declare_parameter('max_replan_attempts', 5)
+        self.declare_parameter('max_yaw_drift_deg', 30.0)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
@@ -189,6 +190,9 @@ class GapFollowingExplorerNode(Node):
         )
         self.candidate_sample_count = max(12, int(self.get_parameter('candidate_sample_count').value))
         self.max_replan_attempts = max(1, int(self.get_parameter('max_replan_attempts').value))
+        self.max_yaw_drift_rad = math.radians(
+            max(5.0, float(self.get_parameter('max_yaw_drift_deg').value))
+        )
 
         self.path_publisher = self.create_publisher(Path, self.path_topic, 10)
         self.stop_point_publisher = self.create_publisher(PointStamped, self.stop_point_topic, 10)
@@ -223,8 +227,14 @@ class GapFollowingExplorerNode(Node):
         self.last_path_publish_time = None
         self.last_data_warn_time_sec = -1.0
 
-        # Dead-end detection: counts consecutive obstacle stops.  Resets to
-        # zero whenever a new heading is successfully committed.
+        # Position and yaw recorded when a heading is committed.
+        # Used to measure actual travel and detect unexpected yaw drift.
+        self.heading_committed_x_m = 0.0
+        self.heading_committed_y_m = 0.0
+        self.heading_committed_yaw_rad = 0.0
+
+        # Dead-end detection: counts consecutive stops where the robot made
+        # no meaningful progress.  Resets only when meaningful travel occurred.
         self.replan_attempts = 0
         self.mission_complete = False
 
@@ -263,6 +273,10 @@ class GapFollowingExplorerNode(Node):
             return
 
         if not self.data_is_ready():
+            # Sensor data went stale while the robot was moving — stop it
+            # so it does not coast blindly into a wall.
+            if self.active_heading_world_rad is not None:
+                self.publish_stop_path()
             return
 
         now = self.get_clock().now()
@@ -285,14 +299,27 @@ class GapFollowingExplorerNode(Node):
                 self.publish_stop_path()
                 return
 
-            # Successfully selected a new heading — reset the failure counter.
-            self.replan_attempts = 0
+            # Commit the new heading and record position/yaw for progress tracking.
             self.active_heading_world_rad = normalize_angle(self.odom_yaw_rad + selected.angle_rad)
+            self.heading_committed_x_m = self.odom_x_m
+            self.heading_committed_y_m = self.odom_y_m
+            self.heading_committed_yaw_rad = self.odom_yaw_rad
             self.get_logger().info(
                 f'Heading selected: {math.degrees(selected.angle_rad):.1f} deg in base frame, '
                 f'clearance {selected.clearance_m:.2f} m, gap width {math.degrees(selected.gap_width_rad):.1f} deg'
             )
             self.publish_active_path(selected.clearance_m)
+            return
+
+        # If the robot has drifted significantly from its committed heading
+        # (hexapod gait yaw drift), the forward clearance check is now looking
+        # at the wrong physical direction.  Force a replan to get a fresh heading.
+        yaw_drift = abs(normalize_angle(self.odom_yaw_rad - self.heading_committed_yaw_rad))
+        if yaw_drift > self.max_yaw_drift_rad:
+            self.get_logger().info(
+                f'Yaw drift {math.degrees(yaw_drift):.1f} deg exceeds {math.degrees(self.max_yaw_drift_rad):.0f} deg — replanning.'
+            )
+            self.handle_replan_stop(self.clearance_for_world_heading(self.active_heading_world_rad))
             return
 
         forward_clearance = self.clearance_for_world_heading(self.active_heading_world_rad)
@@ -338,10 +365,19 @@ class GapFollowingExplorerNode(Node):
         return (now - self.last_path_publish_time).nanoseconds / 1e9 >= self.path_publish_period_sec
 
     def handle_replan_stop(self, clearance_m: float):
-        self.replan_attempts += 1
+        dist_traveled = math.hypot(
+            self.odom_x_m - self.heading_committed_x_m,
+            self.odom_y_m - self.heading_committed_y_m,
+        )
+        if dist_traveled >= self.min_goal_distance_m:
+            # Robot made real progress before stopping — fresh start on the counter.
+            self.replan_attempts = 0
+        else:
+            # Immediately blocked without meaningful travel — count the failure.
+            self.replan_attempts += 1
         self.get_logger().info(
-            f'Obstacle ahead at {clearance_m:.2f} m — stop #{self.replan_attempts}. '
-            'Publishing decision point and searching for a new gap.'
+            f'Obstacle at {clearance_m:.2f} m (traveled {dist_traveled:.2f} m) — '
+            f'stop #{self.replan_attempts}. Searching for a new gap.'
         )
         self.last_committed_heading_world_rad = self.active_heading_world_rad
         self.active_heading_world_rad = None
@@ -389,8 +425,14 @@ class GapFollowingExplorerNode(Node):
             if gap_width_m < self.minimum_gap_width_m:
                 continue
 
-            score = clearance_m
-            score += self.gap_width_weight * gap_width_rad
+            # Cap score components so range-max blind spots (LiDAR returning inf
+            # behind the robot's own legs or at specular/transparent surfaces)
+            # do not overwhelm genuine corridors.  The robot cannot benefit from
+            # clearance beyond what it will actually travel anyway.
+            score_clearance = min(clearance_m, self.max_goal_distance_m + self.goal_backoff_m)
+            score_gap = min(gap_width_rad, math.pi)
+            score = score_clearance
+            score += self.gap_width_weight * score_gap
             score += self.forward_bias_weight * math.cos(angle_rad)
 
             if incoming_angle_base_rad is not None:

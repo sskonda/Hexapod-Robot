@@ -19,6 +19,10 @@ def generate_launch_description():
     odom_frame = LaunchConfiguration('odom_frame')
     base_frame = LaunchConfiguration('base_frame')
     enable_explorer = LaunchConfiguration('enable_explorer')
+    laser_frame = LaunchConfiguration('laser_frame')
+    laser_x = LaunchConfiguration('laser_x')
+    laser_y = LaunchConfiguration('laser_y')
+    laser_z = LaunchConfiguration('laser_z')
     odom_topic = LaunchConfiguration('odom_topic')
     path_topic = LaunchConfiguration('path_topic')
     stop_point_topic = LaunchConfiguration('stop_point_topic')
@@ -75,6 +79,26 @@ def generate_launch_description():
             'enable_explorer',
             default_value='true',
             description='Launch the lidar gap-following exploration node.',
+        ),
+        DeclareLaunchArgument(
+            'laser_frame',
+            default_value='laser',
+            description='TF frame of the LiDAR sensor — must match frame_id in /scan messages.',
+        ),
+        DeclareLaunchArgument(
+            'laser_x',
+            default_value='0.0',
+            description='X offset of LiDAR from base_link in metres (forward +).',
+        ),
+        DeclareLaunchArgument(
+            'laser_y',
+            default_value='0.0',
+            description='Y offset of LiDAR from base_link in metres (left +).',
+        ),
+        DeclareLaunchArgument(
+            'laser_z',
+            default_value='0.0',
+            description='Z offset of LiDAR from base_link in metres (up +).',
         ),
         DeclareLaunchArgument(
             'odom_topic',
@@ -175,6 +199,16 @@ def generate_launch_description():
             'crab_follower_goal_tolerance_m',
             default_value='0.08',
             description='Distance from the rolling goal at which the follower considers itself arrived.',
+        ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='base_link_to_laser',
+            arguments=[
+                '--x', laser_x, '--y', laser_y, '--z', laser_z,
+                '--roll', '0', '--pitch', '0', '--yaw', '0',
+                '--frame-id', base_frame, '--child-frame-id', laser_frame,
+            ],
         ),
         Node(
             package='slam_toolbox',
