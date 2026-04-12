@@ -54,6 +54,10 @@ Key parameters:
         Maximum forward goal distance.
     - min_goal_distance_m: 0.20
         Minimum forward goal distance when space is tight.
+    - footprint_radius_m: 0.30
+        Assumed circular robot radius used to keep the body away from walls.
+    - wall_clearance_margin_m: 0.10
+        Extra buffer added beyond the robot radius when evaluating wall clearance.
 
     Candidate scoring parameters:
     - clearance_window_deg: 12.0
@@ -133,6 +137,8 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('goal_backoff_m', 0.35)
         self.declare_parameter('max_goal_distance_m', 1.25)
         self.declare_parameter('min_goal_distance_m', 0.20)
+        self.declare_parameter('footprint_radius_m', 0.30)
+        self.declare_parameter('wall_clearance_margin_m', 0.10)
         self.declare_parameter('clearance_window_deg', 12.0)
         self.declare_parameter('forward_bias_weight', 0.0)
         self.declare_parameter('gap_width_weight', 0.20)
@@ -151,11 +157,24 @@ class GapFollowingExplorerNode(Node):
         self.decision_pause_sec = max(0.0, float(self.get_parameter('decision_pause_sec').value))
         self.scan_timeout_sec = max(0.1, float(self.get_parameter('scan_timeout_sec').value))
         self.odom_timeout_sec = max(0.1, float(self.get_parameter('odom_timeout_sec').value))
-        self.stop_distance_m = max(0.05, float(self.get_parameter('stop_distance_m').value))
-        self.open_distance_m = max(self.stop_distance_m, float(self.get_parameter('open_distance_m').value))
-        self.goal_backoff_m = max(0.0, float(self.get_parameter('goal_backoff_m').value))
+        configured_stop_distance_m = max(0.05, float(self.get_parameter('stop_distance_m').value))
+        configured_open_distance_m = max(
+            configured_stop_distance_m,
+            float(self.get_parameter('open_distance_m').value),
+        )
+        configured_goal_backoff_m = max(0.0, float(self.get_parameter('goal_backoff_m').value))
         self.max_goal_distance_m = max(0.05, float(self.get_parameter('max_goal_distance_m').value))
         self.min_goal_distance_m = max(0.0, float(self.get_parameter('min_goal_distance_m').value))
+        self.footprint_radius_m = max(0.0, float(self.get_parameter('footprint_radius_m').value))
+        self.wall_clearance_margin_m = max(
+            0.0,
+            float(self.get_parameter('wall_clearance_margin_m').value),
+        )
+        self.minimum_wall_clearance_m = self.footprint_radius_m + self.wall_clearance_margin_m
+        self.minimum_gap_width_m = 2.0 * self.minimum_wall_clearance_m
+        self.stop_distance_m = max(configured_stop_distance_m, self.minimum_wall_clearance_m)
+        self.open_distance_m = max(configured_open_distance_m, self.stop_distance_m)
+        self.goal_backoff_m = max(configured_goal_backoff_m, self.minimum_wall_clearance_m)
         self.clearance_window_rad = math.radians(
             max(1.0, float(self.get_parameter('clearance_window_deg').value))
         )
@@ -213,6 +232,11 @@ class GapFollowingExplorerNode(Node):
         self.get_logger().info(
             f'Listening to {self.scan_topic} and {self.odom_topic}, publishing path on {self.path_topic} '
             f'and stop points on {self.stop_point_topic}'
+        )
+        self.get_logger().info(
+            f'Footprint radius {self.footprint_radius_m:.2f} m with {self.wall_clearance_margin_m:.2f} m '
+            f'wall buffer -> stop_distance={self.stop_distance_m:.2f} m, '
+            f'goal_backoff={self.goal_backoff_m:.2f} m, min_gap_width={self.minimum_gap_width_m:.2f} m'
         )
 
     def scan_callback(self, msg: LaserScan):
@@ -361,6 +385,10 @@ class GapFollowingExplorerNode(Node):
                 continue
 
             gap_width_rad = gap_width_beams * angle_increment
+            gap_width_m = self.gap_width_m(clearance_m, gap_width_rad)
+            if gap_width_m < self.minimum_gap_width_m:
+                continue
+
             score = clearance_m
             score += self.gap_width_weight * gap_width_rad
             score += self.forward_bias_weight * math.cos(angle_rad)
@@ -429,6 +457,11 @@ class GapFollowingExplorerNode(Node):
                 total += 1
                 index += direction
         return total
+
+    def gap_width_m(self, clearance_m: float, gap_width_rad: float) -> float:
+        if clearance_m <= 0.0 or gap_width_rad <= 0.0:
+            return 0.0
+        return 2.0 * clearance_m * math.sin(gap_width_rad / 2.0)
 
     def valid_range(self, scan: LaserScan, index: int) -> Optional[float]:
         range_value = scan.ranges[index]

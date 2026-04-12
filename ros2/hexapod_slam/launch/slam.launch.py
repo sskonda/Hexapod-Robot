@@ -30,6 +30,8 @@ def generate_launch_description():
     explorer_goal_backoff_m = LaunchConfiguration('explorer_goal_backoff_m')
     explorer_max_goal_distance_m = LaunchConfiguration('explorer_max_goal_distance_m')
     explorer_min_goal_distance_m = LaunchConfiguration('explorer_min_goal_distance_m')
+    explorer_footprint_radius_m = LaunchConfiguration('explorer_footprint_radius_m')
+    explorer_wall_clearance_margin_m = LaunchConfiguration('explorer_wall_clearance_margin_m')
     explorer_clearance_window_deg = LaunchConfiguration('explorer_clearance_window_deg')
     explorer_min_gap_width_deg = LaunchConfiguration('explorer_min_gap_width_deg')
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
@@ -129,6 +131,16 @@ def generate_launch_description():
             description='Minimum distance for the rolling path target when space is tight.',
         ),
         DeclareLaunchArgument(
+            'explorer_footprint_radius_m',
+            default_value='0.30',
+            description='Assumed circular robot radius used by the explorer for wall clearance.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_clearance_margin_m',
+            default_value='0.10',
+            description='Extra wall buffer added beyond the robot radius.',
+        ),
+        DeclareLaunchArgument(
             'explorer_clearance_window_deg',
             default_value='12.0',
             description='Half-width of the lidar sector used to evaluate a candidate heading.',
@@ -195,6 +207,8 @@ def generate_launch_description():
                 'goal_backoff_m': explorer_goal_backoff_m,
                 'max_goal_distance_m': explorer_max_goal_distance_m,
                 'min_goal_distance_m': explorer_min_goal_distance_m,
+                'footprint_radius_m': explorer_footprint_radius_m,
+                'wall_clearance_margin_m': explorer_wall_clearance_margin_m,
                 'clearance_window_deg': explorer_clearance_window_deg,
                 'min_gap_width_deg': explorer_min_gap_width_deg,
                 'reverse_avoidance_deg': explorer_reverse_avoidance_deg,
