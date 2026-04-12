@@ -279,7 +279,6 @@ class MazeMissionNode(Node):
     def _tick(self):
         dispatch = {
             S_WAIT_FOR_DATA: self._state_wait_for_data,
-            S_INIT_AXIS:     self._state_init_axis,
             S_AT_NODE:       self._state_at_node,
             S_CLASSIFYING:   self._state_classifying,
             S_PLANNING:      self._state_planning,
@@ -449,40 +448,19 @@ class MazeMissionNode(Node):
 
     def _state_wait_for_data(self):
         if self._data_ready():
-            self.get_logger().info('Sensor data ready — initialising graph.')
-            # Create graph with current position as origin (grid 0,0)
+            # The direction the robot is currently facing defines 'North'.
+            # Place the robot pointing the intended forward direction before launching.
+            self._north_yaw = self._odom_yaw
+            self.get_logger().info(
+                f'Sensor data ready — North fixed at yaw={math.degrees(self._north_yaw):.1f} deg. '
+                'Initialising graph.'
+            )
             self._graph = GridGraph(origin_x_m=self._odom_x, origin_y_m=self._odom_y)
             self._current_ij = (0, 0)
             self._graph.mark_visited(0, 0)
-            self._set_state(S_INIT_AXIS)
-
-    # ======================================================================
-    # State: INIT_AXIS
-    # ======================================================================
-
-    def _state_init_axis(self):
-        """
-        Wait for the operator (or gap_following_explorer) to start moving the
-        robot.  The direction of first significant movement defines 'North'.
-        Meanwhile publish a stop path.
-        """
-        if not self._data_ready():
-            return
-
-        # Check if robot has moved enough to establish an axis
-        origin_x, origin_y = self._node_center_xy((0, 0))
-        dist = math.hypot(self._odom_x - origin_x, self._odom_y - origin_y)
-        if dist > self._center_tol * 2.0:
-            # The direction the robot is currently facing defines North
-            self._north_yaw = self._odom_yaw
-            self.get_logger().info(
-                f'North axis fixed at yaw={math.degrees(self._north_yaw):.1f} deg'
-            )
             self._set_state(S_AT_NODE)
-        else:
-            self._publish_stop_path()
 
-    # ======================================================================
+# ======================================================================
     # State: AT_NODE
     # ======================================================================
 
