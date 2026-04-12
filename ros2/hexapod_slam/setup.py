@@ -33,6 +33,7 @@ setup(
             'maze_graph_planner = hexapod_slam.maze_graph_planner:main',
             'maze_graph_visualizer = hexapod_slam.maze_graph_visualizer:main',
             'path_to_local_goal = hexapod_slam.path_to_local_goal:main',
+            'maze_mission = hexapod_slam.maze_mission:main',
         ],
     },
 )
