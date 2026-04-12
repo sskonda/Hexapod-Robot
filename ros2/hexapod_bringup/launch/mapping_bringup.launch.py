@@ -5,7 +5,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 
 
 def include_lidar_launch(context, *args, **kwargs):
@@ -56,6 +56,7 @@ def generate_launch_description():
     core_launch = locomotion_share_dir / 'launch' / 'hexapod_core.launch.py'
     slam_launch = slam_share_dir / 'launch' / 'slam.launch.py'
     default_slam_params = slam_share_dir / 'config' / 'slam_toolbox.yaml'
+    default_ekf_params = slam_share_dir / 'config' / 'ekf.yaml'
 
     use_locomotion = LaunchConfiguration('use_locomotion')
     servo_dry_run = LaunchConfiguration('servo_dry_run')
@@ -77,12 +78,46 @@ def generate_launch_description():
     explorer_goal_backoff_m = LaunchConfiguration('explorer_goal_backoff_m')
     explorer_max_goal_distance_m = LaunchConfiguration('explorer_max_goal_distance_m')
     explorer_min_goal_distance_m = LaunchConfiguration('explorer_min_goal_distance_m')
+    explorer_footprint_radius_m = LaunchConfiguration('explorer_footprint_radius_m')
+    explorer_wall_clearance_margin_m = LaunchConfiguration('explorer_wall_clearance_margin_m')
     explorer_clearance_window_deg = LaunchConfiguration('explorer_clearance_window_deg')
     explorer_min_gap_width_deg = LaunchConfiguration('explorer_min_gap_width_deg')
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
     explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
+    explorer_forward_bias_weight = LaunchConfiguration('explorer_forward_bias_weight')
+    explorer_max_yaw_drift_deg = LaunchConfiguration('explorer_max_yaw_drift_deg')
+    explorer_min_progress_m = LaunchConfiguration('explorer_min_progress_m')
+    explorer_recovery_backup_m = LaunchConfiguration('explorer_recovery_backup_m')
     crab_follower_speed_mps = LaunchConfiguration('crab_follower_speed_mps')
     crab_follower_goal_tolerance_m = LaunchConfiguration('crab_follower_goal_tolerance_m')
+    crab_follower_yaw_correction_gain = LaunchConfiguration('crab_follower_yaw_correction_gain')
+    crab_follower_max_angular_speed_rad_s = LaunchConfiguration(
+        'crab_follower_max_angular_speed_rad_s'
+    )
+    crab_follower_yaw_deadband_deg = LaunchConfiguration('crab_follower_yaw_deadband_deg')
+    enable_robot_localization = LaunchConfiguration('enable_robot_localization')
+    robot_localization_params_file = LaunchConfiguration('robot_localization_params_file')
+    raw_odom_topic = LaunchConfiguration('raw_odom_topic')
+    imu_topic = LaunchConfiguration('imu_topic')
+    laser_frame = LaunchConfiguration('laser_frame')
+    laser_x = LaunchConfiguration('laser_x')
+    laser_y = LaunchConfiguration('laser_y')
+    laser_z = LaunchConfiguration('laser_z')
+    laser_roll = LaunchConfiguration('laser_roll')
+    laser_pitch = LaunchConfiguration('laser_pitch')
+    laser_yaw = LaunchConfiguration('laser_yaw')
+    safety_stop_distance_m = LaunchConfiguration('safety_stop_distance_m')
+    safety_slowdown_distance_m = LaunchConfiguration('safety_slowdown_distance_m')
+    safety_clearance_window_deg = LaunchConfiguration('safety_clearance_window_deg')
+    locomotion_odom_topic = LaunchConfiguration('locomotion_odom_topic')
+    locomotion_publish_odom_tf = LaunchConfiguration('locomotion_publish_odom_tf')
+    imu_frame = LaunchConfiguration('imu_frame')
+    imu_x = LaunchConfiguration('imu_x')
+    imu_y = LaunchConfiguration('imu_y')
+    imu_z = LaunchConfiguration('imu_z')
+    imu_roll = LaunchConfiguration('imu_roll')
+    imu_pitch = LaunchConfiguration('imu_pitch')
+    imu_yaw = LaunchConfiguration('imu_yaw')
     odom_topic = LaunchConfiguration('odom_topic')
 
     return LaunchDescription([
@@ -167,6 +202,106 @@ def generate_launch_description():
             description='Odometry topic consumed by the exploration node.',
         ),
         DeclareLaunchArgument(
+            'raw_odom_topic',
+            default_value='odom/raw',
+            description='Raw locomotion odom topic used by robot_localization when enabled.',
+        ),
+        DeclareLaunchArgument(
+            'imu_topic',
+            default_value='/imu/data_raw',
+            description='IMU topic fused by robot_localization when enabled.',
+        ),
+        DeclareLaunchArgument(
+            'enable_robot_localization',
+            default_value='false',
+            description='Launch robot_localization to fuse raw odom + IMU into odom.',
+        ),
+        DeclareLaunchArgument(
+            'robot_localization_params_file',
+            default_value=str(default_ekf_params),
+            description='Full path to the robot_localization EKF parameter file.',
+        ),
+        DeclareLaunchArgument(
+            'laser_frame',
+            default_value='laser',
+            description='TF frame of the LiDAR sensor.',
+        ),
+        DeclareLaunchArgument(
+            'laser_x',
+            default_value='0.0',
+            description='X offset of the LiDAR from base_link in metres.',
+        ),
+        DeclareLaunchArgument(
+            'laser_y',
+            default_value='0.0',
+            description='Y offset of the LiDAR from base_link in metres.',
+        ),
+        DeclareLaunchArgument(
+            'laser_z',
+            default_value='0.0',
+            description='Z offset of the LiDAR from base_link in metres.',
+        ),
+        DeclareLaunchArgument(
+            'laser_roll',
+            default_value='0.0',
+            description='Roll offset of the LiDAR from base_link in radians.',
+        ),
+        DeclareLaunchArgument(
+            'laser_pitch',
+            default_value='0.0',
+            description='Pitch offset of the LiDAR from base_link in radians.',
+        ),
+        DeclareLaunchArgument(
+            'laser_yaw',
+            default_value='0.0',
+            description='Yaw offset of the LiDAR from base_link in radians.',
+        ),
+        DeclareLaunchArgument(
+            'locomotion_odom_topic',
+            default_value='odom',
+            description='Odometry topic published by locomotion. Use odom/raw when enabling robot_localization.',
+        ),
+        DeclareLaunchArgument(
+            'locomotion_publish_odom_tf',
+            default_value='true',
+            description='Whether locomotion publishes odom->base_link TF directly.',
+        ),
+        DeclareLaunchArgument(
+            'imu_frame',
+            default_value='imu_link',
+            description='Frame id used by the IMU publisher and base_link->imu static TF.',
+        ),
+        DeclareLaunchArgument(
+            'imu_x',
+            default_value='0.0',
+            description='X offset of the IMU from base_link in metres.',
+        ),
+        DeclareLaunchArgument(
+            'imu_y',
+            default_value='0.0',
+            description='Y offset of the IMU from base_link in metres.',
+        ),
+        DeclareLaunchArgument(
+            'imu_z',
+            default_value='0.0',
+            description='Z offset of the IMU from base_link in metres.',
+        ),
+        DeclareLaunchArgument(
+            'imu_roll',
+            default_value='0.0',
+            description='Roll offset of the IMU from base_link in radians.',
+        ),
+        DeclareLaunchArgument(
+            'imu_pitch',
+            default_value='0.0',
+            description='Pitch offset of the IMU from base_link in radians.',
+        ),
+        DeclareLaunchArgument(
+            'imu_yaw',
+            default_value='0.0',
+            description='Yaw offset of the IMU from base_link in radians.',
+        ),
+        DeclareLaunchArgument(
             'explorer_control_rate_hz',
             default_value='5.0',
             description='Explorer control loop rate in Hz.',
@@ -207,6 +342,16 @@ def generate_launch_description():
             description='Minimum distance for the rolling path target when space is tight.',
         ),
         DeclareLaunchArgument(
+            'explorer_footprint_radius_m',
+            default_value='0.4572',
+            description='Robot circular footprint radius used by the explorer.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_clearance_margin_m',
+            default_value='0.10',
+            description='Extra wall-clearance buffer used by the explorer.',
+        ),
+        DeclareLaunchArgument(
             'explorer_clearance_window_deg',
             default_value='12.0',
             description='Half-width of the lidar sector used to evaluate a candidate heading.',
@@ -227,6 +372,26 @@ def generate_launch_description():
             description='Number of consecutive obstacle stops before declaring a dead end and halting.',
         ),
         DeclareLaunchArgument(
+            'explorer_forward_bias_weight',
+            default_value='1.5',
+            description='Bias toward forward-facing gaps when selecting a heading.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_max_yaw_drift_deg',
+            default_value='8.0',
+            description='Maximum odom yaw drift allowed before the explorer forces a replan.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_min_progress_m',
+            default_value='0.15',
+            description='Minimum travel that counts as progress before a stop.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_recovery_backup_m',
+            default_value='0.30',
+            description='Recovery backup distance used when repeated low-progress stops occur.',
+        ),
+        DeclareLaunchArgument(
             'crab_follower_speed_mps',
             default_value='0.04',
             description='Constant travel speed for the crab path follower in m/s.',
@@ -236,12 +401,59 @@ def generate_launch_description():
             default_value='0.08',
             description='Distance from the rolling goal at which the follower considers itself arrived.',
         ),
+        DeclareLaunchArgument(
+            'crab_follower_yaw_correction_gain',
+            default_value='1.5',
+            description='Proportional yaw correction gain used by the crab path follower.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_max_angular_speed_rad_s',
+            default_value='0.35',
+            description='Maximum yaw-rate correction commanded by the crab path follower.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_yaw_deadband_deg',
+            default_value='3.0',
+            description='Yaw-error deadband for the crab path follower.',
+        ),
+        DeclareLaunchArgument(
+            'safety_stop_distance_m',
+            default_value='0.72',
+            description='Emergency-stop clearance used by the scan cmd_vel safety filter.',
+        ),
+        DeclareLaunchArgument(
+            'safety_slowdown_distance_m',
+            default_value='0.90',
+            description='Slowdown clearance used by the scan cmd_vel safety filter.',
+        ),
+        DeclareLaunchArgument(
+            'safety_clearance_window_deg',
+            default_value='20.0',
+            description='LiDAR sector half-width used by the scan cmd_vel safety filter.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(core_launch)),
             condition=IfCondition(use_locomotion),
             launch_arguments={
                 'servo_dry_run': servo_dry_run,
                 'apply_offsets': apply_offsets,
+                'odom_topic': PythonExpression([
+                    "'", raw_odom_topic, "' if '", enable_robot_localization,
+                    "' == 'true' else '", locomotion_odom_topic, "'",
+                ]),
+                'odom_frame_id': odom_frame,
+                'base_frame_id': base_frame,
+                'publish_odom_tf': PythonExpression([
+                    "'false' if '", enable_robot_localization,
+                    "' == 'true' else '", locomotion_publish_odom_tf, "'",
+                ]),
+                'imu_frame': imu_frame,
+                'imu_x': imu_x,
+                'imu_y': imu_y,
+                'imu_z': imu_z,
+                'imu_roll': imu_roll,
+                'imu_pitch': imu_pitch,
+                'imu_yaw': imu_yaw,
             }.items(),
         ),
         OpaqueFunction(function=include_lidar_launch),
@@ -255,9 +467,20 @@ def generate_launch_description():
                 'odom_frame': odom_frame,
                 'base_frame': base_frame,
                 'enable_explorer': enable_explorer,
+                'enable_robot_localization': enable_robot_localization,
+                'robot_localization_params_file': robot_localization_params_file,
+                'laser_frame': laser_frame,
+                'laser_x': laser_x,
+                'laser_y': laser_y,
+                'laser_z': laser_z,
+                'laser_roll': laser_roll,
+                'laser_pitch': laser_pitch,
+                'laser_yaw': laser_yaw,
                 'path_topic': path_topic,
                 'stop_point_topic': stop_point_topic,
                 'odom_topic': odom_topic,
+                'raw_odom_topic': raw_odom_topic,
+                'imu_topic': imu_topic,
                 'explorer_control_rate_hz': explorer_control_rate_hz,
                 'explorer_path_publish_period_sec': explorer_path_publish_period_sec,
                 'explorer_decision_pause_sec': explorer_decision_pause_sec,
@@ -266,12 +489,24 @@ def generate_launch_description():
                 'explorer_goal_backoff_m': explorer_goal_backoff_m,
                 'explorer_max_goal_distance_m': explorer_max_goal_distance_m,
                 'explorer_min_goal_distance_m': explorer_min_goal_distance_m,
+                'explorer_footprint_radius_m': explorer_footprint_radius_m,
+                'explorer_wall_clearance_margin_m': explorer_wall_clearance_margin_m,
                 'explorer_clearance_window_deg': explorer_clearance_window_deg,
                 'explorer_min_gap_width_deg': explorer_min_gap_width_deg,
                 'explorer_reverse_avoidance_deg': explorer_reverse_avoidance_deg,
                 'explorer_max_replan_attempts': explorer_max_replan_attempts,
+                'explorer_forward_bias_weight': explorer_forward_bias_weight,
+                'explorer_max_yaw_drift_deg': explorer_max_yaw_drift_deg,
+                'explorer_min_progress_m': explorer_min_progress_m,
+                'explorer_recovery_backup_m': explorer_recovery_backup_m,
                 'crab_follower_speed_mps': crab_follower_speed_mps,
                 'crab_follower_goal_tolerance_m': crab_follower_goal_tolerance_m,
+                'crab_follower_yaw_correction_gain': crab_follower_yaw_correction_gain,
+                'crab_follower_max_angular_speed_rad_s': crab_follower_max_angular_speed_rad_s,
+                'crab_follower_yaw_deadband_deg': crab_follower_yaw_deadband_deg,
+                'safety_stop_distance_m': safety_stop_distance_m,
+                'safety_slowdown_distance_m': safety_slowdown_distance_m,
+                'safety_clearance_window_deg': safety_clearance_window_deg,
             }.items(),
         ),
     ])

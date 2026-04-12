@@ -16,13 +16,14 @@ class ImuPublisher(Node):
     def __init__(self):
         super().__init__('imu_publisher')
 
+        self.declare_parameter('frame_id', 'imu_link')
         self.publisher_ = self.create_publisher(Imu, '/imu/data_raw', 10)
         self.timer = self.create_timer(0.1, self.publish_imu)
 
         self.sensor = mpu6050(0x68)
-        self.frame_id = 'imu_link'
+        self.frame_id = str(self.get_parameter('frame_id').value)
 
-        self.get_logger().info('IMU publisher started on /imu/data_raw')
+        self.get_logger().info(f'IMU publisher started on /imu/data_raw with frame {self.frame_id}')
 
     def publish_imu(self):
         accel = self.sensor.get_accel_data()

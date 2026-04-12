@@ -93,6 +93,10 @@ class LocomotionNode(Node):
         self.declare_parameter('max_pitch_deg', 15.0)
         self.declare_parameter('max_yaw_deg', 15.0)
         self.declare_parameter('yaw_correction_gain', 0.0)
+        self.declare_parameter('odom_topic', 'odom')
+        self.declare_parameter('odom_frame_id', 'odom')
+        self.declare_parameter('base_frame_id', 'base_link')
+        self.declare_parameter('publish_odom_tf', True)
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
         self.gait = str(self.get_parameter('gait').value).strip().lower()
@@ -113,6 +117,10 @@ class LocomotionNode(Node):
         self.max_pitch_deg = max(0.0, float(self.get_parameter('max_pitch_deg').value))
         self.max_yaw_deg = max(0.0, float(self.get_parameter('max_yaw_deg').value))
         self.yaw_correction_gain = float(self.get_parameter('yaw_correction_gain').value)
+        self.odom_topic = str(self.get_parameter('odom_topic').value)
+        self.odom_frame_id = str(self.get_parameter('odom_frame_id').value)
+        self.base_frame_id = str(self.get_parameter('base_frame_id').value)
+        self.publish_odom_tf = bool(self.get_parameter('publish_odom_tf').value)
 
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
@@ -140,7 +148,7 @@ class LocomotionNode(Node):
         self.odom_theta_rad = 0.0
 
         self.target_publisher = self.create_publisher(JointState, 'servo_targets', 10)
-        self.odom_publisher = self.create_publisher(Odometry, 'odom', 10)
+        self.odom_publisher = self.create_publisher(Odometry, self.odom_topic, 10)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.cmd_vel_subscription = self.create_subscription(
@@ -176,8 +184,9 @@ class LocomotionNode(Node):
         self.get_logger().info('Locomotion controller ready')
         self.get_logger().info('Topics: /cmd_vel, /body_pose, /body_shift, /servo_targets')
         self.get_logger().info(
-            'cmd_vel uses m/s and rad/s. body_pose uses roll/pitch/yaw in degrees. '
-            'body_shift uses x/y/z in mm.'
+            f'cmd_vel uses m/s and rad/s. body_pose uses roll/pitch/yaw in degrees. '
+            f'body_shift uses x/y/z in mm. Publishing odom on /{self.odom_topic} '
+            f'with TF {"enabled" if self.publish_odom_tf else "disabled"}.'
         )
 
     def cmd_vel_callback(self, msg: Twist):
@@ -264,35 +273,46 @@ class LocomotionNode(Node):
 
         msg = Odometry()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'odom'
-        msg.child_frame_id = 'base_link'
+        msg.header.frame_id = self.odom_frame_id
+        msg.child_frame_id = self.base_frame_id
         msg.pose.pose.position.x = self.odom_x_m
         msg.pose.pose.position.y = self.odom_y_m
         # Quaternion from yaw only: x=0, y=0, z=sin(θ/2), w=cos(θ/2)
         msg.pose.pose.orientation.z = math.sin(self.odom_theta_rad / 2.0)
         msg.pose.pose.orientation.w = math.cos(self.odom_theta_rad / 2.0)
+        # Conservative covariances prevent downstream filters from treating the
+        # gait-integrated odometry as perfect ground truth.
+        msg.pose.covariance[0] = 0.04
+        msg.pose.covariance[7] = 0.04
+        msg.pose.covariance[14] = 1e6
+        msg.pose.covariance[21] = 1e6
+        msg.pose.covariance[28] = 1e6
+        msg.pose.covariance[35] = 0.09
         # Twist in body frame
         msg.twist.twist.linear.x = vx
         msg.twist.twist.linear.y = vy
         msg.twist.twist.angular.z = heading_rate
+        msg.twist.covariance[0] = 0.02
+        msg.twist.covariance[7] = 0.02
+        msg.twist.covariance[14] = 1e6
+        msg.twist.covariance[21] = 1e6
+        msg.twist.covariance[28] = 1e6
+        msg.twist.covariance[35] = 0.04
         self.odom_publisher.publish(msg)
 
-        # Broadcast odom → base_link transform so slam_toolbox can locate
-        # the robot in the map.  Without this the TF tree is incomplete and
-        # SLAM silently produces garbage results.
-        tf_msg = TransformStamped()
-        tf_msg.header.stamp    = msg.header.stamp
-        tf_msg.header.frame_id = 'odom'
-        tf_msg.child_frame_id  = 'base_link'
-        tf_msg.transform.translation.x = self.odom_x_m
-        tf_msg.transform.translation.y = self.odom_y_m
-        tf_msg.transform.translation.z = 0.0
-        # Yaw-only quaternion (body never rolls or pitches in odom frame)
-        tf_msg.transform.rotation.x = 0.0
-        tf_msg.transform.rotation.y = 0.0
-        tf_msg.transform.rotation.z = math.sin(self.odom_theta_rad / 2.0)
-        tf_msg.transform.rotation.w = math.cos(self.odom_theta_rad / 2.0)
-        self.tf_broadcaster.sendTransform(tf_msg)
+        if self.publish_odom_tf:
+            tf_msg = TransformStamped()
+            tf_msg.header.stamp = msg.header.stamp
+            tf_msg.header.frame_id = self.odom_frame_id
+            tf_msg.child_frame_id = self.base_frame_id
+            tf_msg.transform.translation.x = self.odom_x_m
+            tf_msg.transform.translation.y = self.odom_y_m
+            tf_msg.transform.translation.z = 0.0
+            tf_msg.transform.rotation.x = 0.0
+            tf_msg.transform.rotation.y = 0.0
+            tf_msg.transform.rotation.z = math.sin(self.odom_theta_rad / 2.0)
+            tf_msg.transform.rotation.w = math.cos(self.odom_theta_rad / 2.0)
+            self.tf_broadcaster.sendTransform(tf_msg)
 
     def active_motion_command(self):
         age_sec = (self.get_clock().now() - self.last_motion_cmd_time).nanoseconds / 1e9

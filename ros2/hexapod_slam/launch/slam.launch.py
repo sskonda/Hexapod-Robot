@@ -10,22 +10,32 @@ from launch_ros.actions import Node
 
 def generate_launch_description():
     share_dir = Path(get_package_share_directory('hexapod_slam'))
-    default_params = share_dir / 'config' / 'slam_toolbox.yaml'
+    default_slam_params = share_dir / 'config' / 'slam_toolbox.yaml'
+    default_ekf_params = share_dir / 'config' / 'ekf.yaml'
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     scan_topic = LaunchConfiguration('scan_topic')
     slam_params_file = LaunchConfiguration('slam_params_file')
+    robot_localization_params_file = LaunchConfiguration('robot_localization_params_file')
     map_frame = LaunchConfiguration('map_frame')
     odom_frame = LaunchConfiguration('odom_frame')
     base_frame = LaunchConfiguration('base_frame')
     enable_explorer = LaunchConfiguration('enable_explorer')
+    enable_robot_localization = LaunchConfiguration('enable_robot_localization')
     laser_frame = LaunchConfiguration('laser_frame')
     laser_x = LaunchConfiguration('laser_x')
     laser_y = LaunchConfiguration('laser_y')
     laser_z = LaunchConfiguration('laser_z')
+    laser_roll = LaunchConfiguration('laser_roll')
+    laser_pitch = LaunchConfiguration('laser_pitch')
+    laser_yaw = LaunchConfiguration('laser_yaw')
     odom_topic = LaunchConfiguration('odom_topic')
+    raw_odom_topic = LaunchConfiguration('raw_odom_topic')
+    imu_topic = LaunchConfiguration('imu_topic')
     path_topic = LaunchConfiguration('path_topic')
     stop_point_topic = LaunchConfiguration('stop_point_topic')
+    raw_cmd_vel_topic = LaunchConfiguration('raw_cmd_vel_topic')
+    safe_cmd_vel_topic = LaunchConfiguration('safe_cmd_vel_topic')
     explorer_control_rate_hz = LaunchConfiguration('explorer_control_rate_hz')
     explorer_path_publish_period_sec = LaunchConfiguration('explorer_path_publish_period_sec')
     explorer_decision_pause_sec = LaunchConfiguration('explorer_decision_pause_sec')
@@ -41,10 +51,19 @@ def generate_launch_description():
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
     explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
     explorer_forward_bias_weight = LaunchConfiguration('explorer_forward_bias_weight')
+    explorer_max_yaw_drift_deg = LaunchConfiguration('explorer_max_yaw_drift_deg')
     explorer_min_progress_m = LaunchConfiguration('explorer_min_progress_m')
     explorer_recovery_backup_m = LaunchConfiguration('explorer_recovery_backup_m')
     crab_follower_speed_mps = LaunchConfiguration('crab_follower_speed_mps')
     crab_follower_goal_tolerance_m = LaunchConfiguration('crab_follower_goal_tolerance_m')
+    crab_follower_yaw_correction_gain = LaunchConfiguration('crab_follower_yaw_correction_gain')
+    crab_follower_max_angular_speed_rad_s = LaunchConfiguration(
+        'crab_follower_max_angular_speed_rad_s'
+    )
+    crab_follower_yaw_deadband_deg = LaunchConfiguration('crab_follower_yaw_deadband_deg')
+    safety_stop_distance_m = LaunchConfiguration('safety_stop_distance_m')
+    safety_slowdown_distance_m = LaunchConfiguration('safety_slowdown_distance_m')
+    safety_clearance_window_deg = LaunchConfiguration('safety_clearance_window_deg')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -55,12 +74,17 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'scan_topic',
             default_value='scan',
-            description='LaserScan topic consumed by SLAM.',
+            description='LaserScan topic consumed by SLAM and the safety filter.',
         ),
         DeclareLaunchArgument(
             'slam_params_file',
-            default_value=str(default_params),
+            default_value=str(default_slam_params),
             description='Full path to the slam_toolbox parameter file.',
+        ),
+        DeclareLaunchArgument(
+            'robot_localization_params_file',
+            default_value=str(default_ekf_params),
+            description='Full path to the robot_localization EKF parameter file.',
         ),
         DeclareLaunchArgument(
             'map_frame',
@@ -80,7 +104,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'enable_explorer',
             default_value='true',
-            description='Launch the lidar gap-following exploration node.',
+            description='Launch the LiDAR gap-following explorer, follower, and safety filter.',
+        ),
+        DeclareLaunchArgument(
+            'enable_robot_localization',
+            default_value='false',
+            description=(
+                'Launch robot_localization to fuse raw odom and IMU into the odom topic '
+                'used by the explorer, follower, and SLAM.'
+            ),
         ),
         DeclareLaunchArgument(
             'laser_frame',
@@ -103,9 +135,34 @@ def generate_launch_description():
             description='Z offset of LiDAR from base_link in metres (up +).',
         ),
         DeclareLaunchArgument(
+            'laser_roll',
+            default_value='0.0',
+            description='Roll offset of LiDAR from base_link in radians.',
+        ),
+        DeclareLaunchArgument(
+            'laser_pitch',
+            default_value='0.0',
+            description='Pitch offset of LiDAR from base_link in radians.',
+        ),
+        DeclareLaunchArgument(
+            'laser_yaw',
+            default_value='0.0',
+            description='Yaw offset of LiDAR from base_link in radians.',
+        ),
+        DeclareLaunchArgument(
             'odom_topic',
             default_value='odom',
-            description='Odometry topic consumed by the exploration node.',
+            description='Odometry topic consumed by the explorer and follower.',
+        ),
+        DeclareLaunchArgument(
+            'raw_odom_topic',
+            default_value='odom/raw',
+            description='Raw locomotion odometry topic fed into robot_localization when enabled.',
+        ),
+        DeclareLaunchArgument(
+            'imu_topic',
+            default_value='/imu/data_raw',
+            description='IMU topic fused by robot_localization when enabled.',
         ),
         DeclareLaunchArgument(
             'path_topic',
@@ -116,6 +173,16 @@ def generate_launch_description():
             'stop_point_topic',
             default_value='decision_point',
             description='PointStamped topic published when the robot stops to choose a new direction.',
+        ),
+        DeclareLaunchArgument(
+            'raw_cmd_vel_topic',
+            default_value='cmd_vel_nav',
+            description='Intermediate planner/follower cmd_vel topic before the safety filter.',
+        ),
+        DeclareLaunchArgument(
+            'safe_cmd_vel_topic',
+            default_value='cmd_vel',
+            description='Command topic after the scan-based safety filter.',
         ),
         DeclareLaunchArgument(
             'explorer_control_rate_hz',
@@ -138,8 +205,8 @@ def generate_launch_description():
         # Robot radius    : 1.5 ft = 0.4572 m
         # Body-to-wall clearance when centred: 0.6096 - 0.4572 = 0.152 m (6 in)
         # Min traversable gap: 2 × (footprint + margin) = 2 × 0.5572 = 1.114 m
-        #   → 4 ft corridor = 1.2192 m  ✓  (~8 cm of angular margin each side)
-        # stop_distance = 0.72 m → robot edge clears wall by 0.72 - 0.4572 = 0.26 m
+        #   -> 4 ft corridor = 1.2192 m  ✓  (~8 cm of angular margin each side)
+        # stop_distance = 0.72 m -> robot edge clears wall by 0.72 - 0.4572 = 0.26 m
         # -----------------------------------------------------------------------
         DeclareLaunchArgument(
             'explorer_stop_distance_m',
@@ -214,6 +281,16 @@ def generate_launch_description():
             description='Consecutive low-travel stops before triggering a recovery backup.',
         ),
         DeclareLaunchArgument(
+            'explorer_forward_bias_weight',
+            default_value='1.5',
+            description='Bias toward selecting the forward heading on startup; 0.0 disables.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_max_yaw_drift_deg',
+            default_value='8.0',
+            description='Maximum allowed odom yaw drift from a committed heading before forcing a replan.',
+        ),
+        DeclareLaunchArgument(
             'explorer_min_progress_m',
             default_value='0.15',
             description=(
@@ -230,11 +307,6 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
-            'explorer_forward_bias_weight',
-            default_value='1.5',
-            description='Bias toward selecting the forward heading on startup; 0.0 disables.',
-        ),
-        DeclareLaunchArgument(
             'crab_follower_speed_mps',
             default_value='0.04',
             description='Constant travel speed for the crab path follower in m/s.',
@@ -244,14 +316,65 @@ def generate_launch_description():
             default_value='0.08',
             description='Distance from the rolling goal at which the follower considers itself arrived.',
         ),
+        DeclareLaunchArgument(
+            'crab_follower_yaw_correction_gain',
+            default_value='1.5',
+            description='Proportional gain used to turn the body back toward the path heading.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_max_angular_speed_rad_s',
+            default_value='0.35',
+            description='Maximum yaw-rate correction that the follower may command.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_yaw_deadband_deg',
+            default_value='3.0',
+            description='Small yaw-error deadband that suppresses needless oscillation.',
+        ),
+        DeclareLaunchArgument(
+            'safety_stop_distance_m',
+            default_value='0.72',
+            description='Emergency-stop clearance used by the lower-layer scan safety filter.',
+        ),
+        DeclareLaunchArgument(
+            'safety_slowdown_distance_m',
+            default_value='0.90',
+            description='Clearance at which the lower-layer scan safety filter stops slowing translation.',
+        ),
+        DeclareLaunchArgument(
+            'safety_clearance_window_deg',
+            default_value='20.0',
+            description='Half-width of the LiDAR sector checked by the lower-layer scan safety filter.',
+        ),
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
             name='base_link_to_laser',
             arguments=[
                 '--x', laser_x, '--y', laser_y, '--z', laser_z,
-                '--roll', '0', '--pitch', '0', '--yaw', '0',
+                '--roll', laser_roll, '--pitch', laser_pitch, '--yaw', laser_yaw,
                 '--frame-id', base_frame, '--child-frame-id', laser_frame,
+            ],
+        ),
+        Node(
+            package='robot_localization',
+            executable='ekf_node',
+            name='ekf_filter_node',
+            output='screen',
+            condition=IfCondition(enable_robot_localization),
+            parameters=[
+                robot_localization_params_file,
+                {
+                    'use_sim_time': use_sim_time,
+                    'odom_frame': odom_frame,
+                    'base_link_frame': base_frame,
+                    'world_frame': odom_frame,
+                    'odom0': raw_odom_topic,
+                    'imu0': imu_topic,
+                },
+            ],
+            remappings=[
+                ('odometry/filtered', odom_topic),
             ],
         ),
         Node(
@@ -298,6 +421,7 @@ def generate_launch_description():
                 'reverse_avoidance_deg': explorer_reverse_avoidance_deg,
                 'max_replan_attempts': explorer_max_replan_attempts,
                 'forward_bias_weight': explorer_forward_bias_weight,
+                'max_yaw_drift_deg': explorer_max_yaw_drift_deg,
                 'min_progress_m': explorer_min_progress_m,
                 'recovery_backup_m': explorer_recovery_backup_m,
             }],
@@ -309,13 +433,35 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(enable_explorer),
             parameters=[{
-                'path_topic':          path_topic,
-                'odom_topic':          odom_topic,
-                'cmd_vel_topic':       'cmd_vel',
-                'constant_speed_mps':  crab_follower_speed_mps,
-                'goal_tolerance_m':    crab_follower_goal_tolerance_m,
-                'path_timeout_sec':    1.0,
-                'cmd_vel_rate_hz':     20.0,
+                'path_topic': path_topic,
+                'odom_topic': odom_topic,
+                'cmd_vel_topic': raw_cmd_vel_topic,
+                'constant_speed_mps': crab_follower_speed_mps,
+                'goal_tolerance_m': crab_follower_goal_tolerance_m,
+                'path_timeout_sec': 1.0,
+                'cmd_vel_rate_hz': 20.0,
+                'yaw_correction_gain': crab_follower_yaw_correction_gain,
+                'max_angular_speed_rad_s': crab_follower_max_angular_speed_rad_s,
+                'yaw_deadband_deg': crab_follower_yaw_deadband_deg,
+            }],
+        ),
+        Node(
+            package='hexapod_slam',
+            executable='scan_cmd_vel_safety',
+            name='scan_cmd_vel_safety',
+            output='screen',
+            condition=IfCondition(enable_explorer),
+            parameters=[{
+                'scan_topic': scan_topic,
+                'input_cmd_vel_topic': raw_cmd_vel_topic,
+                'output_cmd_vel_topic': safe_cmd_vel_topic,
+                'control_rate_hz': 20.0,
+                'scan_timeout_sec': 0.5,
+                'cmd_timeout_sec': 0.5,
+                'clearance_window_deg': safety_clearance_window_deg,
+                'stop_distance_m': safety_stop_distance_m,
+                'slowdown_distance_m': safety_slowdown_distance_m,
+                'preserve_turning_when_blocked': True,
             }],
         ),
     ])

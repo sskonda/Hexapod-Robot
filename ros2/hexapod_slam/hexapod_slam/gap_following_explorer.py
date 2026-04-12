@@ -336,7 +336,10 @@ class GapFollowingExplorerNode(Node):
             )
             return
 
-        forward_clearance = self.clearance_for_world_heading(self.active_heading_world_rad)
+        forward_clearance = self.clearance_for_world_heading(
+            self.active_heading_world_rad,
+            use_stable=True,
+        )
         if forward_clearance <= self.stop_distance_m:
             self.handle_replan_stop(forward_clearance)
             return
@@ -480,11 +483,11 @@ class GapFollowingExplorerNode(Node):
             return None
         return normalize_angle(self.last_committed_heading_world_rad + math.pi - self.odom_yaw_rad)
 
-    def clearance_for_world_heading(self, heading_world_rad: float) -> float:
+    def clearance_for_world_heading(self, heading_world_rad: float, use_stable: bool = False) -> float:
         target_angle_rad = normalize_angle(heading_world_rad - self.odom_yaw_rad)
-        return self.clearance_for_base_angle(target_angle_rad)
+        return self.clearance_for_base_angle(target_angle_rad, use_stable=use_stable)
 
-    def clearance_for_base_angle(self, target_angle_rad: float) -> float:
+    def clearance_for_base_angle(self, target_angle_rad: float, use_stable: bool = False) -> float:
         if self.latest_scan is None or len(self.latest_scan.ranges) == 0:
             return 0.0
 
@@ -494,7 +497,10 @@ class GapFollowingExplorerNode(Node):
         raw_index = (target_angle_rad - scan.angle_min) / scan.angle_increment
         center_index = int(round(raw_index))
         center_index = max(window_beams, min(len(scan.ranges) - 1 - window_beams, center_index))
-        clearance_m = self.window_clearance(center_index, window_beams)
+        if use_stable:
+            clearance_m = self.stable_window_clearance(center_index, window_beams)
+        else:
+            clearance_m = self.window_clearance(center_index, window_beams)
         return 0.0 if clearance_m is None else clearance_m
 
     def window_clearance(self, center_index: int, window_beams: int) -> Optional[float]:
