@@ -41,6 +41,8 @@ def generate_launch_description():
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
     explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
     explorer_forward_bias_weight = LaunchConfiguration('explorer_forward_bias_weight')
+    explorer_min_progress_m = LaunchConfiguration('explorer_min_progress_m')
+    explorer_recovery_backup_m = LaunchConfiguration('explorer_recovery_backup_m')
     crab_follower_speed_mps = LaunchConfiguration('crab_follower_speed_mps')
     crab_follower_goal_tolerance_m = LaunchConfiguration('crab_follower_goal_tolerance_m')
 
@@ -182,8 +184,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_max_replan_attempts',
-            default_value='5',
-            description='Number of consecutive obstacle stops before declaring a dead end and halting.',
+            default_value='8',
+            description='Consecutive low-travel stops before triggering a recovery backup.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_min_progress_m',
+            default_value='0.10',
+            description='Minimum travel distance (m) to count a stop as progress and reset the stuck counter.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_recovery_backup_m',
+            default_value='0.20',
+            description='Distance (m) to back up when the stuck recovery is triggered.',
         ),
         DeclareLaunchArgument(
             'explorer_forward_bias_weight',
@@ -254,6 +266,8 @@ def generate_launch_description():
                 'reverse_avoidance_deg': explorer_reverse_avoidance_deg,
                 'max_replan_attempts': explorer_max_replan_attempts,
                 'forward_bias_weight': explorer_forward_bias_weight,
+                'min_progress_m': explorer_min_progress_m,
+                'recovery_backup_m': explorer_recovery_backup_m,
             }],
         ),
         Node(

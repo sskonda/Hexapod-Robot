@@ -146,8 +146,10 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('min_gap_width_deg', 18.0)
         self.declare_parameter('reverse_avoidance_deg', 70.0)
         self.declare_parameter('candidate_sample_count', 121)
-        self.declare_parameter('max_replan_attempts', 5)
+        self.declare_parameter('max_replan_attempts', 8)
         self.declare_parameter('max_yaw_drift_deg', 30.0)
+        self.declare_parameter('min_progress_m', 0.10)
+        self.declare_parameter('recovery_backup_m', 0.20)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
@@ -193,6 +195,8 @@ class GapFollowingExplorerNode(Node):
         self.max_yaw_drift_rad = math.radians(
             max(5.0, float(self.get_parameter('max_yaw_drift_deg').value))
         )
+        self.min_progress_m = max(0.01, float(self.get_parameter('min_progress_m').value))
+        self.recovery_backup_m = max(0.05, float(self.get_parameter('recovery_backup_m').value))
 
         self.path_publisher = self.create_publisher(Path, self.path_topic, 10)
         self.stop_point_publisher = self.create_publisher(PointStamped, self.stop_point_topic, 10)
@@ -213,6 +217,7 @@ class GapFollowingExplorerNode(Node):
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self.control_loop)
 
         self.latest_scan: Optional[LaserScan] = None
+        self._previous_scan: Optional[LaserScan] = None
         self.latest_scan_received_at = None
         self.latest_odom: Optional[Odometry] = None
         self.latest_odom_received_at = None
@@ -250,6 +255,7 @@ class GapFollowingExplorerNode(Node):
         )
 
     def scan_callback(self, msg: LaserScan):
+        self._previous_scan = self.latest_scan
         self.latest_scan = msg
         self.latest_scan_received_at = self.get_clock().now()
 
@@ -313,13 +319,21 @@ class GapFollowingExplorerNode(Node):
 
         # If the robot has drifted significantly from its committed heading
         # (hexapod gait yaw drift), the forward clearance check is now looking
-        # at the wrong physical direction.  Force a replan to get a fresh heading.
+        # at the wrong physical direction.  Force a penalty-free replan so a
+        # fresh heading is selected from the current orientation without
+        # incrementing the stuck counter.
         yaw_drift = abs(normalize_angle(self.odom_yaw_rad - self.heading_committed_yaw_rad))
         if yaw_drift > self.max_yaw_drift_rad:
             self.get_logger().info(
-                f'Yaw drift {math.degrees(yaw_drift):.1f} deg exceeds {math.degrees(self.max_yaw_drift_rad):.0f} deg — replanning.'
+                f'Yaw drift {math.degrees(yaw_drift):.1f} deg exceeds '
+                f'{math.degrees(self.max_yaw_drift_rad):.0f} deg — replanning (no penalty).'
             )
-            self.handle_replan_stop(self.clearance_for_world_heading(self.active_heading_world_rad))
+            self.last_committed_heading_world_rad = self.active_heading_world_rad
+            self.active_heading_world_rad = None
+            self.publish_stop_path()
+            self.replan_ready_time = self.get_clock().now() + Duration(
+                seconds=self.decision_pause_sec
+            )
             return
 
         forward_clearance = self.clearance_for_world_heading(self.active_heading_world_rad)
@@ -369,11 +383,11 @@ class GapFollowingExplorerNode(Node):
             self.odom_x_m - self.heading_committed_x_m,
             self.odom_y_m - self.heading_committed_y_m,
         )
-        if dist_traveled >= self.min_goal_distance_m:
+        if dist_traveled >= self.min_progress_m:
             # Robot made real progress before stopping — fresh start on the counter.
             self.replan_attempts = 0
         else:
-            # Immediately blocked without meaningful travel — count the failure.
+            # Blocked without meaningful travel — count as a failed attempt.
             self.replan_attempts += 1
         self.get_logger().info(
             f'Obstacle at {clearance_m:.2f} m (traveled {dist_traveled:.2f} m) — '
@@ -381,11 +395,22 @@ class GapFollowingExplorerNode(Node):
         )
         self.last_committed_heading_world_rad = self.active_heading_world_rad
         self.active_heading_world_rad = None
-        self.publish_stop_path()
         self.publish_stop_point()
-        self.replan_ready_time = self.get_clock().now() + Duration(
-            seconds=self.decision_pause_sec
-        )
+
+        if self.replan_attempts >= self.max_replan_attempts:
+            # Stuck against a wall — back up to create clearance, then replan.
+            self.get_logger().info(
+                f'Stuck after {self.replan_attempts} consecutive low-travel stops — '
+                'executing recovery backup.'
+            )
+            self._publish_recovery_backup()
+            self.replan_attempts = 0
+            self.replan_ready_time = self.get_clock().now() + Duration(seconds=2.0)
+        else:
+            self.publish_stop_path()
+            self.replan_ready_time = self.get_clock().now() + Duration(
+                seconds=self.decision_pause_sec
+            )
 
     def select_heading(self, allow_reverse: bool) -> Optional[HeadingCandidate]:
         if self.latest_scan is None:
@@ -404,7 +429,7 @@ class GapFollowingExplorerNode(Node):
         incoming_angle_base_rad = self.incoming_angle_base_frame()
         best_candidate = None
         for index in range(window_beams, len(scan.ranges) - window_beams, sample_stride):
-            clearance_m = self.window_clearance(index, window_beams)
+            clearance_m = self.stable_window_clearance(index, window_beams)
             if clearance_m is None or clearance_m < open_threshold_m:
                 continue
 
@@ -485,6 +510,35 @@ class GapFollowingExplorerNode(Node):
                 min_clearance = range_value
         return min_clearance
 
+    def stable_window_clearance(self, center_index: int, window_beams: int) -> Optional[float]:
+        """Minimum clearance across the current and previous scan.
+
+        The hexapod's legs periodically sweep through the LiDAR scan plane.
+        A single scan can show a direction as fully clear (legs retracted) while
+        the next scan shows a close obstacle (legs extended).  Taking the minimum
+        across two consecutive scans filters these transient artifacts so the
+        heading selection only picks directions that are clear in BOTH snapshots.
+        """
+        current = self.window_clearance(center_index, window_beams)
+        if self._previous_scan is None:
+            return current
+
+        prev_min = None
+        for index in range(center_index - window_beams, center_index + window_beams + 1):
+            if index < 0 or index >= len(self._previous_scan.ranges):
+                continue
+            range_value = self.valid_range(self._previous_scan, index)
+            if range_value is None:
+                continue
+            if prev_min is None or range_value < prev_min:
+                prev_min = range_value
+
+        if current is None:
+            return prev_min
+        if prev_min is None:
+            return current
+        return min(current, prev_min)
+
     def gap_width_beams(self, center_index: int, threshold_m: float) -> int:
         if self.latest_scan is None:
             return 0
@@ -539,6 +593,27 @@ class GapFollowingExplorerNode(Node):
         path_msg.header.frame_id = self.odom_frame_id
         path_msg.poses.append(self.make_pose(self.odom_x_m, self.odom_y_m, self.active_heading_world_rad))
         path_msg.poses.append(self.make_pose(target_x_m, target_y_m, self.active_heading_world_rad))
+        self.path_publisher.publish(path_msg)
+        self.last_path_publish_time = self.get_clock().now()
+
+    def _publish_recovery_backup(self):
+        """Publish a short path in the reverse of the last committed heading.
+
+        This moves the robot away from the wall it is stuck against so that the
+        next heading selection has a better view of the surroundings.
+        """
+        # Back up in the direction opposite to the last committed heading.
+        reverse_heading = normalize_angle(
+            (self.last_committed_heading_world_rad or self.odom_yaw_rad) + math.pi
+        )
+        target_x_m = self.odom_x_m + self.recovery_backup_m * math.cos(reverse_heading)
+        target_y_m = self.odom_y_m + self.recovery_backup_m * math.sin(reverse_heading)
+
+        path_msg = Path()
+        path_msg.header.stamp = self.get_clock().now().to_msg()
+        path_msg.header.frame_id = self.odom_frame_id
+        path_msg.poses.append(self.make_pose(self.odom_x_m, self.odom_y_m, reverse_heading))
+        path_msg.poses.append(self.make_pose(target_x_m, target_y_m, reverse_heading))
         self.path_publisher.publish(path_msg)
         self.last_path_publish_time = self.get_clock().now()
 
