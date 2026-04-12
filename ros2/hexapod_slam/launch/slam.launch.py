@@ -132,55 +132,81 @@ def generate_launch_description():
             default_value='0.75',
             description='Pause after reaching a wall before picking a new heading.',
         ),
+        # --- Geometry reference (4 ft × 4 ft tiles, 1.5 ft robot radius) ------
+        # Tile full width : 4 ft  = 1.2192 m
+        # Half-tile       : 2 ft  = 0.6096 m  (centre to wall)
+        # Robot radius    : 1.5 ft = 0.4572 m
+        # Body-to-wall clearance when centred: 0.6096 - 0.4572 = 0.152 m (6 in)
+        # Min traversable gap: 2 × (footprint + margin) = 2 × 0.5572 = 1.114 m
+        #   → 4 ft corridor = 1.2192 m  ✓  (~8 cm of angular margin each side)
+        # stop_distance = 0.72 m → robot edge clears wall by 0.72 - 0.4572 = 0.26 m
+        # -----------------------------------------------------------------------
         DeclareLaunchArgument(
             'explorer_stop_distance_m',
-            default_value='0.65',
-            description='Minimum allowed lidar clearance before stopping and replanning.',
+            default_value='0.72',
+            description=(
+                'LiDAR clearance below which the robot stops and replans. '
+                'Set to half-tile (0.6096 m) + 0.11 m safety margin for a '
+                '1.5 ft radius robot in 4 ft corridors.'
+            ),
         ),
         DeclareLaunchArgument(
             'explorer_open_distance_m',
-            default_value='0.80',
-            description='Preferred clearance used to score open gaps.',
+            default_value='0.90',
+            description=(
+                'Preferred clearance for scoring open gaps. '
+                'Must exceed stop_distance; 0.90 m ≈ 75 % of a 4 ft tile.'
+            ),
         ),
         DeclareLaunchArgument(
             'explorer_goal_backoff_m',
-            default_value='0.45',
-            description='Distance kept between the rolling goal point and the detected obstacle.',
+            default_value='0.60',
+            description=(
+                'Distance the rolling goal is kept back from the detected obstacle. '
+                'Set above footprint + margin (0.5572 m) so the goal never '
+                'falls inside the wall.'
+            ),
         ),
         DeclareLaunchArgument(
             'explorer_max_goal_distance_m',
-            default_value='1.25',
-            description='Maximum distance for the rolling path target.',
+            default_value='1.50',
+            description='Maximum rolling-path look-ahead (m). One full 4 ft tile = 1.2192 m.',
         ),
         DeclareLaunchArgument(
             'explorer_min_goal_distance_m',
-            default_value='0.20',
-            description='Minimum distance for the rolling path target when space is tight.',
+            default_value='0.25',
+            description='Minimum useful move when space is very tight.',
         ),
         DeclareLaunchArgument(
             'explorer_footprint_radius_m',
-            default_value='0.40',
-            description='Assumed circular robot radius used by the explorer for wall clearance.',
+            default_value='0.4572',
+            description='Robot circular footprint radius: 1.5 ft = 0.4572 m.',
         ),
         DeclareLaunchArgument(
             'explorer_wall_clearance_margin_m',
-            default_value='0.15',
-            description='Extra wall buffer added beyond the robot radius.',
+            default_value='0.10',
+            description=(
+                'Safety buffer added beyond footprint_radius when checking '
+                'minimum wall clearance and gap width.'
+            ),
         ),
         DeclareLaunchArgument(
             'explorer_clearance_window_deg',
-            default_value='15.0',
-            description='Half-width of the lidar sector used to evaluate a candidate heading.',
+            default_value='20.0',
+            description=(
+                'Half-width of the LiDAR sector used to evaluate a candidate '
+                'heading. Wider (20 °) suits the larger 4 ft tile geometry.'
+            ),
         ),
         DeclareLaunchArgument(
             'explorer_min_gap_width_deg',
             default_value='18.0',
-            description='Minimum angular width required for a gap to be considered traversable.',
+            description='Minimum angular gap width to be considered traversable.',
         ),
         DeclareLaunchArgument(
             'explorer_reverse_avoidance_deg',
             default_value='70.0',
-            description='How aggressively the explorer avoids selecting the direction it just came from.',
+            description='Penalty sector that discourages selecting the direction just travelled.',
         ),
         DeclareLaunchArgument(
             'explorer_max_replan_attempts',
@@ -189,13 +215,19 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_min_progress_m',
-            default_value='0.10',
-            description='Minimum travel distance (m) to count a stop as progress and reset the stuck counter.',
+            default_value='0.15',
+            description=(
+                'Minimum travel (m) to count a stop as progress. '
+                'Raised to 0.15 m for 4 ft tiles (was 0.10 m).'
+            ),
         ),
         DeclareLaunchArgument(
             'explorer_recovery_backup_m',
-            default_value='0.20',
-            description='Distance (m) to back up when the stuck recovery is triggered.',
+            default_value='0.30',
+            description=(
+                'Backup distance when stuck recovery fires. '
+                'Raised to 0.30 m for 4 ft tiles (was 0.20 m).'
+            ),
         ),
         DeclareLaunchArgument(
             'explorer_forward_bias_weight',
