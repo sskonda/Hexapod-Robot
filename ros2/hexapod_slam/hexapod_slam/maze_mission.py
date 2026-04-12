@@ -364,24 +364,9 @@ class MazeMissionNode(Node):
     # Utility: map frame ↔ robot heading
     # ======================================================================
 
-    def _map_yaw_for_direction(self, cardinal: str) -> float:
-        """Map-frame yaw corresponding to a cardinal direction given north_yaw."""
-        if self._north_yaw is None:
-            return DIRECTION_YAW[cardinal]
-        # 'N' corresponds to north_yaw; rotate accordingly
-        base = DIRECTION_YAW[cardinal]
-        north_base = DIRECTION_YAW['N']
-        return normalize_angle(self._north_yaw + (base - north_base))
-
-    def _odom_direction(self, cardinal: str) -> str:
-        """
-        Returns the cardinal direction (in map frame) corresponding to the
-        given mission cardinal direction after adjusting for north_yaw offset.
-        Actually the grid is fixed to the odom frame, so this is an identity
-        unless north_yaw differs from +Y.  We keep the grid aligned to the
-        robot's initial heading for simplicity.
-        """
-        return cardinal
+    def _heading_to(self, target_x: float, target_y: float) -> float:
+        """Odom-frame yaw pointing from current position toward (target_x, target_y)."""
+        return math.atan2(target_y - self._odom_y, target_x - self._odom_x)
 
     # ======================================================================
     # Utility: robot ↔ grid position
@@ -669,8 +654,7 @@ class MazeMissionNode(Node):
 
         # Still travelling — publish path at regular intervals
         if self._should_refresh_path():
-            heading_yaw = self._map_yaw_for_direction(self._target_dir)
-            self._publish_path_to(tx, ty, heading_yaw)
+            self._publish_path_to(tx, ty, self._heading_to(tx, ty))
 
     # ======================================================================
     # State: BACKTRACKING
@@ -708,16 +692,7 @@ class MazeMissionNode(Node):
 
         # Navigate to current waypoint
         if self._should_refresh_path():
-            # Infer heading from direction of travel
-            prev_ij = self._backtrack_waypoints[self._backtrack_wp_idx - 1]
-            di = target_ij[0] - prev_ij[0]
-            dj = target_ij[1] - prev_ij[1]
-            heading_yaw = math.atan2(float(dj), float(di))  # approximate
-            for d, (ddi, ddj) in DIRECTION_DELTA.items():
-                if (ddi, ddj) == (di, dj):
-                    heading_yaw = self._map_yaw_for_direction(d)
-                    break
-            self._publish_path_to(tx, ty, heading_yaw)
+            self._publish_path_to(tx, ty, self._heading_to(tx, ty))
 
     # ======================================================================
     # State: EXIT
@@ -755,8 +730,9 @@ class MazeMissionNode(Node):
     def _publish_recovery_backup(self):
         """Publish a short backward path to escape a wall."""
         # Go backward (opposite of current travel direction)
+        # Back up opposite to the last travel direction (grid-aligned = odom-aligned)
         if self._travel_dir is not None:
-            back_yaw = self._map_yaw_for_direction(OPPOSITE[self._travel_dir])
+            back_yaw = DIRECTION_YAW[OPPOSITE[self._travel_dir]]
         else:
             back_yaw = normalize_angle(self._odom_yaw + math.pi)
         tx = self._odom_x + self._recovery_m * math.cos(back_yaw)
