@@ -132,12 +132,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_footprint_radius_m',
-            default_value='0.30',
+            default_value='0.40',
             description='Assumed circular robot radius used by the explorer for wall clearance.',
         ),
         DeclareLaunchArgument(
             'explorer_wall_clearance_margin_m',
-            default_value='0.10',
+            default_value='0.15',
             description='Extra wall buffer added beyond the robot radius.',
         ),
         DeclareLaunchArgument(
