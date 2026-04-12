@@ -7,9 +7,15 @@ No ROS2 imports — unit-testable standalone.
 
 Tile size: 0.6096 m (2 ft exactly)
 Coordinate convention:
-  - Grid (i, j): i increases East, j increases North
-  - Map (x, y):  x East, y North (standard ROS REP-103)
-  - Cardinal directions: 'N', 'E', 'S', 'W'
+  - Grid (i, j): i increases to the right of the startup heading (logical East),
+                 j increases in the startup heading direction (logical North).
+  - Map (x, y):  ROS REP-103 world frame (odom).
+  - Cardinal directions: 'N' (startup forward), 'E' (right), 'S' (back), 'W' (left).
+
+The grid is rotated to align with the robot's startup heading so that
+'North' always means 'the direction the robot first moved'.  The north_yaw
+argument (in odom radians) controls this rotation.  When north_yaw = π/2
+(robot starts facing odom +y) the grid is axis-aligned with odom.
 
 Left-first DFS ordering (relative to incoming travel direction):
   Coming from S (heading N): try W first, then N, then E  (left = W)
@@ -34,7 +40,8 @@ TILE_SIZE_M: float = 0.6096  # 2 ft in metres
 
 DIRECTIONS = ('N', 'E', 'S', 'W')
 
-# Delta (di, dj) for each cardinal direction
+# Delta (di, dj) for each logical cardinal direction.
+# i = logical East index, j = logical North index.
 DIRECTION_DELTA: Dict[str, Tuple[int, int]] = {
     'N': (0, 1),
     'E': (1, 0),
@@ -44,7 +51,16 @@ DIRECTION_DELTA: Dict[str, Tuple[int, int]] = {
 
 OPPOSITE: Dict[str, str] = {'N': 'S', 'E': 'W', 'S': 'N', 'W': 'E'}
 
-# Yaw angle (radians) for each cardinal direction in the ROS map frame.
+# Yaw offsets relative to north_yaw for each logical cardinal.
+# 'N' = 0 (straight ahead), 'E' = -π/2 (right), 'S' = π (back), 'W' = +π/2 (left).
+DIRECTION_YAW_OFFSET: Dict[str, float] = {
+    'N':  0.0,
+    'E': -math.pi / 2.0,
+    'S':  math.pi,
+    'W':  math.pi / 2.0,
+}
+
+# Legacy odom-aligned yaw (kept for external callers that haven't migrated).
 DIRECTION_YAW: Dict[str, float] = {
     'N': math.pi / 2.0,
     'E': 0.0,
@@ -62,36 +78,35 @@ LEFT_FIRST_ORDER: Dict[str, List[str]] = {
     'W': ['S', 'W', 'N', 'E'],   # left=S, straight=W, right=N, back=E
 }
 
+# First-step ordering: no prior direction, prefer logical N (startup forward) first.
+FIRST_STEP_ORDER: List[str] = ['N', 'W', 'E', 'S']
+
 # ---------------------------------------------------------------------------
 # Node / Edge data classes
 # ---------------------------------------------------------------------------
 
-# Visit states
-UNVISITED = 'unvisited'
-VISITED = 'visited'
+UNVISITED   = 'unvisited'
+VISITED     = 'visited'
 BACKTRACKED = 'backtracked'
 
-# Node types
-NODE_UNKNOWN = 'unknown'
-NODE_CORRIDOR = 'corridor'   # exactly 2 open directions (one in, one out)
-NODE_JUNCTION = 'junction'   # 3+ open directions
-NODE_DEAD_END = 'dead_end'   # only 1 open direction
-NODE_EXIT = 'exit'           # open space > 2×tile in ≥2 directions
+NODE_UNKNOWN  = 'unknown'
+NODE_CORRIDOR = 'corridor'
+NODE_JUNCTION = 'junction'
+NODE_DEAD_END = 'dead_end'
+NODE_EXIT     = 'exit'
 
 
 @dataclass
 class GridNode:
-    grid_i: int                              # east grid coordinate
-    grid_j: int                              # north grid coordinate
-    x_m: float                              # map-frame x
-    y_m: float                              # map-frame y
+    grid_i: int
+    grid_j: int
+    x_m: float
+    y_m: float
     walls: Dict[str, bool] = field(default_factory=dict)
-    # True = wall present, False = open, missing = unobserved
     walls_observed: Dict[str, int] = field(default_factory=dict)
-    # count of scans that agreed on the wall/open classification
     visit_state: str = UNVISITED
     node_type: str = NODE_UNKNOWN
-    visit_order: int = -1                    # order in which the node was first visited
+    visit_order: int = -1
 
     @property
     def ij(self) -> Tuple[int, int]:
@@ -102,7 +117,7 @@ class GridNode:
 class GridEdge:
     from_ij: Tuple[int, int]
     to_ij: Tuple[int, int]
-    direction: str          # direction of travel from from_ij to to_ij
+    direction: str
     traversed: bool = False
 
 
@@ -111,12 +126,25 @@ class GridEdge:
 # ---------------------------------------------------------------------------
 
 class GridGraph:
-    def __init__(self, origin_x_m: float = 0.0, origin_y_m: float = 0.0):
+    def __init__(
+        self,
+        origin_x_m: float = 0.0,
+        origin_y_m: float = 0.0,
+        north_yaw: float = math.pi / 2.0,
+    ):
         """
-        origin_x_m, origin_y_m: map-frame coordinates of grid cell (0, 0).
+        origin_x_m, origin_y_m : world-frame (odom) coordinates of grid cell (0, 0).
+        north_yaw               : world-frame yaw (radians) that defines logical 'North'.
+                                  Default π/2 keeps the grid odom-aligned (+j = +y, +i = +x).
         """
         self.origin_x_m = origin_x_m
         self.origin_y_m = origin_y_m
+        self.north_yaw  = north_yaw
+
+        # Unit vectors in world frame
+        self._n_vec: Tuple[float, float] = (math.cos(north_yaw), math.sin(north_yaw))
+        self._e_vec: Tuple[float, float] = (math.sin(north_yaw), -math.cos(north_yaw))
+
         self._nodes: Dict[Tuple[int, int], GridNode] = {}
         self._edges: Dict[Tuple[Tuple[int, int], Tuple[int, int]], GridEdge] = {}
         self._visit_counter = 0
@@ -126,14 +154,29 @@ class GridGraph:
     # ------------------------------------------------------------------
 
     def ij_to_xy(self, i: int, j: int) -> Tuple[float, float]:
-        x = self.origin_x_m + i * TILE_SIZE_M
-        y = self.origin_y_m + j * TILE_SIZE_M
+        """Convert logical grid indices to world (odom) x, y."""
+        x = (self.origin_x_m
+             + i * TILE_SIZE_M * self._e_vec[0]
+             + j * TILE_SIZE_M * self._n_vec[0])
+        y = (self.origin_y_m
+             + i * TILE_SIZE_M * self._e_vec[1]
+             + j * TILE_SIZE_M * self._n_vec[1])
         return x, y
 
     def xy_to_ij(self, x_m: float, y_m: float) -> Tuple[int, int]:
-        i = int(round((x_m - self.origin_x_m) / TILE_SIZE_M))
-        j = int(round((y_m - self.origin_y_m) / TILE_SIZE_M))
+        """Convert world (odom) x, y to nearest logical grid indices."""
+        dx = x_m - self.origin_x_m
+        dy = y_m - self.origin_y_m
+        j = int(round((dx * self._n_vec[0] + dy * self._n_vec[1]) / TILE_SIZE_M))
+        i = int(round((dx * self._e_vec[0] + dy * self._e_vec[1]) / TILE_SIZE_M))
         return i, j
+
+    def world_yaw_for_direction(self, logical_dir: str) -> float:
+        """World-frame yaw for a logical cardinal direction."""
+        offset = DIRECTION_YAW_OFFSET.get(logical_dir, 0.0)
+        yaw = self.north_yaw + offset
+        # Normalise to (-π, π]
+        return math.atan2(math.sin(yaw), math.cos(yaw))
 
     # ------------------------------------------------------------------
     # Node management
@@ -170,10 +213,6 @@ class GridGraph:
     # ------------------------------------------------------------------
 
     def record_walls(self, i: int, j: int, wall_readings: Dict[str, bool]):
-        """
-        wall_readings: dict mapping direction -> True (wall) / False (open).
-        Updates node.walls and node.walls_observed counts.
-        """
         node = self.get_or_create_node(i, j)
         for direction, is_wall in wall_readings.items():
             prev = node.walls.get(direction)
@@ -183,13 +222,11 @@ class GridGraph:
             elif prev == is_wall:
                 node.walls_observed[direction] = node.walls_observed.get(direction, 0) + 1
             else:
-                # Disagreement — new observation overrides; reset count
                 node.walls[direction] = is_wall
                 node.walls_observed[direction] = 1
         node.node_type = self.classify_node(node)
 
     def open_directions(self, i: int, j: int) -> List[str]:
-        """Return list of directions that have no wall (False in node.walls)."""
         node = self._nodes.get((i, j))
         if node is None:
             return []
@@ -205,25 +242,14 @@ class GridGraph:
 
     def classify_node(self, node: GridNode) -> str:
         open_dirs = [d for d in DIRECTIONS if node.walls.get(d) is False]
-        n_open = len(open_dirs)
-        if n_open >= 3:
+        n = len(open_dirs)
+        if n >= 3:
             return NODE_JUNCTION
-        if n_open == 2:
+        if n == 2:
             return NODE_CORRIDOR
-        if n_open == 1:
+        if n == 1:
             return NODE_DEAD_END
         return NODE_UNKNOWN
-
-    def is_exit_candidate(self, node: GridNode, exit_threshold_m: float) -> bool:
-        """
-        Exit if open space > exit_threshold_m in ≥2 directions.
-        Exit threshold default is 2×TILE_SIZE_M = 1.2192 m.
-        wall.walls stores True/False only for directions where we have
-        a definitive reading; the actual distance must be checked in the
-        mission node via the scan.  This helper just checks if the node
-        is typed as EXIT.
-        """
-        return node.node_type == NODE_EXIT
 
     def set_exit(self, i: int, j: int):
         node = self.get_or_create_node(i, j)
@@ -257,12 +283,8 @@ class GridGraph:
         allow_revisit: bool = False,
     ) -> Optional[str]:
         """
-        Return the next direction to travel from current_ij using left-first DFS.
-
-        travel_direction: the direction we just came from (None on first step).
-        allow_revisit: if True, already-visited nodes are also candidates
-                       (used during backtracking to reach an unvisited branch).
-        Returns None if no candidate direction is available.
+        Return the next direction from current_ij using left-first DFS.
+        On the first step (travel_direction is None) prefers logical N (startup forward).
         """
         node = self._nodes.get(current_ij)
         if node is None:
@@ -272,16 +294,14 @@ class GridGraph:
         if not open_dirs:
             return None
 
-        # Build preference order
         if travel_direction is not None and travel_direction in LEFT_FIRST_ORDER:
             ordered = LEFT_FIRST_ORDER[travel_direction]
         else:
-            # No prior direction — prefer N first
-            ordered = LEFT_FIRST_ORDER.get('N', list(DIRECTIONS))
+            ordered = FIRST_STEP_ORDER
 
         back_dir = OPPOSITE.get(travel_direction, '') if travel_direction else ''
 
-        # First pass: unvisited neighbours only (skip back direction)
+        # First pass: unvisited neighbours only, skip back direction
         for d in ordered:
             if d == back_dir:
                 continue
@@ -295,7 +315,7 @@ class GridGraph:
         if not allow_revisit:
             return None
 
-        # Second pass: allow revisiting visited nodes (backtracking)
+        # Second pass: allow revisiting
         for d in ordered:
             if d == back_dir:
                 continue
@@ -303,7 +323,6 @@ class GridGraph:
                 continue
             return d
 
-        # Last resort: go back
         if back_dir in open_dirs:
             return back_dir
 
@@ -315,25 +334,16 @@ class GridGraph:
         travel_direction: Optional[str],
     ) -> Optional[List[Tuple[int, int]]]:
         """
-        BFS to find the shortest path from from_ij to the nearest unvisited node
-        reachable via known open edges.
-
-        Returns list of (i, j) coordinates to follow (including from_ij),
-        or None if no unvisited node is reachable.
+        BFS to find the shortest path from from_ij to the nearest unvisited node.
+        Returns list of (i, j) coordinates (including from_ij), or None if none reachable.
         """
-        # BFS
         queue: deque = deque()
         queue.append((from_ij, [from_ij]))
         visited_in_search: Set[Tuple[int, int]] = {from_ij}
 
         while queue:
             current, path = queue.popleft()
-            node = self._nodes.get(current)
-            if node is None:
-                continue
-
-            open_dirs = self.open_directions(*current)
-            for d in open_dirs:
+            for d in self.open_directions(*current):
                 ni, nj = self.neighbor_ij(*current, d)
                 neighbour_ij = (ni, nj)
                 if neighbour_ij in visited_in_search:
@@ -344,7 +354,7 @@ class GridGraph:
                 visited_in_search.add(neighbour_ij)
                 queue.append((neighbour_ij, path + [neighbour_ij]))
 
-        return None  # Entire reachable graph exhausted
+        return None
 
     # ------------------------------------------------------------------
     # Serialisation
@@ -354,10 +364,8 @@ class GridGraph:
         nodes_list = []
         for node in self._nodes.values():
             nodes_list.append({
-                'i': node.grid_i,
-                'j': node.grid_j,
-                'x_m': node.x_m,
-                'y_m': node.y_m,
+                'i': node.grid_i, 'j': node.grid_j,
+                'x_m': node.x_m, 'y_m': node.y_m,
                 'walls': node.walls,
                 'walls_observed': node.walls_observed,
                 'visit_state': node.visit_state,
@@ -367,16 +375,15 @@ class GridGraph:
         edges_list = []
         for edge in self._edges.values():
             edges_list.append({
-                'from_i': edge.from_ij[0],
-                'from_j': edge.from_ij[1],
-                'to_i': edge.to_ij[0],
-                'to_j': edge.to_ij[1],
+                'from_i': edge.from_ij[0], 'from_j': edge.from_ij[1],
+                'to_i': edge.to_ij[0], 'to_j': edge.to_ij[1],
                 'direction': edge.direction,
                 'traversed': edge.traversed,
             })
         return {
             'origin_x_m': self.origin_x_m,
             'origin_y_m': self.origin_y_m,
+            'north_yaw': self.north_yaw,
             'tile_size_m': TILE_SIZE_M,
             'nodes': nodes_list,
             'edges': edges_list,
@@ -384,7 +391,11 @@ class GridGraph:
 
     @classmethod
     def from_json_dict(cls, data: dict) -> 'GridGraph':
-        g = cls(origin_x_m=data['origin_x_m'], origin_y_m=data['origin_y_m'])
+        g = cls(
+            origin_x_m=data['origin_x_m'],
+            origin_y_m=data['origin_y_m'],
+            north_yaw=data.get('north_yaw', math.pi / 2.0),
+        )
         for nd in data.get('nodes', []):
             node = g.get_or_create_node(nd['i'], nd['j'])
             node.walls = nd.get('walls', {})
