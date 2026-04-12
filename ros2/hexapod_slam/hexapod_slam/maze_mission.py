@@ -608,33 +608,36 @@ class MazeMissionNode(Node):
             return
 
         now = self.get_clock().now().nanoseconds / 1e9
-
-        # Check timeout
-        if (self._traversal_start_time is not None and
-                now - self._traversal_start_time > self._traversal_timeout_sec):
-            self._stuck_count += 1
-            self.get_logger().warn(
-                f'Traversal timeout toward {self._target_ij} '
-                f'(stuck_count={self._stuck_count})'
-            )
-            if self._stuck_count >= self._max_stuck:
-                self.get_logger().error(
-                    'Exceeded max stuck count — attempting recovery backup.'
-                )
-                self._publish_recovery_backup()
-                self._stuck_count = 0
-                # Stay in TRAVERSING but reset timer so we try again
-                self._traversal_start_time = now + 2.0  # pause 2 s
-            else:
-                # Try a micro recovery and retry
-                self._publish_recovery_backup()
-                self._traversal_start_time = now + 1.5
-            return
-
         tx, ty = self._node_center_xy(self._target_ij)
         dist = math.hypot(self._odom_x - tx, self._odom_y - ty)
 
-        # Arrived?
+        # ── Real-time obstacle check ────────────────────────────────────────
+        # Check clearance in the travel direction on every tick.  If a wall
+        # appears (clearance < wall_threshold), stop immediately, record the
+        # wall so DFS never picks this direction again, and go back to PLANNING.
+        fwd_clearance = self._cardinal_clearance(self._target_dir)
+        if fwd_clearance < self._wall_thresh:
+            self.get_logger().warn(
+                f'Wall detected mid-traversal toward {self._target_ij}: '
+                f'{fwd_clearance:.2f} m in dir {self._target_dir} '
+                f'(threshold {self._wall_thresh:.2f} m) — aborting, replanning.'
+            )
+            # Record the wall so this direction is never chosen again
+            self._graph.record_walls(*self._current_ij, {self._target_dir: True})
+            # Also mark the reverse direction as open on the target node so
+            # backtracking is still possible if the node was partially created
+            ni, nj = self._graph.neighbor_ij(*self._current_ij, self._target_dir)
+            back_dir = OPPOSITE[self._target_dir]
+            self._graph.record_walls(ni, nj, {back_dir: True})
+            self._publish_stop_path()
+            self._stuck_count = 0
+            self._target_ij = None
+            self._target_dir = None
+            self._publish_markers()
+            self._set_state(S_PLANNING)
+            return
+
+        # ── Arrival check ───────────────────────────────────────────────────
         if dist <= self._center_tol * 2.0:
             self._stuck_count = 0
             prev_ij = self._current_ij
@@ -652,7 +655,28 @@ class MazeMissionNode(Node):
             self._set_state(S_AT_NODE)
             return
 
-        # Still travelling — publish path at regular intervals
+        # ── Traversal timeout ───────────────────────────────────────────────
+        # Fallback: if clearance is OK but robot hasn't moved (mechanical jam).
+        if (self._traversal_start_time is not None and
+                now - self._traversal_start_time > self._traversal_timeout_sec):
+            self._stuck_count += 1
+            self.get_logger().warn(
+                f'Traversal timeout toward {self._target_ij} '
+                f'(stuck_count={self._stuck_count})'
+            )
+            if self._stuck_count >= self._max_stuck:
+                self.get_logger().error(
+                    'Exceeded max stuck count — attempting recovery backup.'
+                )
+                self._publish_recovery_backup()
+                self._stuck_count = 0
+                self._traversal_start_time = now + 2.0
+            else:
+                self._publish_recovery_backup()
+                self._traversal_start_time = now + 1.5
+            return
+
+        # ── Still travelling ─────────────────────────────────────────────────
         if self._should_refresh_path():
             self._publish_path_to(tx, ty, self._heading_to(tx, ty))
 
