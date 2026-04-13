@@ -25,6 +25,7 @@ This README reflects the code that is currently in the repository today, not an 
   - `gap_following_explorer`, which looks for open lidar gaps and publishes a short rolling `nav_msgs/Path`
   - `crab_path_follower`, which converts that path into `cmd_vel`
 - The locomotion node publishes `odom` and the `odom -> base_link` transform from commanded gait motion. This is open-loop odometry, not fused localization.
+- The locomotion node can apply roll and pitch stabilization from the IMU using the PID gains in `ros2/hexapod_locomotion/config/locomotion.yaml`.
 - The exploration behavior is crab-motion based. The follower commands `linear.x` and `linear.y`, but keeps `angular.z = 0`, so the robot does not rotate while following the rolling path.
 - The explorer stops when an obstacle gets too close, publishes a stop/decision point, waits briefly, and chooses a new heading. If it cannot find a traversable gap after repeated replans, it halts.
 
@@ -146,11 +147,44 @@ Current interfaces used by the main ROS 2 nodes:
 - `body_shift`: optional body x/y/z shifts for `locomotion`
 - `servo_targets`: joint targets produced by `locomotion` and consumed by `servo_driver`
 - `imu/data_raw`: IMU output from `imu_publisher`
+- `pid/roll/state`: PID roll tuning state as `geometry_msgs/Vector3Stamped` where `x=setpoint_deg`, `y=measurement_deg`, `z=error_deg`
+- `pid/roll/error_terms`: PID roll contributions as `geometry_msgs/Vector3Stamped` where `x=P`, `y=I`, `z=D`
+- `pid/roll/output`: PID roll correction output as `std_msgs/Float64`
+- `pid/pitch/state`: PID pitch tuning state as `geometry_msgs/Vector3Stamped` where `x=setpoint_deg`, `y=measurement_deg`, `z=error_deg`
+- `pid/pitch/error_terms`: PID pitch contributions as `geometry_msgs/Vector3Stamped` where `x=P`, `y=I`, `z=D`
+- `pid/pitch/output`: PID pitch correction output as `std_msgs/Float64`
 - `odom`: open-loop odometry from `locomotion`
 - `scan`: lidar input for `slam_toolbox` and `gap_following_explorer`
 - `path`: rolling path from `gap_following_explorer` to `crab_path_follower`
 - `decision_point`: point published when the explorer stops to choose a new direction
 - `map`, `odom`, `base_link`: frames expected by the SLAM stack
+
+## PID Tuning
+
+The locomotion node now exposes PID telemetry for body roll and pitch tuning. The gains are loaded from `ros2/hexapod_locomotion/config/locomotion.yaml` using:
+
+- `roll_pid_kp`, `roll_pid_ki`, `roll_pid_kd`, `roll_pid_i_saturation`
+- `pitch_pid_kp`, `pitch_pid_ki`, `pitch_pid_kd`, `pitch_pid_i_saturation`
+- `publish_pid_debug`
+
+If all three gains for an axis are left at `0.0`, that axis falls back to the older `balance_gain` behavior instead of PID output.
+
+Typical tuning tools:
+
+```bash
+ros2 topic echo /pid/roll/state
+ros2 topic echo /pid/roll/error_terms
+ros2 topic echo /pid/pitch/state
+```
+
+For live plots in `rqt_plot`, useful fields are:
+
+- `/pid/roll/state/vector/z`
+- `/pid/roll/error_terms/vector/x`
+- `/pid/roll/error_terms/vector/y`
+- `/pid/roll/error_terms/vector/z`
+- `/pid/roll/output/data`
+- `/pid/pitch/state/vector/z`
 
 ## Current Limitations
 

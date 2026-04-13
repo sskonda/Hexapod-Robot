@@ -2,6 +2,15 @@
   ros__parameters:
     use_imu: true
     balance_gain: 0.0
+    roll_pid_kp: 0.0
+    roll_pid_ki: 0.0
+    roll_pid_kd: 0.0
+    roll_pid_i_saturation: 10.0
+    pitch_pid_kp: 0.0
+    pitch_pid_ki: 0.0
+    pitch_pid_kd: 0.0
+    pitch_pid_i_saturation: 10.0
+    publish_pid_debug: true
     gait: tripod
     control_rate_hz: 50.0
     command_timeout_sec: 0.5

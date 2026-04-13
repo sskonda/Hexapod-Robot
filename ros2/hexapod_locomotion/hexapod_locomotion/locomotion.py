@@ -5,14 +5,16 @@ import math
 from dataclasses import dataclass
 
 import rclpy
-from geometry_msgs.msg import TransformStamped, Twist, Vector3
+from geometry_msgs.msg import TransformStamped, Twist, Vector3, Vector3Stamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, JointState
+from std_msgs.msg import Float64
 from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
 from .kalman_filter import AngleKalmanFilter
+from .pid import Incremental_PID
 
 
 BASE_FOOTPOINTS = [
@@ -75,6 +77,15 @@ class LocomotionNode(Node):
 
         self.declare_parameter('use_imu', True)
         self.declare_parameter('balance_gain', 0.1)
+        self.declare_parameter('roll_pid_kp', 0.0)
+        self.declare_parameter('roll_pid_ki', 0.0)
+        self.declare_parameter('roll_pid_kd', 0.0)
+        self.declare_parameter('roll_pid_i_saturation', 10.0)
+        self.declare_parameter('pitch_pid_kp', 0.0)
+        self.declare_parameter('pitch_pid_ki', 0.0)
+        self.declare_parameter('pitch_pid_kd', 0.0)
+        self.declare_parameter('pitch_pid_i_saturation', 10.0)
+        self.declare_parameter('publish_pid_debug', True)
         self.declare_parameter('gait', 'tripod')
         self.declare_parameter('control_rate_hz', 50.0)
         self.declare_parameter('command_timeout_sec', 0.5)
@@ -99,6 +110,15 @@ class LocomotionNode(Node):
         self.declare_parameter('publish_odom_tf', True)
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
+        self.roll_pid_kp = float(self.get_parameter('roll_pid_kp').value)
+        self.roll_pid_ki = float(self.get_parameter('roll_pid_ki').value)
+        self.roll_pid_kd = float(self.get_parameter('roll_pid_kd').value)
+        self.roll_pid_i_saturation = max(0.0, float(self.get_parameter('roll_pid_i_saturation').value))
+        self.pitch_pid_kp = float(self.get_parameter('pitch_pid_kp').value)
+        self.pitch_pid_ki = float(self.get_parameter('pitch_pid_ki').value)
+        self.pitch_pid_kd = float(self.get_parameter('pitch_pid_kd').value)
+        self.pitch_pid_i_saturation = max(0.0, float(self.get_parameter('pitch_pid_i_saturation').value))
+        self.publish_pid_debug = bool(self.get_parameter('publish_pid_debug').value)
         self.gait = str(self.get_parameter('gait').value).strip().lower()
         self.control_rate_hz = max(1.0, float(self.get_parameter('control_rate_hz').value))
         self.command_timeout_sec = max(0.0, float(self.get_parameter('command_timeout_sec').value))
@@ -139,6 +159,16 @@ class LocomotionNode(Node):
         self.imu_yaw_rate_rps = 0.0
         self.roll_filter = AngleKalmanFilter()
         self.pitch_filter = AngleKalmanFilter()
+        self.roll_pid = Incremental_PID(self.roll_pid_kp, self.roll_pid_ki, self.roll_pid_kd)
+        self.roll_pid.setI_saturation(self.roll_pid_i_saturation)
+        self.pitch_pid = Incremental_PID(self.pitch_pid_kp, self.pitch_pid_ki, self.pitch_pid_kd)
+        self.pitch_pid.setI_saturation(self.pitch_pid_i_saturation)
+        self.roll_pid_active = self.use_imu and any(
+            abs(gain) > 1e-9 for gain in (self.roll_pid_kp, self.roll_pid_ki, self.roll_pid_kd)
+        )
+        self.pitch_pid_active = self.use_imu and any(
+            abs(gain) > 1e-9 for gain in (self.pitch_pid_kp, self.pitch_pid_ki, self.pitch_pid_kd)
+        )
         self.last_imu_stamp = None
         self.last_invalid_warn_time = 0.0
         self.gait_state = None
@@ -149,6 +179,26 @@ class LocomotionNode(Node):
 
         self.target_publisher = self.create_publisher(JointState, 'servo_targets', 10)
         self.odom_publisher = self.create_publisher(Odometry, self.odom_topic, 10)
+        self.pid_state_publishers = {}
+        self.pid_error_term_publishers = {}
+        self.pid_output_publishers = {}
+        if self.publish_pid_debug:
+            for axis_name in ('roll', 'pitch'):
+                self.pid_state_publishers[axis_name] = self.create_publisher(
+                    Vector3Stamped,
+                    f'pid/{axis_name}/state',
+                    10,
+                )
+                self.pid_error_term_publishers[axis_name] = self.create_publisher(
+                    Vector3Stamped,
+                    f'pid/{axis_name}/error_terms',
+                    10,
+                )
+                self.pid_output_publishers[axis_name] = self.create_publisher(
+                    Float64,
+                    f'pid/{axis_name}/output',
+                    10,
+                )
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.cmd_vel_subscription = self.create_subscription(
@@ -188,6 +238,11 @@ class LocomotionNode(Node):
             f'body_shift uses x/y/z in mm. Publishing odom on /{self.odom_topic} '
             f'with TF {"enabled" if self.publish_odom_tf else "disabled"}.'
         )
+        if self.publish_pid_debug:
+            self.get_logger().info(
+                'PID tuning topics: /pid/roll/state, /pid/roll/error_terms, /pid/roll/output, '
+                '/pid/pitch/state, /pid/pitch/error_terms, /pid/pitch/output'
+            )
 
     def cmd_vel_callback(self, msg: Twist):
         self.cmd_linear_x_mps = clamp(msg.linear.x, -self.max_linear_speed_mps, self.max_linear_speed_mps)
@@ -333,6 +388,73 @@ class LocomotionNode(Node):
     def motion_is_zero(self, motion):
         return all(abs(value) < 1e-6 for value in motion)
 
+    def publish_pid_debug_messages(
+        self,
+        axis_name,
+        setpoint_deg,
+        measurement_deg,
+        error_deg,
+        p_term_deg,
+        i_term_deg,
+        d_term_deg,
+        correction_deg,
+    ):
+        if not self.publish_pid_debug:
+            return
+
+        stamp = self.get_clock().now().to_msg()
+
+        state_msg = Vector3Stamped()
+        state_msg.header.stamp = stamp
+        state_msg.header.frame_id = self.base_frame_id
+        state_msg.vector.x = setpoint_deg
+        state_msg.vector.y = measurement_deg
+        state_msg.vector.z = error_deg
+        self.pid_state_publishers[axis_name].publish(state_msg)
+
+        terms_msg = Vector3Stamped()
+        terms_msg.header.stamp = stamp
+        terms_msg.header.frame_id = self.base_frame_id
+        terms_msg.vector.x = p_term_deg
+        terms_msg.vector.y = i_term_deg
+        terms_msg.vector.z = d_term_deg
+        self.pid_error_term_publishers[axis_name].publish(terms_msg)
+
+        output_msg = Float64()
+        output_msg.data = correction_deg
+        self.pid_output_publishers[axis_name].publish(output_msg)
+
+    def pid_corrected_angle(self, axis_name, desired_angle_deg, measured_angle_deg, controller, controller_active):
+        error_deg = desired_angle_deg - measured_angle_deg
+        p_term_deg = 0.0
+        i_term_deg = 0.0
+        d_term_deg = 0.0
+        correction_deg = 0.0
+
+        if controller_active:
+            controller.setPoint = desired_angle_deg
+            correction_deg = controller.PID_compute(measured_angle_deg)
+            error_deg = controller.error
+            p_term_deg = controller.P_error
+            i_term_deg = controller.Ki * controller.I_error
+            d_term_deg = controller.D_error
+        else:
+            controller.reset()
+            controller.setPoint = desired_angle_deg
+
+        self.publish_pid_debug_messages(
+            axis_name=axis_name,
+            setpoint_deg=desired_angle_deg,
+            measurement_deg=measured_angle_deg,
+            error_deg=error_deg,
+            p_term_deg=p_term_deg,
+            i_term_deg=i_term_deg,
+            d_term_deg=d_term_deg,
+            correction_deg=correction_deg,
+        )
+
+        return desired_angle_deg - correction_deg
+
     def calculate_stance_points(self):
         roll_deg, pitch_deg, yaw_deg = self.commanded_body_pose()
         position = [
@@ -358,9 +480,26 @@ class LocomotionNode(Node):
         pitch_deg = self.body_pose_deg[1]
         yaw_deg = self.body_pose_deg[2]
 
-        if self.use_imu and self.balance_gain != 0.0:
-            roll_deg -= self.imu_roll_deg * self.balance_gain
-            pitch_deg -= self.imu_pitch_deg * self.balance_gain
+        if self.use_imu:
+            roll_deg = self.pid_corrected_angle(
+                axis_name='roll',
+                desired_angle_deg=roll_deg,
+                measured_angle_deg=self.imu_roll_deg,
+                controller=self.roll_pid,
+                controller_active=self.roll_pid_active,
+            )
+            pitch_deg = self.pid_corrected_angle(
+                axis_name='pitch',
+                desired_angle_deg=pitch_deg,
+                measured_angle_deg=self.imu_pitch_deg,
+                controller=self.pitch_pid,
+                controller_active=self.pitch_pid_active,
+            )
+
+            if not self.roll_pid_active and self.balance_gain != 0.0:
+                roll_deg -= self.imu_roll_deg * self.balance_gain
+            if not self.pitch_pid_active and self.balance_gain != 0.0:
+                pitch_deg -= self.imu_pitch_deg * self.balance_gain
 
         return (
             clamp(roll_deg, -self.max_roll_deg, self.max_roll_deg),
