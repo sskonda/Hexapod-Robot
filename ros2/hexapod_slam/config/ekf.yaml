@@ -1,7 +1,11 @@
 ekf_filter_node:
   ros__parameters:
-    frequency: 30.0
-    sensor_timeout: 0.2
+    # The current hardware stack publishes IMU data at 10 Hz and raw locomotion
+    # odom at a modest rate on embedded hardware. Running the EKF much faster
+    # than the slowest real sensor just causes deadline misses without adding
+    # useful information.
+    frequency: 10.0
+    sensor_timeout: 0.5
     two_d_mode: true
     publish_tf: true
     publish_acceleration: false
@@ -11,17 +15,17 @@ ekf_filter_node:
     world_frame: odom
 
     odom0: odom/raw
-    odom0_queue_size: 10
+    odom0_queue_size: 5
     odom0_differential: false
     odom0_relative: false
     odom0_config: [true,  true,  false,
                    false, false, true,
                     true,  true,  false,
-                   false, false, true,
+                   false, false, false,
                    false, false, false]
 
     imu0: /imu/data_raw
-    imu0_queue_size: 20
+    imu0_queue_size: 10
     imu0_differential: false
     imu0_relative: false
     imu0_remove_gravitational_acceleration: false
