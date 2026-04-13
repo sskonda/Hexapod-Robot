@@ -46,6 +46,7 @@ class ScanCmdVelSafety(Node):
 
         self.declare_parameter('scan_topic', 'scan')
         self.declare_parameter('scan_yaw_offset_rad', 0.0)
+        self.declare_parameter('cmd_vel_yaw_offset_rad', 0.0)
         self.declare_parameter('input_cmd_vel_topic', 'cmd_vel_nav')
         self.declare_parameter('output_cmd_vel_topic', 'cmd_vel')
         self.declare_parameter('control_rate_hz', 20.0)
@@ -58,6 +59,9 @@ class ScanCmdVelSafety(Node):
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.scan_yaw_offset_rad = float(self.get_parameter('scan_yaw_offset_rad').value)
+        self.cmd_vel_yaw_offset_rad = float(
+            self.get_parameter('cmd_vel_yaw_offset_rad').value
+        )
         self.input_cmd_vel_topic = str(self.get_parameter('input_cmd_vel_topic').value)
         self.output_cmd_vel_topic = str(self.get_parameter('output_cmd_vel_topic').value)
         self.control_rate_hz = max(1.0, float(self.get_parameter('control_rate_hz').value))
@@ -90,6 +94,10 @@ class ScanCmdVelSafety(Node):
         self.get_logger().info(
             f'Scan cmd_vel safety ready — {self.input_cmd_vel_topic} -> {self.output_cmd_vel_topic}, '
             f'stop {self.stop_distance_m:.2f} m, slowdown {self.slowdown_distance_m:.2f} m'
+        )
+        self.get_logger().info(
+            f'Safety uses scan yaw offset {math.degrees(self.scan_yaw_offset_rad):.1f} deg and '
+            f'cmd_vel yaw offset {math.degrees(self.cmd_vel_yaw_offset_rad):.1f} deg.'
         )
 
     def scan_callback(self, msg: LaserScan):
@@ -127,7 +135,10 @@ class ScanCmdVelSafety(Node):
             self.cmd_publisher.publish(filtered_cmd)
             return
 
-        motion_angle_rad = math.atan2(self.latest_cmd.linear.y, self.latest_cmd.linear.x)
+        motion_angle_rad = (
+            math.atan2(self.latest_cmd.linear.y, self.latest_cmd.linear.x)
+            + self.cmd_vel_yaw_offset_rad
+        )
         clearance_m = self.clearance_for_angle(motion_angle_rad)
         scale = self.translation_scale(clearance_m)
 

@@ -44,6 +44,15 @@ def world_vector_to_body_frame(dx_world: float, dy_world: float, yaw_rad: float)
     )
 
 
+def rotate_vector(x_value: float, y_value: float, yaw_rad: float) -> tuple[float, float]:
+    cos_yaw = math.cos(yaw_rad)
+    sin_yaw = math.sin(yaw_rad)
+    return (
+        cos_yaw * x_value - sin_yaw * y_value,
+        sin_yaw * x_value + cos_yaw * y_value,
+    )
+
+
 class CrabPathFollower(Node):
     def __init__(self):
         super().__init__('crab_path_follower')
@@ -59,6 +68,7 @@ class CrabPathFollower(Node):
         self.declare_parameter('yaw_correction_gain', 0.6)
         self.declare_parameter('max_angular_speed_rad_s', 0.12)
         self.declare_parameter('yaw_deadband_deg', 5.0)
+        self.declare_parameter('cmd_vel_yaw_offset_rad', 0.0)
 
         path_topic         = str(self.get_parameter('path_topic').value)
         odom_topic         = str(self.get_parameter('odom_topic').value)
@@ -71,6 +81,9 @@ class CrabPathFollower(Node):
         self.max_yaw_rate  = max(0.0,   float(self.get_parameter('max_angular_speed_rad_s').value))
         self.yaw_deadband  = math.radians(
             max(0.0, float(self.get_parameter('yaw_deadband_deg').value))
+        )
+        self.cmd_vel_yaw_offset_rad = float(
+            self.get_parameter('cmd_vel_yaw_offset_rad').value
         )
 
         # ── State ────────────────────────────────────────────────────────────
@@ -92,7 +105,8 @@ class CrabPathFollower(Node):
         self.get_logger().info(
             f'Crab path follower ready — speed {self.speed:.3f} m/s, '
             f'tolerance {self.tolerance:.3f} m, '
-            f'max yaw correction {self.max_yaw_rate:.2f} rad/s'
+            f'max yaw correction {self.max_yaw_rate:.2f} rad/s, '
+            f'cmd_vel yaw offset {math.degrees(self.cmd_vel_yaw_offset_rad):.1f} deg'
         )
         self.get_logger().info(
             f'Subscribed to {path_topic} and {odom_topic}, publishing on {cmd_vel_topic}'
@@ -164,8 +178,13 @@ class CrabPathFollower(Node):
             self.cmd_pub.publish(cmd)
             return
 
-        cmd.linear.x = self.speed * (body_dx / body_dist)
-        cmd.linear.y = self.speed * (body_dy / body_dist)
+        desired_body_x = self.speed * (body_dx / body_dist)
+        desired_body_y = self.speed * (body_dy / body_dist)
+        cmd.linear.x, cmd.linear.y = rotate_vector(
+            desired_body_x,
+            desired_body_y,
+            -self.cmd_vel_yaw_offset_rad,
+        )
 
         yaw_error = normalize_angle(self.heading_hold_yaw - self.robot_yaw)
         if self.max_yaw_rate > 0.0 and abs(yaw_error) > self.yaw_deadband:

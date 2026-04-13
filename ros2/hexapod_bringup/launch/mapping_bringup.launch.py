@@ -95,6 +95,7 @@ def generate_launch_description():
         'crab_follower_max_angular_speed_rad_s'
     )
     crab_follower_yaw_deadband_deg = LaunchConfiguration('crab_follower_yaw_deadband_deg')
+    cmd_vel_yaw_offset_rad = LaunchConfiguration('cmd_vel_yaw_offset_rad')
     enable_robot_localization = LaunchConfiguration('enable_robot_localization')
     robot_localization_params_file = LaunchConfiguration('robot_localization_params_file')
     raw_odom_topic = LaunchConfiguration('raw_odom_topic')
@@ -318,17 +319,17 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_stop_distance_m',
-            default_value='0.55',
+            default_value='0.65',
             description='Minimum allowed lidar clearance before stopping and replanning.',
         ),
         DeclareLaunchArgument(
             'explorer_open_distance_m',
-            default_value='0.90',
+            default_value='0.80',
             description='Preferred clearance used to score open gaps.',
         ),
         DeclareLaunchArgument(
             'explorer_goal_backoff_m',
-            default_value='0.35',
+            default_value='0.45',
             description='Distance kept between the rolling goal point and the detected obstacle.',
         ),
         DeclareLaunchArgument(
@@ -343,7 +344,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_footprint_radius_m',
-            default_value='0.4572',
+            default_value='0.30',
             description='Robot circular footprint radius used by the explorer.',
         ),
         DeclareLaunchArgument(
@@ -353,7 +354,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_clearance_window_deg',
-            default_value='12.0',
+            default_value='15.0',
             description='Half-width of the lidar sector used to evaluate a candidate heading.',
         ),
         DeclareLaunchArgument(
@@ -368,7 +369,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_max_replan_attempts',
-            default_value='5',
+            default_value='8',
             description='Number of consecutive obstacle stops before declaring a dead end and halting.',
         ),
         DeclareLaunchArgument(
@@ -378,17 +379,17 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_max_yaw_drift_deg',
-            default_value='8.0',
+            default_value='15.0',
             description='Maximum odom yaw drift allowed before the explorer forces a replan.',
         ),
         DeclareLaunchArgument(
             'explorer_min_progress_m',
-            default_value='0.15',
+            default_value='0.10',
             description='Minimum travel that counts as progress before a stop.',
         ),
         DeclareLaunchArgument(
             'explorer_recovery_backup_m',
-            default_value='0.30',
+            default_value='0.20',
             description='Recovery backup distance used when repeated low-progress stops occur.',
         ),
         DeclareLaunchArgument(
@@ -403,32 +404,40 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'crab_follower_yaw_correction_gain',
-            default_value='1.5',
+            default_value='0.6',
             description='Proportional yaw correction gain used by the crab path follower.',
         ),
         DeclareLaunchArgument(
             'crab_follower_max_angular_speed_rad_s',
-            default_value='0.35',
+            default_value='0.12',
             description='Maximum yaw-rate correction commanded by the crab path follower.',
         ),
         DeclareLaunchArgument(
             'crab_follower_yaw_deadband_deg',
-            default_value='3.0',
+            default_value='5.0',
             description='Yaw-error deadband for the crab path follower.',
         ),
         DeclareLaunchArgument(
+            'cmd_vel_yaw_offset_rad',
+            default_value='0.0',
+            description=(
+                'Yaw offset between locomotion cmd_vel +X and the planner/base_link forward axis. '
+                'Use +1.5708 if forward commands physically move left, or -1.5708 if they move right.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'safety_stop_distance_m',
-            default_value='0.72',
+            default_value='0.65',
             description='Emergency-stop clearance used by the scan cmd_vel safety filter.',
         ),
         DeclareLaunchArgument(
             'safety_slowdown_distance_m',
-            default_value='0.90',
+            default_value='0.85',
             description='Slowdown clearance used by the scan cmd_vel safety filter.',
         ),
         DeclareLaunchArgument(
             'safety_clearance_window_deg',
-            default_value='20.0',
+            default_value='15.0',
             description='LiDAR sector half-width used by the scan cmd_vel safety filter.',
         ),
         IncludeLaunchDescription(
@@ -504,6 +513,7 @@ def generate_launch_description():
                 'crab_follower_yaw_correction_gain': crab_follower_yaw_correction_gain,
                 'crab_follower_max_angular_speed_rad_s': crab_follower_max_angular_speed_rad_s,
                 'crab_follower_yaw_deadband_deg': crab_follower_yaw_deadband_deg,
+                'cmd_vel_yaw_offset_rad': cmd_vel_yaw_offset_rad,
                 'safety_stop_distance_m': safety_stop_distance_m,
                 'safety_slowdown_distance_m': safety_slowdown_distance_m,
                 'safety_clearance_window_deg': safety_clearance_window_deg,

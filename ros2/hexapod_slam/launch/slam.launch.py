@@ -61,6 +61,7 @@ def generate_launch_description():
         'crab_follower_max_angular_speed_rad_s'
     )
     crab_follower_yaw_deadband_deg = LaunchConfiguration('crab_follower_yaw_deadband_deg')
+    cmd_vel_yaw_offset_rad = LaunchConfiguration('cmd_vel_yaw_offset_rad')
     safety_stop_distance_m = LaunchConfiguration('safety_stop_distance_m')
     safety_slowdown_distance_m = LaunchConfiguration('safety_slowdown_distance_m')
     safety_clearance_window_deg = LaunchConfiguration('safety_clearance_window_deg')
@@ -331,6 +332,14 @@ def generate_launch_description():
             description='Yaw-error deadband that suppresses needless oscillation.',
         ),
         DeclareLaunchArgument(
+            'cmd_vel_yaw_offset_rad',
+            default_value='0.0',
+            description=(
+                'Yaw offset between locomotion cmd_vel +X and the planner/base_link forward axis. '
+                'Use this if the robot always moves with a constant left/right heading bias.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'safety_stop_distance_m',
             default_value='0.65',
             description='Emergency-stop clearance used by the lower-layer scan safety filter.',
@@ -443,6 +452,7 @@ def generate_launch_description():
                 'yaw_correction_gain': crab_follower_yaw_correction_gain,
                 'max_angular_speed_rad_s': crab_follower_max_angular_speed_rad_s,
                 'yaw_deadband_deg': crab_follower_yaw_deadband_deg,
+                'cmd_vel_yaw_offset_rad': cmd_vel_yaw_offset_rad,
             }],
         ),
         Node(
@@ -454,6 +464,7 @@ def generate_launch_description():
             parameters=[{
                 'scan_topic': scan_topic,
                 'scan_yaw_offset_rad': laser_yaw,
+                'cmd_vel_yaw_offset_rad': cmd_vel_yaw_offset_rad,
                 'input_cmd_vel_topic': raw_cmd_vel_topic,
                 'output_cmd_vel_topic': safe_cmd_vel_topic,
                 'control_rate_hz': 20.0,

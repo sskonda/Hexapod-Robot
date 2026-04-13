@@ -251,6 +251,10 @@ class GapFollowingExplorerNode(Node):
             f'and stop points on {self.stop_point_topic}'
         )
         self.get_logger().info(
+            f'Heading interpretation uses scan yaw offset {math.degrees(self.scan_yaw_offset_rad):.1f} deg '
+            f'(laser -> base_link).'
+        )
+        self.get_logger().info(
             f'Footprint radius {self.footprint_radius_m:.2f} m with {self.wall_clearance_margin_m:.2f} m '
             f'wall buffer -> stop_distance={self.stop_distance_m:.2f} m, '
             f'goal_backoff={self.goal_backoff_m:.2f} m, min_gap_width={self.minimum_gap_width_m:.2f} m'
