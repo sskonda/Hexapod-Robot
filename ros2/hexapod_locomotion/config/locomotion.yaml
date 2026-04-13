@@ -10,10 +10,10 @@
     pitch_pid_ki: 0.0
     pitch_pid_kd: 0.0
     pitch_pid_i_saturation: 10.0
-    yaw_pid_kp: 0.0
-    yaw_pid_ki: 0.0
+    yaw_pid_kp: 0.6
+    yaw_pid_ki: 0.2
     yaw_pid_kd: 0.0
-    yaw_pid_i_saturation: 10.0
+    yaw_pid_i_saturation: 0.5
     publish_pid_debug: true
     gait: tripod
     control_rate_hz: 50.0
