@@ -45,6 +45,7 @@ class ScanCmdVelSafety(Node):
         super().__init__('scan_cmd_vel_safety')
 
         self.declare_parameter('scan_topic', 'scan')
+        self.declare_parameter('scan_yaw_offset_rad', 0.0)
         self.declare_parameter('input_cmd_vel_topic', 'cmd_vel_nav')
         self.declare_parameter('output_cmd_vel_topic', 'cmd_vel')
         self.declare_parameter('control_rate_hz', 20.0)
@@ -56,6 +57,7 @@ class ScanCmdVelSafety(Node):
         self.declare_parameter('preserve_turning_when_blocked', False)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
+        self.scan_yaw_offset_rad = float(self.get_parameter('scan_yaw_offset_rad').value)
         self.input_cmd_vel_topic = str(self.get_parameter('input_cmd_vel_topic').value)
         self.output_cmd_vel_topic = str(self.get_parameter('output_cmd_vel_topic').value)
         self.control_rate_hz = max(1.0, float(self.get_parameter('control_rate_hz').value))
@@ -175,7 +177,8 @@ class ScanCmdVelSafety(Node):
 
         angle_increment = abs(scan.angle_increment)
         window_beams = max(1, int(self.clearance_window_rad / angle_increment))
-        raw_index = (target_angle_rad - scan.angle_min) / scan.angle_increment
+        target_scan_angle_rad = target_angle_rad - self.scan_yaw_offset_rad
+        raw_index = (target_scan_angle_rad - scan.angle_min) / scan.angle_increment
         center_index = int(round(raw_index))
         center_index = max(window_beams, min(len(scan.ranges) - 1 - window_beams, center_index))
 

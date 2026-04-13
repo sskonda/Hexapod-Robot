@@ -124,6 +124,7 @@ class GapFollowingExplorerNode(Node):
         super().__init__('gap_following_explorer')
 
         self.declare_parameter('scan_topic', '/scan')
+        self.declare_parameter('scan_yaw_offset_rad', 0.0)
         self.declare_parameter('odom_topic', 'odom')
         self.declare_parameter('path_topic', 'path')
         self.declare_parameter('stop_point_topic', 'decision_point')
@@ -152,6 +153,7 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('recovery_backup_m', 0.20)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
+        self.scan_yaw_offset_rad = float(self.get_parameter('scan_yaw_offset_rad').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
         self.path_topic = str(self.get_parameter('path_topic').value)
         self.stop_point_topic = str(self.get_parameter('stop_point_topic').value)
@@ -441,6 +443,7 @@ class GapFollowingExplorerNode(Node):
                 continue
 
             angle_rad = scan.angle_min + index * scan.angle_increment
+            angle_rad = normalize_angle(angle_rad + self.scan_yaw_offset_rad)
             if (
                 not allow_reverse
                 and incoming_angle_base_rad is not None
@@ -494,7 +497,8 @@ class GapFollowingExplorerNode(Node):
         scan = self.latest_scan
         angle_increment = abs(scan.angle_increment)
         window_beams = max(1, int(self.clearance_window_rad / angle_increment))
-        raw_index = (target_angle_rad - scan.angle_min) / scan.angle_increment
+        target_scan_angle_rad = normalize_angle(target_angle_rad - self.scan_yaw_offset_rad)
+        raw_index = (target_scan_angle_rad - scan.angle_min) / scan.angle_increment
         center_index = int(round(raw_index))
         center_index = max(window_beams, min(len(scan.ranges) - 1 - window_beams, center_index))
         if use_stable:

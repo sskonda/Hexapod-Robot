@@ -402,6 +402,7 @@ def generate_launch_description():
             condition=IfCondition(enable_explorer),
             parameters=[{
                 'scan_topic': scan_topic,
+                'scan_yaw_offset_rad': laser_yaw,
                 'odom_topic': odom_topic,
                 'path_topic': path_topic,
                 'stop_point_topic': stop_point_topic,
@@ -452,6 +453,7 @@ def generate_launch_description():
             condition=IfCondition(enable_explorer),
             parameters=[{
                 'scan_topic': scan_topic,
+                'scan_yaw_offset_rad': laser_yaw,
                 'input_cmd_vel_topic': raw_cmd_vel_topic,
                 'output_cmd_vel_topic': safe_cmd_vel_topic,
                 'control_rate_hz': 20.0,
