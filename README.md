@@ -153,6 +153,9 @@ Current interfaces used by the main ROS 2 nodes:
 - `pid/pitch/state`: PID pitch tuning state as `geometry_msgs/Vector3Stamped` where `x=setpoint_deg`, `y=measurement_deg`, `z=error_deg`
 - `pid/pitch/error_terms`: PID pitch contributions as `geometry_msgs/Vector3Stamped` where `x=P`, `y=I`, `z=D`
 - `pid/pitch/output`: PID pitch correction output as `std_msgs/Float64`
+- `pid/yaw/state`: PID yaw-rate tuning state as `geometry_msgs/Vector3Stamped` where `x=setpoint_rad_s`, `y=measurement_rad_s`, `z=error_rad_s`
+- `pid/yaw/error_terms`: PID yaw-rate contributions as `geometry_msgs/Vector3Stamped` where `x=P`, `y=I`, `z=D`
+- `pid/yaw/output`: PID yaw-rate correction output as `std_msgs/Float64`
 - `odom`: open-loop odometry from `locomotion`
 - `scan`: lidar input for `slam_toolbox` and `gap_following_explorer`
 - `path`: rolling path from `gap_following_explorer` to `crab_path_follower`
@@ -165,9 +168,14 @@ The locomotion node now exposes PID telemetry for body roll and pitch tuning. Th
 
 - `roll_pid_kp`, `roll_pid_ki`, `roll_pid_kd`, `roll_pid_i_saturation`
 - `pitch_pid_kp`, `pitch_pid_ki`, `pitch_pid_kd`, `pitch_pid_i_saturation`
+- `yaw_pid_kp`, `yaw_pid_ki`, `yaw_pid_kd`, `yaw_pid_i_saturation`
 - `publish_pid_debug`
 
-If all three gains for an axis are left at `0.0`, that axis falls back to the older `balance_gain` behavior instead of PID output.
+Roll and pitch PID use body angle in degrees. Yaw PID uses yaw rate in rad/s, with `cmd_vel.angular.z` as the setpoint and IMU gyro `z` as the feedback.
+
+All PID axes are time-normalized in the current code: the integral term accumulates `error * dt` and the derivative term uses `(error - last_error) / dt`. If you change from older per-cycle gains, expect to retune `ki` and `kd`.
+
+If all three gains for an axis are left at `0.0`, roll and pitch fall back to the older `balance_gain` behavior, while yaw falls back to the older `yaw_correction_gain` drift correction.
 
 Typical tuning tools:
 
@@ -175,6 +183,7 @@ Typical tuning tools:
 ros2 topic echo /pid/roll/state
 ros2 topic echo /pid/roll/error_terms
 ros2 topic echo /pid/pitch/state
+ros2 topic echo /pid/yaw/state
 ```
 
 For live plots in `rqt_plot`, useful fields are:
@@ -185,6 +194,11 @@ For live plots in `rqt_plot`, useful fields are:
 - `/pid/roll/error_terms/vector/z`
 - `/pid/roll/output/data`
 - `/pid/pitch/state/vector/z`
+- `/pid/yaw/state/vector/z`
+- `/pid/yaw/error_terms/vector/x`
+- `/pid/yaw/error_terms/vector/y`
+- `/pid/yaw/error_terms/vector/z`
+- `/pid/yaw/output/data`
 
 ## Current Limitations
 

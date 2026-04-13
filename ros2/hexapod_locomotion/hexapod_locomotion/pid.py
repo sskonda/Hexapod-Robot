@@ -17,12 +17,13 @@ class Incremental_PID:
         self.output = 0.0
 
     # PID Calculation
-    def PID_compute(self,feedback_val):
+    def PID_compute(self,feedback_val, dt=1.0):
+        dt = max(1e-6, float(dt))
         error = self.setPoint - feedback_val
         self.error = error
         self.P_error = self.Kp * error
-        self.I_error += error 
-        self.D_error = self.Kd * (error - self.last_error)
+        self.I_error += error * dt
+        self.D_error = self.Kd * (error - self.last_error) / dt
         if (self.I_error < -self.I_saturation ):
             self.I_error = -self.I_saturation
         elif (self.I_error > self.I_saturation):
