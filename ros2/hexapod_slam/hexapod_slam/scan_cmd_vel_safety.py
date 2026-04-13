@@ -52,8 +52,8 @@ class ScanCmdVelSafety(Node):
         self.declare_parameter('cmd_timeout_sec', 0.5)
         self.declare_parameter('clearance_window_deg', 15.0)
         self.declare_parameter('stop_distance_m', 0.65)
-        self.declare_parameter('slowdown_distance_m', 0.90)
-        self.declare_parameter('preserve_turning_when_blocked', True)
+        self.declare_parameter('slowdown_distance_m', 0.85)
+        self.declare_parameter('preserve_turning_when_blocked', False)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.input_cmd_vel_topic = str(self.get_parameter('input_cmd_vel_topic').value)

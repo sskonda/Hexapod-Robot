@@ -8,8 +8,9 @@ The explorer publishes goals in the odom frame, but locomotion interprets
 ``cmd_vel`` in the robot body frame.  On a real hexapod the body can yaw a
 few degrees due to slip or uneven gait cycles, so the follower must rotate
 the odom-frame goal vector back into the current body frame before sending
-linear commands.  A small bounded yaw-rate correction helps the body realign
-to the committed heading instead of assuming angular drift never happens.
+linear commands.  The robot is still intended to crab rather than rotate to
+face the travel direction, so the yaw controller acts as a heading hold that
+counteracts drift instead of commanding the body to face the path heading.
 """
 
 import math
@@ -55,9 +56,9 @@ class CrabPathFollower(Node):
         self.declare_parameter('goal_tolerance_m',    0.08)
         self.declare_parameter('path_timeout_sec',    1.0)
         self.declare_parameter('cmd_vel_rate_hz',     20.0)
-        self.declare_parameter('yaw_correction_gain', 1.5)
-        self.declare_parameter('max_angular_speed_rad_s', 0.35)
-        self.declare_parameter('yaw_deadband_deg', 3.0)
+        self.declare_parameter('yaw_correction_gain', 0.6)
+        self.declare_parameter('max_angular_speed_rad_s', 0.12)
+        self.declare_parameter('yaw_deadband_deg', 5.0)
 
         path_topic         = str(self.get_parameter('path_topic').value)
         odom_topic         = str(self.get_parameter('odom_topic').value)
@@ -78,6 +79,7 @@ class CrabPathFollower(Node):
         self.robot_x          = 0.0
         self.robot_y          = 0.0
         self.robot_yaw        = 0.0
+        self.heading_hold_yaw = None
 
         # ── Publishers / Subscribers ─────────────────────────────────────────
         self.cmd_pub = self.create_publisher(Twist, cmd_vel_topic, 10)
@@ -120,17 +122,20 @@ class CrabPathFollower(Node):
 
         # No path received yet
         if self.latest_path is None or self.latest_path_time is None:
+            self.heading_hold_yaw = None
             self.cmd_pub.publish(cmd)
             return
 
         # Path is stale — stop
         age_sec = (self.get_clock().now() - self.latest_path_time).nanoseconds * 1e-9
         if age_sec > self.path_timeout:
+            self.heading_hold_yaw = None
             self.cmd_pub.publish(cmd)
             return
 
         # A stop-path has only one pose (explorer publishes this when replanning)
         if len(self.latest_path.poses) < 2:
+            self.heading_hold_yaw = None
             self.cmd_pub.publish(cmd)
             return
 
@@ -143,12 +148,16 @@ class CrabPathFollower(Node):
 
         # Within tolerance → hold position and wait for a new path
         if dist < self.tolerance:
+            self.heading_hold_yaw = None
             self.cmd_pub.publish(cmd)
             return
 
         # Rotate the odom-frame goal vector into the robot body frame before
         # commanding locomotion.  This keeps the translation aligned with the
         # real robot even if the body yaws slightly relative to odom.
+        if self.heading_hold_yaw is None:
+            self.heading_hold_yaw = self.robot_yaw
+
         body_dx, body_dy = world_vector_to_body_frame(dx, dy, self.robot_yaw)
         body_dist = math.hypot(body_dx, body_dy)
         if body_dist < 1e-6:
@@ -158,17 +167,7 @@ class CrabPathFollower(Node):
         cmd.linear.x = self.speed * (body_dx / body_dist)
         cmd.linear.y = self.speed * (body_dy / body_dist)
 
-        desired_world_yaw = quaternion_to_yaw(
-            goal_pose.orientation.x,
-            goal_pose.orientation.y,
-            goal_pose.orientation.z,
-            goal_pose.orientation.w,
-        )
-        if abs(goal_pose.orientation.x) < 1e-9 and abs(goal_pose.orientation.y) < 1e-9 \
-                and abs(goal_pose.orientation.z) < 1e-9 and abs(goal_pose.orientation.w) < 1e-9:
-            desired_world_yaw = math.atan2(dy, dx)
-
-        yaw_error = normalize_angle(desired_world_yaw - self.robot_yaw)
+        yaw_error = normalize_angle(self.heading_hold_yaw - self.robot_yaw)
         if self.max_yaw_rate > 0.0 and abs(yaw_error) > self.yaw_deadband:
             cmd.angular.z = clamp(
                 self.yaw_gain * yaw_error,
