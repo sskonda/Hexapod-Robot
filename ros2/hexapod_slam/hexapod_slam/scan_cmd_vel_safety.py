@@ -119,6 +119,8 @@ class ScanCmdVelSafety(Node):
         self.latest_cmd: Optional[Twist] = None
         self.latest_cmd_time = None
         self.last_clearance_state = 'clear'
+        self.active_side_escape_direction = 0.0
+        self.active_side_escape_wall_side = ''
 
         self.cmd_publisher = self.create_publisher(Twist, self.output_cmd_vel_topic, 10)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
@@ -168,10 +170,29 @@ class ScanCmdVelSafety(Node):
             return
 
         if not self.scan_is_fresh():
+            self.active_side_escape_direction = 0.0
+            self.active_side_escape_wall_side = ''
             if not self.preserve_turning_when_blocked:
                 filtered_cmd.angular.z = 0.0
             self._log_state('blocked', 0.0, 'stale LiDAR data')
             self.cmd_publisher.publish(filtered_cmd)
+            return
+
+        body_left_clearance_m = self.clearance_for_angle(
+            math.pi / 2.0,
+            window_rad=self.side_clearance_window_rad,
+        )
+        body_right_clearance_m = self.clearance_for_angle(
+            -math.pi / 2.0,
+            window_rad=self.side_clearance_window_rad,
+        )
+        side_escape_cmd = self.side_escape_command(
+            translation_speed,
+            body_left_clearance_m,
+            body_right_clearance_m,
+        )
+        if side_escape_cmd is not None:
+            self.cmd_publisher.publish(side_escape_cmd)
             return
 
         motion_vector_x, motion_vector_y = rotate_vector(
@@ -328,6 +349,96 @@ class ScanCmdVelSafety(Node):
             1.0,
         )
         return self.max_side_push_ratio * closeness * imbalance
+
+    def side_escape_command(
+        self,
+        translation_speed: float,
+        left_clearance_m: float,
+        right_clearance_m: float,
+    ) -> Optional[Twist]:
+        escape_direction = self.active_side_escape_direction
+        wall_side = self.active_side_escape_wall_side
+
+        if escape_direction != 0.0:
+            wall_clearance_m = (
+                left_clearance_m if wall_side == 'left' else right_clearance_m
+            )
+            if wall_clearance_m >= self.side_slowdown_distance_m:
+                self.active_side_escape_direction = 0.0
+                self.active_side_escape_wall_side = ''
+                escape_direction = 0.0
+                wall_side = ''
+
+        if escape_direction == 0.0:
+            left_too_close = left_clearance_m <= self.side_stop_distance_m
+            right_too_close = right_clearance_m <= self.side_stop_distance_m
+            if not left_too_close and not right_too_close:
+                return None
+
+            if left_too_close and right_too_close:
+                if abs(left_clearance_m - right_clearance_m) <= self.side_push_deadband_m:
+                    self._log_state(
+                        'blocked',
+                        min(left_clearance_m, right_clearance_m),
+                        (
+                            'both side walls are too close for a safe escape '
+                            f'(left {left_clearance_m:.2f} m, right {right_clearance_m:.2f} m)'
+                        ),
+                    )
+                    return Twist()
+                if left_clearance_m < right_clearance_m:
+                    escape_direction = -1.0
+                    wall_side = 'left'
+                else:
+                    escape_direction = 1.0
+                    wall_side = 'right'
+            elif left_too_close:
+                escape_direction = -1.0
+                wall_side = 'left'
+            else:
+                escape_direction = 1.0
+                wall_side = 'right'
+
+            self.active_side_escape_direction = escape_direction
+            self.active_side_escape_wall_side = wall_side
+
+        escape_cmd = Twist()
+        if wall_side == 'left':
+            target_clearance_m = right_clearance_m
+        else:
+            target_clearance_m = left_clearance_m
+
+        if target_clearance_m <= self.side_stop_distance_m:
+            self._log_state(
+                'blocked',
+                min(left_clearance_m, right_clearance_m),
+                (
+                    f'escape away from {wall_side} wall is blocked by the opposite side '
+                    f'(left {left_clearance_m:.2f} m, right {right_clearance_m:.2f} m)'
+                ),
+            )
+            return escape_cmd
+
+        escape_speed = translation_speed * self.clearance_scale(
+            target_clearance_m,
+            self.side_stop_distance_m,
+            self.side_slowdown_distance_m,
+        )
+        escape_cmd.linear.x, escape_cmd.linear.y = rotate_vector(
+            0.0,
+            escape_direction * escape_speed,
+            -self.cmd_vel_yaw_offset_rad,
+        )
+        self._log_state(
+            'escape',
+            min(left_clearance_m, right_clearance_m),
+            (
+                f'forcing {"right" if escape_direction < 0.0 else "left"} escape away from {wall_side} wall '
+                f'(left {left_clearance_m:.2f} m, right {right_clearance_m:.2f} m, '
+                f'speed {escape_speed:.3f} m/s)'
+            ),
+        )
+        return escape_cmd
 
     def clearance_for_angle(self, target_angle_rad: float, window_rad: Optional[float] = None) -> float:
         current = self.scan_window_clearance(
