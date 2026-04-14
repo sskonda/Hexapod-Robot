@@ -34,6 +34,7 @@ setup(
             'path_plan = hexapod_locomotion.path_plan:main',
             'servo_driver = hexapod_locomotion.servo_driver:main',
             'calibration = hexapod_locomotion.calibration:main',
+            'kalman_calibration = hexapod_locomotion.kalman_calibration:main',
             'calibration_matrix = hexapod_locomotion.calibration_matrix:main',
             'calibration_points = hexapod_locomotion.calibration_points:main',
         ],

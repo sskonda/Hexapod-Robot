@@ -3,8 +3,10 @@
 import copy
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import TransformStamped, Twist, Vector3
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -12,6 +14,7 @@ from sensor_msgs.msg import Imu, JointState
 from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
+from .kalman_calibration_store import load_kalman_calibration
 from .kalman_filter import AngleKalmanFilter
 
 
@@ -73,6 +76,12 @@ class LocomotionNode(Node):
     def __init__(self):
         super().__init__('locomotion')
 
+        default_kalman_yaml = str(
+            Path(get_package_share_directory('hexapod_locomotion'))
+            / 'config'
+            / 'imu_kalman_calibration.yaml'
+        )
+
         self.declare_parameter('use_imu', True)
         self.declare_parameter('balance_gain', 0.1)
         self.declare_parameter('gait', 'tripod')
@@ -97,6 +106,7 @@ class LocomotionNode(Node):
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_odom_tf', True)
+        self.declare_parameter('kalman_calibration_file', default_kalman_yaml)
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
         self.gait = str(self.get_parameter('gait').value).strip().lower()
@@ -121,6 +131,10 @@ class LocomotionNode(Node):
         self.odom_frame_id = str(self.get_parameter('odom_frame_id').value)
         self.base_frame_id = str(self.get_parameter('base_frame_id').value)
         self.publish_odom_tf = bool(self.get_parameter('publish_odom_tf').value)
+        self.kalman_calibration_file = str(self.get_parameter('kalman_calibration_file').value).strip()
+        if not self.kalman_calibration_file:
+            self.kalman_calibration_file = default_kalman_yaml
+        self.kalman_calibration = load_kalman_calibration(self.kalman_calibration_file)
 
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
@@ -137,8 +151,8 @@ class LocomotionNode(Node):
         self.imu_roll_deg = 0.0
         self.imu_pitch_deg = 0.0
         self.imu_yaw_rate_rps = 0.0
-        self.roll_filter = AngleKalmanFilter()
-        self.pitch_filter = AngleKalmanFilter()
+        self.roll_filter = self.create_angle_filter('roll')
+        self.pitch_filter = self.create_angle_filter('pitch')
         self.last_imu_stamp = None
         self.last_invalid_warn_time = 0.0
         self.gait_state = None
@@ -183,10 +197,50 @@ class LocomotionNode(Node):
 
         self.get_logger().info('Locomotion controller ready')
         self.get_logger().info('Topics: /cmd_vel, /body_pose, /body_shift, /servo_targets')
+        if self.use_imu:
+            self.log_kalman_configuration()
         self.get_logger().info(
             f'cmd_vel uses m/s and rad/s. body_pose uses roll/pitch/yaw in degrees. '
             f'body_shift uses x/y/z in mm. Publishing odom on /{self.odom_topic} '
             f'with TF {"enabled" if self.publish_odom_tf else "disabled"}.'
+        )
+
+    def create_angle_filter(self, axis_name):
+        axis_config = self.kalman_calibration.get(axis_name, {})
+        fixed_gain = None
+        if self.kalman_calibration.get('calibrated') and axis_config.get('use_fixed_gain'):
+            fixed_gain = (
+                axis_config.get('kalman_gain_angle', 0.0),
+                axis_config.get('kalman_gain_bias', 0.0),
+            )
+
+        return AngleKalmanFilter(
+            q_angle=axis_config.get('q_angle', 0.001),
+            q_bias=axis_config.get('q_bias', 0.003),
+            r_measure=axis_config.get('r_measure', 0.03),
+            initial_bias=axis_config.get('initial_bias_deg_s', 0.0),
+            fixed_kalman_gain=fixed_gain,
+        )
+
+    def log_kalman_configuration(self):
+        if not self.kalman_calibration.get('calibrated'):
+            self.get_logger().info(
+                f'No saved Kalman calibration enabled at {self.kalman_calibration_file}; '
+                'using live Kalman gain updates.'
+            )
+            return
+
+        roll_config = self.kalman_calibration['roll']
+        pitch_config = self.kalman_calibration['pitch']
+        self.get_logger().info(
+            f'Loaded Kalman calibration from {self.kalman_calibration_file} '
+            f'({self.kalman_calibration.get("sample_count", 0)} samples)'
+        )
+        self.get_logger().info(
+            'Roll gain='
+            f'({roll_config["kalman_gain_angle"]:.6f}, {roll_config["kalman_gain_bias"]:.6f}), '
+            'pitch gain='
+            f'({pitch_config["kalman_gain_angle"]:.6f}, {pitch_config["kalman_gain_bias"]:.6f})'
         )
 
     def cmd_vel_callback(self, msg: Twist):
@@ -218,6 +272,8 @@ class LocomotionNode(Node):
 
         if self.last_imu_stamp is None:
             dt = 0.1  # matches the 10 Hz publish rate in imu_publisher.py
+            self.roll_filter.angle = accel_roll
+            self.pitch_filter.angle = accel_pitch
         else:
             dt = (
                 msg.header.stamp.sec - self.last_imu_stamp.sec

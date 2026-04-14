@@ -1,3 +1,8 @@
+DEFAULT_Q_ANGLE = 0.001
+DEFAULT_Q_BIAS = 0.003
+DEFAULT_R_MEASURE = 0.03
+
+
 class AngleKalmanFilter:
     """
     Two-state Kalman filter for tilt angle estimation from IMU data.
@@ -19,16 +24,34 @@ class AngleKalmanFilter:
                      decrease to follow accelerometer readings more closely.
     """
 
-    def __init__(self, q_angle=0.001, q_bias=0.003, r_measure=0.03):
-        self.q_angle = q_angle
-        self.q_bias = q_bias
-        self.r_measure = r_measure
+    def __init__(
+        self,
+        q_angle=DEFAULT_Q_ANGLE,
+        q_bias=DEFAULT_Q_BIAS,
+        r_measure=DEFAULT_R_MEASURE,
+        initial_angle=0.0,
+        initial_bias=0.0,
+        fixed_kalman_gain=None,
+    ):
+        self.q_angle = float(q_angle)
+        self.q_bias = float(q_bias)
+        self.r_measure = float(r_measure)
 
-        self.angle = 0.0   # estimated tilt angle (degrees)
-        self.bias = 0.0    # estimated gyro bias (degrees/s)
+        self.angle = float(initial_angle)  # estimated tilt angle (degrees)
+        self.bias = float(initial_bias)    # estimated gyro bias (degrees/s)
+        self.fixed_kalman_gain = None
+        self.last_gain = (0.0, 0.0)
+        if fixed_kalman_gain is not None:
+            self.set_fixed_kalman_gain(*fixed_kalman_gain)
 
         # 2x2 error covariance matrix: [[P00, P01], [P10, P11]]
         self.P = [[0.0, 0.0], [0.0, 0.0]]
+
+    def set_fixed_kalman_gain(self, angle_gain, bias_gain):
+        self.fixed_kalman_gain = (float(angle_gain), float(bias_gain))
+
+    def clear_fixed_kalman_gain(self):
+        self.fixed_kalman_gain = None
 
     def update(self, accel_angle, gyro_rate, dt):
         """
@@ -55,23 +78,30 @@ class AngleKalmanFilter:
         self.P[1][1] += self.q_bias * dt
 
         # --- Update ---
-        y = accel_angle - self.angle          # innovation (measurement residual)
-        S = self.P[0][0] + self.r_measure     # innovation covariance
+        y = accel_angle - self.angle  # innovation (measurement residual)
+        if self.fixed_kalman_gain is None:
+            S = self.P[0][0] + self.r_measure  # innovation covariance
 
-        # Kalman gain: K = P * H^T / S,  H = [1, 0]
-        K0 = self.P[0][0] / S
-        K1 = self.P[1][0] / S
+            # Kalman gain: K = P * H^T / S,  H = [1, 0]
+            K0 = self.P[0][0] / S
+            K1 = self.P[1][0] / S
 
-        # Correct state estimates.
-        self.angle += K0 * y
-        self.bias += K1 * y
+            # Correct state estimates.
+            self.angle += K0 * y
+            self.bias += K1 * y
 
-        # Update error covariance: P = (I - K*H) * P
-        P00_tmp = self.P[0][0]
-        P01_tmp = self.P[0][1]
-        self.P[0][0] -= K0 * P00_tmp
-        self.P[0][1] -= K0 * P01_tmp
-        self.P[1][0] -= K1 * P00_tmp
-        self.P[1][1] -= K1 * P01_tmp
+            # Update error covariance: P = (I - K*H) * P
+            P00_tmp = self.P[0][0]
+            P01_tmp = self.P[0][1]
+            self.P[0][0] -= K0 * P00_tmp
+            self.P[0][1] -= K0 * P01_tmp
+            self.P[1][0] -= K1 * P00_tmp
+            self.P[1][1] -= K1 * P01_tmp
+        else:
+            K0, K1 = self.fixed_kalman_gain
+            self.angle += K0 * y
+            self.bias += K1 * y
+
+        self.last_gain = (K0, K1)
 
         return self.angle

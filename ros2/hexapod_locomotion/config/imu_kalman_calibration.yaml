@@ -1,0 +1,22 @@
+imu_kalman_calibration:
+  calibrated: false
+  generated_at: ''
+  warmup_duration_sec: 0.0
+  accumulation_duration_sec: 0.0
+  sample_count: 0
+  roll:
+    q_angle: 0.001
+    q_bias: 0.003
+    r_measure: 0.03
+    initial_bias_deg_s: 0.0
+    use_fixed_gain: false
+    kalman_gain_angle: 0.0
+    kalman_gain_bias: 0.0
+  pitch:
+    q_angle: 0.001
+    q_bias: 0.003
+    r_measure: 0.03
+    initial_bias_deg_s: 0.0
+    use_fixed_gain: false
+    kalman_gain_angle: 0.0
+    kalman_gain_bias: 0.0
