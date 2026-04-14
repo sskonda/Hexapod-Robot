@@ -116,7 +116,12 @@ class HeadingCandidate:
     angle_rad: float
     clearance_m: float
     gap_width_rad: float
+    gap_width_m: float
     score: float
+    score_clearance: float
+    score_gap_bonus: float
+    score_forward_bias: float
+    score_reverse_penalty: float
 
 
 class GapFollowingExplorerNode(Node):
@@ -151,6 +156,11 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('max_yaw_drift_deg', 30.0)
         self.declare_parameter('min_progress_m', 0.10)
         self.declare_parameter('recovery_backup_m', 0.20)
+        self.declare_parameter('log_candidate_decisions', True)
+        self.declare_parameter('decision_log_top_k', 3)
+        self.declare_parameter('tile_size_m', 1.2192)
+        self.declare_parameter('tile_origin_x_m', 0.0)
+        self.declare_parameter('tile_origin_y_m', 0.0)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.scan_yaw_offset_rad = float(self.get_parameter('scan_yaw_offset_rad').value)
@@ -199,6 +209,11 @@ class GapFollowingExplorerNode(Node):
         )
         self.min_progress_m = max(0.01, float(self.get_parameter('min_progress_m').value))
         self.recovery_backup_m = max(0.05, float(self.get_parameter('recovery_backup_m').value))
+        self.log_candidate_decisions = bool(self.get_parameter('log_candidate_decisions').value)
+        self.decision_log_top_k = max(1, int(self.get_parameter('decision_log_top_k').value))
+        self.tile_size_m = max(0.1, float(self.get_parameter('tile_size_m').value))
+        self.tile_origin_x_m = float(self.get_parameter('tile_origin_x_m').value)
+        self.tile_origin_y_m = float(self.get_parameter('tile_origin_y_m').value)
 
         self.path_publisher = self.create_publisher(Path, self.path_topic, 10)
         self.stop_point_publisher = self.create_publisher(PointStamped, self.stop_point_topic, 10)
@@ -244,6 +259,7 @@ class GapFollowingExplorerNode(Node):
         # no meaningful progress.  Resets only when meaningful travel occurred.
         self.replan_attempts = 0
         self.mission_complete = False
+        self._last_reported_tile = None
 
         self.get_logger().info('Gap-following explorer ready')
         self.get_logger().info(
@@ -258,6 +274,10 @@ class GapFollowingExplorerNode(Node):
             f'Footprint radius {self.footprint_radius_m:.2f} m with {self.wall_clearance_margin_m:.2f} m '
             f'wall buffer -> stop_distance={self.stop_distance_m:.2f} m, '
             f'goal_backoff={self.goal_backoff_m:.2f} m, min_gap_width={self.minimum_gap_width_m:.2f} m'
+        )
+        self.get_logger().info(
+            f'Approx tile debug uses tile_size={self.tile_size_m:.4f} m with origin at '
+            f'({self.tile_origin_x_m:.2f}, {self.tile_origin_y_m:.2f}) in odom.'
         )
 
     def scan_callback(self, msg: LaserScan):
@@ -278,6 +298,7 @@ class GapFollowingExplorerNode(Node):
             orientation.z,
             orientation.w,
         )
+        self.maybe_log_tile_transition()
 
     def control_loop(self):
         # Once a dead end is declared stop publishing anything; robot is done.
@@ -296,8 +317,14 @@ class GapFollowingExplorerNode(Node):
             return
 
         if self.active_heading_world_rad is None:
+            selection_mode = 'forward_only'
             selected = self.select_heading(allow_reverse=False)
             if selected is None:
+                self.get_logger().info(
+                    f'No forward-only heading survived the current thresholds at '
+                    f'{self.format_tile_estimate()} — retrying with reverse headings allowed.'
+                )
+                selection_mode = 'allow_reverse'
                 selected = self.select_heading(allow_reverse=True)
             if selected is None:
                 # No traversable gap exists.  If we have already tried enough
@@ -305,7 +332,8 @@ class GapFollowingExplorerNode(Node):
                 if self.replan_attempts >= self.max_replan_attempts:
                     self.mission_complete = True
                     self.get_logger().info(
-                        f'Dead end reached after {self.replan_attempts} obstacle stop(s) — '
+                        f'Dead end reached after {self.replan_attempts} obstacle stop(s) at '
+                        f'{self.format_tile_estimate()} — '
                         'no traversable gap found in any direction. Mission complete.'
                     )
                 self.publish_stop_path()
@@ -317,8 +345,10 @@ class GapFollowingExplorerNode(Node):
             self.heading_committed_y_m = self.odom_y_m
             self.heading_committed_yaw_rad = self.odom_yaw_rad
             self.get_logger().info(
-                f'Heading selected: {math.degrees(selected.angle_rad):.1f} deg in base frame, '
-                f'clearance {selected.clearance_m:.2f} m, gap width {math.degrees(selected.gap_width_rad):.1f} deg'
+                f'Heading selected ({selection_mode}) at {self.format_tile_estimate()}: '
+                f'{math.degrees(selected.angle_rad):.1f} deg in base frame, '
+                f'clearance {selected.clearance_m:.2f} m, gap width {math.degrees(selected.gap_width_rad):.1f} deg, '
+                f'score {selected.score:.2f}'
             )
             self.publish_active_path(selected.clearance_m)
             return
@@ -332,7 +362,8 @@ class GapFollowingExplorerNode(Node):
         if yaw_drift > self.max_yaw_drift_rad:
             self.get_logger().info(
                 f'Yaw drift {math.degrees(yaw_drift):.1f} deg exceeds '
-                f'{math.degrees(self.max_yaw_drift_rad):.0f} deg — replanning (no penalty).'
+                f'{math.degrees(self.max_yaw_drift_rad):.0f} deg at {self.format_tile_estimate()} — '
+                'replanning (no penalty).'
             )
             self.last_committed_heading_world_rad = self.active_heading_world_rad
             self.active_heading_world_rad = None
@@ -399,7 +430,8 @@ class GapFollowingExplorerNode(Node):
             # Blocked without meaningful travel — count as a failed attempt.
             self.replan_attempts += 1
         self.get_logger().info(
-            f'Obstacle at {clearance_m:.2f} m (traveled {dist_traveled:.2f} m) — '
+            f'Obstacle at {clearance_m:.2f} m in {self.format_tile_estimate()} '
+            f'(traveled {dist_traveled:.2f} m) — '
             f'stop #{self.replan_attempts}. Searching for a new gap.'
         )
         self.last_committed_heading_world_rad = self.active_heading_world_rad
@@ -437,6 +469,7 @@ class GapFollowingExplorerNode(Node):
 
         incoming_angle_base_rad = self.incoming_angle_base_frame()
         best_candidate = None
+        candidates = []
         for index in range(window_beams, len(scan.ranges) - window_beams, sample_stride):
             clearance_m = self.stable_window_clearance(index, window_beams)
             if clearance_m is None or clearance_m < open_threshold_m:
@@ -466,23 +499,34 @@ class GapFollowingExplorerNode(Node):
             # clearance beyond what it will actually travel anyway.
             score_clearance = min(clearance_m, self.max_goal_distance_m + self.goal_backoff_m)
             score_gap = min(gap_width_rad, math.pi)
+            score_gap_bonus = self.gap_width_weight * score_gap
+            score_forward_bias = self.forward_bias_weight * math.cos(angle_rad)
             score = score_clearance
-            score += self.gap_width_weight * score_gap
-            score += self.forward_bias_weight * math.cos(angle_rad)
+            score += score_gap_bonus
+            score += score_forward_bias
+            score_reverse_penalty = 0.0
 
             if incoming_angle_base_rad is not None:
                 reverse_alignment = math.cos(angular_distance(angle_rad, incoming_angle_base_rad))
-                score -= self.reverse_penalty_weight * max(0.0, reverse_alignment)
+                score_reverse_penalty = self.reverse_penalty_weight * max(0.0, reverse_alignment)
+                score -= score_reverse_penalty
 
             candidate = HeadingCandidate(
                 angle_rad=angle_rad,
                 clearance_m=clearance_m,
                 gap_width_rad=gap_width_rad,
+                gap_width_m=gap_width_m,
                 score=score,
+                score_clearance=score_clearance,
+                score_gap_bonus=score_gap_bonus,
+                score_forward_bias=score_forward_bias,
+                score_reverse_penalty=score_reverse_penalty,
             )
+            candidates.append(candidate)
             if best_candidate is None or candidate.score > best_candidate.score:
                 best_candidate = candidate
 
+        self.log_heading_decision(allow_reverse, incoming_angle_base_rad, candidates, best_candidate)
         return best_candidate
 
     def incoming_angle_base_frame(self) -> Optional[float]:
@@ -658,6 +702,77 @@ class GapFollowingExplorerNode(Node):
         pose.pose.orientation.z = math.sin(yaw_rad / 2.0)
         pose.pose.orientation.w = math.cos(yaw_rad / 2.0)
         return pose
+
+    def current_tile_indices(self) -> tuple[int, int]:
+        half_tile_m = 0.5 * self.tile_size_m
+        tile_x = math.floor(
+            (self.odom_x_m - self.tile_origin_x_m + half_tile_m) / self.tile_size_m
+        )
+        tile_y = math.floor(
+            (self.odom_y_m - self.tile_origin_y_m + half_tile_m) / self.tile_size_m
+        )
+        return int(tile_x), int(tile_y)
+
+    def format_tile_estimate(self) -> str:
+        tile_x, tile_y = self.current_tile_indices()
+        return f'tile ({tile_x}, {tile_y}), odom=({self.odom_x_m:.2f}, {self.odom_y_m:.2f})'
+
+    def maybe_log_tile_transition(self):
+        tile_indices = self.current_tile_indices()
+        if tile_indices == self._last_reported_tile:
+            return
+        self._last_reported_tile = tile_indices
+        self.get_logger().info(
+            f'Approx maze tile update (odom-based): {self.format_tile_estimate()}'
+        )
+
+    def log_heading_decision(
+        self,
+        allow_reverse: bool,
+        incoming_angle_base_rad: Optional[float],
+        candidates,
+        selected: Optional[HeadingCandidate],
+    ):
+        if not self.log_candidate_decisions:
+            return
+
+        pass_name = 'allow_reverse' if allow_reverse else 'forward_only'
+        incoming_text = (
+            'none'
+            if incoming_angle_base_rad is None
+            else f'{math.degrees(incoming_angle_base_rad):.1f} deg'
+        )
+        if not candidates:
+            self.get_logger().info(
+                f'Heading decision {pass_name} at {self.format_tile_estimate()}: '
+                f'no candidates (incoming={incoming_text}).'
+            )
+            return
+
+        top_candidates = sorted(candidates, key=lambda candidate: candidate.score, reverse=True)[
+            :self.decision_log_top_k
+        ]
+        candidate_parts = []
+        for index, candidate in enumerate(top_candidates, start=1):
+            candidate_parts.append(
+                f'#{index} angle={math.degrees(candidate.angle_rad):.1f} deg '
+                f'clear={candidate.clearance_m:.2f} m '
+                f'gap={math.degrees(candidate.gap_width_rad):.1f} deg/{candidate.gap_width_m:.2f} m '
+                f'score={candidate.score:.2f} '
+                f'[clear={candidate.score_clearance:.2f}, gap={candidate.score_gap_bonus:.2f}, '
+                f'fwd={candidate.score_forward_bias:+.2f}, rev_penalty={candidate.score_reverse_penalty:.2f}]'
+            )
+
+        selected_text = (
+            'none'
+            if selected is None
+            else f'{math.degrees(selected.angle_rad):.1f} deg (score {selected.score:.2f})'
+        )
+        self.get_logger().info(
+            f'Heading decision {pass_name} at {self.format_tile_estimate()}: '
+            f'incoming={incoming_text}, selected={selected_text}. '
+            f'Top candidates: {" | ".join(candidate_parts)}'
+        )
 
 
 def main(args=None):
