@@ -11,15 +11,25 @@ import time
 from collections import deque
 from typing import Dict, List, Optional, Set, Tuple
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Quaternion
-from nav_msgs.msg import Odometry, Path
-from std_msgs.msg import Header, String
+from nav_msgs.msg import OccupancyGrid, Odometry, Path
+from std_msgs.msg import String
 
 from .graph_io import json_to_graph
 from .graph_types import EdgeState, GraphState, MazeNode, NodeType, VisitState
-from .map_frontier_utils import distance_m, heading_between_points
+from .map_frontier_utils import (
+    distance_m,
+    heading_between_points,
+    inflate_obstacles,
+    line_of_sight_is_free,
+    make_binary_free,
+    occupancy_grid_to_array,
+    ray_cast_distance,
+    world_to_grid,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -173,11 +183,309 @@ def _yaw_to_quat(yaw: float) -> Quaternion:
     return q
 
 
+def _point_is_free(
+    binary_free: np.ndarray,
+    origin_x: float,
+    origin_y: float,
+    resolution: float,
+    x_m: float,
+    y_m: float,
+) -> Optional[Tuple[int, int]]:
+    """Return the point's grid cell when it lies inside free space, else None."""
+    if resolution <= 0.0 or binary_free.size == 0:
+        return None
+
+    gx, gy = world_to_grid(x_m, y_m, origin_x, origin_y, resolution)
+    height, width = binary_free.shape
+    if not (0 <= gx < width and 0 <= gy < height):
+        return None
+    if not binary_free[gy, gx]:
+        return None
+    return gx, gy
+
+
+def _ray_clearance_m(
+    binary_free: np.ndarray,
+    origin_x: float,
+    origin_y: float,
+    resolution: float,
+    x_m: float,
+    y_m: float,
+    angle_rad: float,
+    max_distance_m: float,
+) -> Optional[float]:
+    """Return free-space clearance from the world point along angle_rad."""
+    cell = _point_is_free(binary_free, origin_x, origin_y, resolution, x_m, y_m)
+    if cell is None or max_distance_m <= 0.0:
+        return None
+
+    gx, gy = cell
+    max_distance_cells = max_distance_m / resolution
+    return ray_cast_distance(binary_free, gx, gy, angle_rad, max_distance_cells) * resolution
+
+
+def _bounded_side_walls(
+    left_clearance_m: float,
+    right_clearance_m: float,
+    probe_distance_m: float,
+    resolution: float,
+) -> bool:
+    """True when both side rays hit a wall within the probe horizon."""
+    wall_detection_margin_m = max(0.5 * resolution, 1e-3)
+    return (
+        left_clearance_m < probe_distance_m - wall_detection_margin_m
+        and right_clearance_m < probe_distance_m - wall_detection_margin_m
+    )
+
+
+def _sample_line_offsets(window_m: float, step_m: float) -> List[float]:
+    """Return symmetric offsets in metres spanning [-window_m, window_m]."""
+    if window_m <= 0.0 or step_m <= 0.0:
+        return [0.0]
+
+    step_count = max(1, int(math.ceil(window_m / step_m)))
+    offsets: List[float] = [0.0]
+    for step_index in range(1, step_count + 1):
+        offset_m = min(window_m, step_index * step_m)
+        if offset_m not in offsets:
+            offsets.extend([offset_m, -offset_m])
+    offsets.sort()
+    return offsets
+
+
+def _side_wall_profile(
+    binary_free: np.ndarray,
+    origin_x: float,
+    origin_y: float,
+    resolution: float,
+    x_m: float,
+    y_m: float,
+    heading_rad: float,
+    probe_distance_m: float,
+    longitudinal_window_m: float,
+    longitudinal_step_m: float,
+    required_bounded_fraction: float,
+) -> Optional[Tuple[float, float, float, float]]:
+    """Estimate corridor side-wall clearances around a point.
+
+    Returns `(left_clearance_m, right_clearance_m, min_side_m, bounded_fraction)`
+    when enough nearby longitudinal samples observe walls on both sides.
+    """
+    forward_x = math.cos(heading_rad)
+    forward_y = math.sin(heading_rad)
+    positive_side_angle = heading_rad + (math.pi / 2.0)
+    negative_side_angle = heading_rad - (math.pi / 2.0)
+
+    valid_samples = 0
+    bounded_samples = 0
+    bounded_left_values: List[float] = []
+    bounded_right_values: List[float] = []
+
+    for longitudinal_offset_m in _sample_line_offsets(
+        longitudinal_window_m, longitudinal_step_m
+    ):
+        sample_x_m = x_m + forward_x * longitudinal_offset_m
+        sample_y_m = y_m + forward_y * longitudinal_offset_m
+        if _point_is_free(
+            binary_free,
+            origin_x,
+            origin_y,
+            resolution,
+            sample_x_m,
+            sample_y_m,
+        ) is None:
+            continue
+
+        left_clearance_m = _ray_clearance_m(
+            binary_free,
+            origin_x,
+            origin_y,
+            resolution,
+            sample_x_m,
+            sample_y_m,
+            positive_side_angle,
+            probe_distance_m,
+        )
+        right_clearance_m = _ray_clearance_m(
+            binary_free,
+            origin_x,
+            origin_y,
+            resolution,
+            sample_x_m,
+            sample_y_m,
+            negative_side_angle,
+            probe_distance_m,
+        )
+        if left_clearance_m is None or right_clearance_m is None:
+            continue
+
+        valid_samples += 1
+        if _bounded_side_walls(
+            left_clearance_m, right_clearance_m, probe_distance_m, resolution
+        ):
+            bounded_samples += 1
+            bounded_left_values.append(left_clearance_m)
+            bounded_right_values.append(right_clearance_m)
+
+    if valid_samples == 0 or bounded_samples == 0:
+        return None
+
+    bounded_fraction = bounded_samples / valid_samples
+    if bounded_fraction < required_bounded_fraction:
+        return None
+
+    representative_left_m = float(np.median(bounded_left_values))
+    representative_right_m = float(np.median(bounded_right_values))
+    return (
+        representative_left_m,
+        representative_right_m,
+        min(representative_left_m, representative_right_m),
+        bounded_fraction,
+    )
+
+
+def regulate_target_between_walls(
+    binary_free: np.ndarray,
+    origin_x: float,
+    origin_y: float,
+    resolution: float,
+    nominal_x_m: float,
+    nominal_y_m: float,
+    heading_rad: float,
+    max_lateral_offset_m: float,
+    lateral_step_m: float,
+    probe_distance_m: float,
+    min_improvement_m: float = 0.03,
+    longitudinal_window_m: float = 0.20,
+    longitudinal_step_m: float = 0.05,
+    required_bounded_fraction: float = 0.45,
+) -> Tuple[float, float, bool]:
+    """Shift a target laterally to maximize the minimum distance to side walls.
+
+    The search is constrained to the cross-section perpendicular to heading_rad.
+    If side walls are not detected within probe_distance_m the nominal target is
+    returned unchanged so open junctions and rooms are left alone.
+    """
+    if (
+        binary_free.size == 0
+        or resolution <= 0.0
+        or max_lateral_offset_m <= 0.0
+        or lateral_step_m <= 0.0
+        or probe_distance_m <= 0.0
+    ):
+        return nominal_x_m, nominal_y_m, False
+
+    nominal_cell = _point_is_free(
+        binary_free, origin_x, origin_y, resolution, nominal_x_m, nominal_y_m
+    )
+    if nominal_cell is None:
+        return nominal_x_m, nominal_y_m, False
+
+    lateral_x = -math.sin(heading_rad)
+    lateral_y = math.cos(heading_rad)
+    nominal_profile = _side_wall_profile(
+        binary_free,
+        origin_x,
+        origin_y,
+        resolution,
+        nominal_x_m,
+        nominal_y_m,
+        heading_rad,
+        probe_distance_m,
+        longitudinal_window_m,
+        longitudinal_step_m,
+        required_bounded_fraction,
+    )
+    if nominal_profile is None:
+        return nominal_x_m, nominal_y_m, False
+
+    nominal_left, nominal_right, nominal_min_side_m, _ = nominal_profile
+
+    step_count = max(1, int(math.ceil(max_lateral_offset_m / lateral_step_m)))
+    offsets_m: List[float] = [0.0]
+    for step_index in range(1, step_count + 1):
+        offset_m = min(max_lateral_offset_m, step_index * lateral_step_m)
+        if offset_m not in offsets_m:
+            offsets_m.extend([offset_m, -offset_m])
+
+    best_x_m = nominal_x_m
+    best_y_m = nominal_y_m
+    best_offset_m = 0.0
+    best_min_side_m = nominal_min_side_m
+    best_side_delta_m = abs(nominal_left - nominal_right)
+
+    nominal_gx, nominal_gy = nominal_cell
+    for offset_m in offsets_m:
+        candidate_x_m = nominal_x_m + lateral_x * offset_m
+        candidate_y_m = nominal_y_m + lateral_y * offset_m
+        candidate_cell = _point_is_free(
+            binary_free,
+            origin_x,
+            origin_y,
+            resolution,
+            candidate_x_m,
+            candidate_y_m,
+        )
+        if candidate_cell is None:
+            continue
+
+        candidate_gx, candidate_gy = candidate_cell
+        if offset_m != 0.0 and not line_of_sight_is_free(
+            binary_free, nominal_gx, nominal_gy, candidate_gx, candidate_gy
+        ):
+            continue
+
+        profile = _side_wall_profile(
+            binary_free,
+            origin_x,
+            origin_y,
+            resolution,
+            candidate_x_m,
+            candidate_y_m,
+            heading_rad,
+            probe_distance_m,
+            longitudinal_window_m,
+            longitudinal_step_m,
+            required_bounded_fraction,
+        )
+        if profile is None:
+            continue
+
+        left_clearance_m, right_clearance_m, min_side_m, _ = profile
+        side_delta_m = abs(left_clearance_m - right_clearance_m)
+        if (
+            min_side_m > best_min_side_m + 1e-6
+            or (
+                abs(min_side_m - best_min_side_m) <= 1e-6
+                and side_delta_m < best_side_delta_m - 1e-6
+            )
+            or (
+                abs(min_side_m - best_min_side_m) <= 1e-6
+                and abs(side_delta_m - best_side_delta_m) <= 1e-6
+                and abs(offset_m) < abs(best_offset_m) - 1e-6
+            )
+        ):
+            best_x_m = candidate_x_m
+            best_y_m = candidate_y_m
+            best_offset_m = offset_m
+            best_min_side_m = min_side_m
+            best_side_delta_m = side_delta_m
+
+    if abs(best_offset_m) < 1e-6:
+        return nominal_x_m, nominal_y_m, False
+
+    if best_min_side_m < nominal_min_side_m + min_improvement_m:
+        return nominal_x_m, nominal_y_m, False
+
+    return best_x_m, best_y_m, True
+
+
 class MazeGraphPlanner(Node):
     def __init__(self):
         super().__init__("maze_graph_planner")
 
         self.declare_parameter("strategy", "dfs")
+        self.declare_parameter("map_topic", "/map")
         self.declare_parameter("planner_rate_hz", 2.0)
         self.declare_parameter("target_reached_distance_m", 0.20)
         self.declare_parameter("current_node_snap_distance_m", 0.25)
@@ -187,10 +495,21 @@ class MazeGraphPlanner(Node):
         self.declare_parameter("revisit_penalty_gain", 1.0)
         self.declare_parameter("heading_alignment_gain", 0.5)
         self.declare_parameter("backtrack_penalty_gain", 0.5)
+        self.declare_parameter("free_threshold", 20)
+        self.declare_parameter("wall_centering_enabled", True)
+        self.declare_parameter("wall_centering_inflation_radius_m", 0.20)
+        self.declare_parameter("wall_centering_max_lateral_offset_m", 0.30)
+        self.declare_parameter("wall_centering_step_m", 0.05)
+        self.declare_parameter("wall_centering_probe_distance_m", 0.80)
+        self.declare_parameter("wall_centering_min_improvement_m", 0.03)
+        self.declare_parameter("wall_centering_longitudinal_window_m", 0.20)
+        self.declare_parameter("wall_centering_longitudinal_step_m", 0.05)
+        self.declare_parameter("wall_centering_required_bounded_fraction", 0.45)
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("base_frame", "base_link")
 
         self._strategy = self.get_parameter("strategy").value
+        self._map_topic = self.get_parameter("map_topic").value
         self._rate = self.get_parameter("planner_rate_hz").value
         self._target_dist = self.get_parameter("target_reached_distance_m").value
         self._snap_dist = self.get_parameter("current_node_snap_distance_m").value
@@ -198,6 +517,34 @@ class MazeGraphPlanner(Node):
         self._cooldown = self.get_parameter("blocked_edge_cooldown_sec").value
         self._unexplored_bonus = self.get_parameter("unexplored_bonus_gain").value
         self._revisit_penalty = self.get_parameter("revisit_penalty_gain").value
+        self._free_threshold = int(self.get_parameter("free_threshold").value)
+        self._wall_centering_enabled = bool(
+            self.get_parameter("wall_centering_enabled").value
+        )
+        self._wall_centering_inflation_radius_m = float(
+            self.get_parameter("wall_centering_inflation_radius_m").value
+        )
+        self._wall_centering_max_lateral_offset_m = float(
+            self.get_parameter("wall_centering_max_lateral_offset_m").value
+        )
+        self._wall_centering_step_m = float(
+            self.get_parameter("wall_centering_step_m").value
+        )
+        self._wall_centering_probe_distance_m = float(
+            self.get_parameter("wall_centering_probe_distance_m").value
+        )
+        self._wall_centering_min_improvement_m = float(
+            self.get_parameter("wall_centering_min_improvement_m").value
+        )
+        self._wall_centering_longitudinal_window_m = float(
+            self.get_parameter("wall_centering_longitudinal_window_m").value
+        )
+        self._wall_centering_longitudinal_step_m = float(
+            self.get_parameter("wall_centering_longitudinal_step_m").value
+        )
+        self._wall_centering_required_bounded_fraction = float(
+            self.get_parameter("wall_centering_required_bounded_fraction").value
+        )
         self._map_frame = self.get_parameter("map_frame").value
 
         # State
@@ -208,9 +555,14 @@ class MazeGraphPlanner(Node):
         self._current_path: List[int] = []
         self._blocked_edges: Set[int] = set()
         self._blocked_times: Dict[int, float] = {}
+        self._safe_free_map: Optional[np.ndarray] = None
+        self._map_origin_x: float = 0.0
+        self._map_origin_y: float = 0.0
+        self._map_resolution: float = 0.0
 
         # Subscriptions
         self.create_subscription(String, "/maze_graph/graph_json", self._graph_callback, 1)
+        self.create_subscription(OccupancyGrid, self._map_topic, self._map_callback, 1)
         self.create_subscription(Odometry, "/odom", self._odom_callback, 10)
 
         # Publishers
@@ -228,6 +580,26 @@ class MazeGraphPlanner(Node):
             self._graph = json_to_graph(msg.data)
         except Exception as exc:
             self.get_logger().warn(f"Graph parse error: {exc}")
+
+    def _map_callback(self, msg: OccupancyGrid):
+        resolution = msg.info.resolution
+        if resolution <= 0.0:
+            return
+
+        try:
+            grid = occupancy_grid_to_array(msg)
+        except Exception as exc:
+            self.get_logger().warn(f"Planner map parse error: {exc}")
+            return
+
+        binary_free = make_binary_free(grid, self._free_threshold)
+        radius_cells = max(
+            0, int(math.ceil(self._wall_centering_inflation_radius_m / resolution))
+        )
+        self._safe_free_map = inflate_obstacles(binary_free, radius_cells)
+        self._map_origin_x = msg.info.origin.position.x
+        self._map_origin_y = msg.info.origin.position.y
+        self._map_resolution = resolution
 
     def _odom_callback(self, msg: Odometry):
         self._robot_x = msg.pose.pose.position.x
@@ -258,7 +630,12 @@ class MazeGraphPlanner(Node):
         if self._target_node_id is not None:
             target_node = graph.nodes.get(self._target_node_id)
             if target_node is not None:
-                dist = distance_m(rx, ry, target_node.x_m, target_node.y_m)
+                target_x_m, target_y_m = self._regulated_target_position(
+                    self._target_node_id,
+                    current_id=current_id,
+                    path_ids=self._current_path,
+                )
+                dist = distance_m(rx, ry, target_x_m, target_y_m)
                 if dist < self._target_dist:
                     # Mark visited
                     target_node.visit_state = VisitState.VISITED
@@ -298,20 +675,124 @@ class MazeGraphPlanner(Node):
         if self._target_node_id is not None:
             target_node = graph.nodes.get(self._target_node_id)
             if target_node is not None:
-                self._publish_target(target_node)
+                target_x_m, target_y_m = self._regulated_target_position(
+                    self._target_node_id,
+                    current_id=current_id,
+                    path_ids=self._current_path,
+                )
+                self._publish_target(target_x_m, target_y_m)
 
         if self._current_path:
             self._publish_path(self._current_path)
 
     # ------------------------------------------------------------------
-    def _publish_target(self, node: MazeNode):
+    def _heading_for_path_index(self, node_ids: List[int], index: int) -> Optional[float]:
+        if self._graph is None or index < 0 or index >= len(node_ids):
+            return None
+
+        current = self._graph.nodes.get(node_ids[index])
+        if current is None:
+            return None
+
+        if 0 < index < len(node_ids) - 1:
+            previous = self._graph.nodes.get(node_ids[index - 1])
+            following = self._graph.nodes.get(node_ids[index + 1])
+            if previous is not None and following is not None:
+                return heading_between_points(
+                    previous.x_m, previous.y_m, following.x_m, following.y_m
+                )
+
+        if index < len(node_ids) - 1:
+            following = self._graph.nodes.get(node_ids[index + 1])
+            if following is not None:
+                return heading_between_points(
+                    current.x_m, current.y_m, following.x_m, following.y_m
+                )
+
+        if index > 0:
+            previous = self._graph.nodes.get(node_ids[index - 1])
+            if previous is not None:
+                return heading_between_points(
+                    previous.x_m, previous.y_m, current.x_m, current.y_m
+                )
+
+        return heading_between_points(self._robot_x, self._robot_y, current.x_m, current.y_m)
+
+    def _regulated_point(
+        self,
+        x_m: float,
+        y_m: float,
+        heading_rad: Optional[float],
+    ) -> Tuple[float, float]:
+        if (
+            not self._wall_centering_enabled
+            or heading_rad is None
+            or self._safe_free_map is None
+            or self._map_resolution <= 0.0
+        ):
+            return x_m, y_m
+
+        regulated_x_m, regulated_y_m, _ = regulate_target_between_walls(
+            self._safe_free_map,
+            self._map_origin_x,
+            self._map_origin_y,
+            self._map_resolution,
+            x_m,
+            y_m,
+            heading_rad,
+            self._wall_centering_max_lateral_offset_m,
+            self._wall_centering_step_m,
+            self._wall_centering_probe_distance_m,
+            self._wall_centering_min_improvement_m,
+            self._wall_centering_longitudinal_window_m,
+            self._wall_centering_longitudinal_step_m,
+            self._wall_centering_required_bounded_fraction,
+        )
+        return regulated_x_m, regulated_y_m
+
+    def _regulated_target_position(
+        self,
+        target_node_id: int,
+        current_id: Optional[int],
+        path_ids: List[int],
+    ) -> Tuple[float, float]:
+        if self._graph is None:
+            return 0.0, 0.0
+
+        target_node = self._graph.nodes.get(target_node_id)
+        if target_node is None:
+            return 0.0, 0.0
+
+        heading_rad: Optional[float] = None
+        if path_ids and path_ids[-1] == target_node_id:
+            heading_rad = self._heading_for_path_index(path_ids, len(path_ids) - 1)
+        elif current_id is not None and current_id != target_node_id:
+            current_node = self._graph.nodes.get(current_id)
+            if current_node is not None:
+                heading_rad = heading_between_points(
+                    current_node.x_m,
+                    current_node.y_m,
+                    target_node.x_m,
+                    target_node.y_m,
+                )
+        else:
+            heading_rad = heading_between_points(
+                self._robot_x,
+                self._robot_y,
+                target_node.x_m,
+                target_node.y_m,
+            )
+
+        return self._regulated_point(target_node.x_m, target_node.y_m, heading_rad)
+
+    def _publish_target(self, target_x_m: float, target_y_m: float):
         ps = PoseStamped()
         ps.header.frame_id = self._map_frame
         ps.header.stamp = self.get_clock().now().to_msg()
-        ps.pose.position.x = node.x_m
-        ps.pose.position.y = node.y_m
+        ps.pose.position.x = target_x_m
+        ps.pose.position.y = target_y_m
         ps.pose.position.z = 0.0
-        yaw = heading_between_points(self._robot_x, self._robot_y, node.x_m, node.y_m)
+        yaw = heading_between_points(self._robot_x, self._robot_y, target_x_m, target_y_m)
         ps.pose.orientation = _yaw_to_quat(yaw)
         self._pub_target.publish(ps)
 
@@ -319,14 +800,23 @@ class MazeGraphPlanner(Node):
         path = Path()
         path.header.frame_id = self._map_frame
         path.header.stamp = self.get_clock().now().to_msg()
-        for nid in node_ids:
+        for index, nid in enumerate(node_ids):
             node = self._graph.nodes.get(nid)
             if node is None:
                 continue
             ps = PoseStamped()
             ps.header = path.header
-            ps.pose.position.x = node.x_m
-            ps.pose.position.y = node.y_m
+            point_x_m = node.x_m
+            point_y_m = node.y_m
+            if index > 0:
+                heading_rad = self._heading_for_path_index(node_ids, index)
+                point_x_m, point_y_m = self._regulated_point(
+                    point_x_m,
+                    point_y_m,
+                    heading_rad,
+                )
+            ps.pose.position.x = point_x_m
+            ps.pose.position.y = point_y_m
             ps.pose.orientation.w = 1.0
             path.poses.append(ps)
         self._pub_path.publish(path)

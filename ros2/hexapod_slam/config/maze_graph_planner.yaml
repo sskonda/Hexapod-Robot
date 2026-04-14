@@ -1,6 +1,7 @@
 maze_graph_planner:
   ros__parameters:
     odom_topic: "odom"
+    map_topic: "/map"
     map_frame: "map"
     base_frame: "base_link"
     planner_rate_hz: 2.0
@@ -13,3 +14,13 @@ maze_graph_planner:
     revisit_penalty_gain: 1.0
     heading_alignment_gain: 0.5
     backtrack_penalty_gain: 0.5
+    free_threshold: 20
+    wall_centering_enabled: true
+    wall_centering_inflation_radius_m: 0.20
+    wall_centering_max_lateral_offset_m: 0.30
+    wall_centering_step_m: 0.05
+    wall_centering_probe_distance_m: 0.80
+    wall_centering_min_improvement_m: 0.03
+    wall_centering_longitudinal_window_m: 0.20
+    wall_centering_longitudinal_step_m: 0.05
+    wall_centering_required_bounded_fraction: 0.45
