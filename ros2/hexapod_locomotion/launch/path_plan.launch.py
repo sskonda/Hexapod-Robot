@@ -14,6 +14,7 @@ def generate_launch_description():
 
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
+    yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
     publish_rate_hz = LaunchConfiguration('publish_rate_hz')
     startup_delay_sec = LaunchConfiguration('startup_delay_sec')
     forward_distance_m = LaunchConfiguration('forward_distance_m')
@@ -32,6 +33,11 @@ def generate_launch_description():
             'apply_offsets',
             default_value='true',
             description='Apply saved calibration offsets in servo_driver.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_correction_gain',
+            default_value='0.0',
+            description='IMU-based yaw damping gain passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'publish_rate_hz',
@@ -73,6 +79,7 @@ def generate_launch_description():
             launch_arguments={
                 'servo_dry_run': servo_dry_run,
                 'apply_offsets': apply_offsets,
+                'yaw_correction_gain': yaw_correction_gain,
             }.items(),
         ),
         Node(

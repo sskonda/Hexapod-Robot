@@ -10,6 +10,7 @@ def generate_launch_description():
     config_dir = Path(get_package_share_directory('hexapod_locomotion')) / 'config'
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
+    yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_frame_id = LaunchConfiguration('odom_frame_id')
     base_frame_id = LaunchConfiguration('base_frame_id')
@@ -32,6 +33,11 @@ def generate_launch_description():
             'apply_offsets',
             default_value='true',
             description='Apply saved calibration offsets in servo_driver.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_correction_gain',
+            default_value='0.0',
+            description='IMU-based yaw damping gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
             'odom_topic',
@@ -116,6 +122,7 @@ def generate_launch_description():
             parameters=[
                 str(config_dir / 'locomotion.yaml'),
                 {
+                    'yaw_correction_gain': yaw_correction_gain,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,
                     'base_frame_id': base_frame_id,
