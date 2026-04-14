@@ -65,13 +65,16 @@ import unittest.mock as mock
 # Create a minimal rclpy mock so the module-level import doesn't fail
 _rclpy_mock = types.ModuleType("rclpy")
 _rclpy_mock.node = types.ModuleType("rclpy.node")
+_rclpy_mock.duration = types.ModuleType("rclpy.duration")
 
 class _FakeNode:
     pass
 
 _rclpy_mock.node.Node = _FakeNode
+_rclpy_mock.duration.Duration = object
 sys.modules.setdefault("rclpy", _rclpy_mock)
 sys.modules.setdefault("rclpy.node", _rclpy_mock.node)
+sys.modules.setdefault("rclpy.duration", _rclpy_mock.duration)
 
 # Mock visualization_msgs too
 for _mod in [
@@ -168,6 +171,7 @@ _vis_msg.MarkerArray = _MarkerArray
 
 _geom_msg = sys.modules["geometry_msgs.msg"]
 _geom_msg.Point = _Point
+_geom_msg.PointStamped = object
 _geom_msg.PoseStamped = object
 _geom_msg.Quaternion = _Orientation
 
@@ -180,6 +184,9 @@ _nav_msg = sys.modules["nav_msgs.msg"]
 _nav_msg.OccupancyGrid = object
 _nav_msg.Odometry = object
 _nav_msg.Path = object
+
+_sensor_msg = sys.modules["sensor_msgs.msg"]
+_sensor_msg.LaserScan = object
 
 _bi_msg = sys.modules["builtin_interfaces.msg"]
 _bi_msg.Time = object
@@ -916,6 +923,7 @@ from hexapod_slam.maze_graph_planner import (
     select_next_target_bfs,
     select_next_target_dfs,
 )
+from hexapod_slam.gap_following_explorer import is_backtracking_heading
 
 
 class TestPlannerHelpers:
@@ -990,6 +998,13 @@ class TestPlannerHelpers:
         # (we just check it doesn't crash)
         # Either None or one of the visited nodes
         assert next_id is None or next_id in g.nodes
+
+    def test_backtracking_heading_detects_reverse_half_plane(self):
+        incoming_angle = math.pi
+        assert is_backtracking_heading(math.pi, incoming_angle)
+        assert is_backtracking_heading(math.radians(140.0), incoming_angle)
+        assert not is_backtracking_heading(math.pi / 2.0, incoming_angle)
+        assert not is_backtracking_heading(0.0, incoming_angle)
 
     def test_wall_regulator_recenters_target_in_corridor(self):
         safe_free = np.zeros((11, 11), dtype=bool)

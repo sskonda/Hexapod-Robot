@@ -111,6 +111,24 @@ def quaternion_to_yaw(x_value: float, y_value: float, z_value: float, w_value: f
     return math.atan2(siny_cosp, cosy_cosp)
 
 
+def reverse_alignment_score(
+    angle_rad: float,
+    incoming_angle_base_rad: Optional[float],
+) -> float:
+    """Positive values indicate the heading points back toward the incoming corridor."""
+    if incoming_angle_base_rad is None:
+        return 0.0
+    return math.cos(angular_distance(angle_rad, incoming_angle_base_rad))
+
+
+def is_backtracking_heading(
+    angle_rad: float,
+    incoming_angle_base_rad: Optional[float],
+) -> bool:
+    """True when the heading still lies in the half-plane behind the robot."""
+    return reverse_alignment_score(angle_rad, incoming_angle_base_rad) > 1e-6
+
+
 @dataclass(frozen=True)
 class HeadingCandidate:
     angle_rad: float
@@ -481,10 +499,14 @@ class GapFollowingExplorerNode(Node):
 
             angle_rad = scan.angle_min + index * scan.angle_increment
             angle_rad = normalize_angle(angle_rad + self.scan_yaw_offset_rad)
+            reverse_alignment = reverse_alignment_score(angle_rad, incoming_angle_base_rad)
             if (
                 not allow_reverse
                 and incoming_angle_base_rad is not None
-                and abs(angular_distance(angle_rad, incoming_angle_base_rad)) < self.reverse_avoidance_rad
+                and (
+                    abs(angular_distance(angle_rad, incoming_angle_base_rad)) < self.reverse_avoidance_rad
+                    or is_backtracking_heading(angle_rad, incoming_angle_base_rad)
+                )
             ):
                 continue
 
@@ -507,7 +529,6 @@ class GapFollowingExplorerNode(Node):
             score_reverse_penalty = 0.0
 
             if incoming_angle_base_rad is not None:
-                reverse_alignment = math.cos(angular_distance(angle_rad, incoming_angle_base_rad))
                 score_reverse_penalty = self.reverse_penalty_weight * max(0.0, reverse_alignment)
                 score -= score_reverse_penalty
 
