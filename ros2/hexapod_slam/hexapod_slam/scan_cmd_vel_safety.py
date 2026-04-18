@@ -24,6 +24,15 @@ def clamp(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(max_value, value))
 
 
+def rotate_vector(x_value: float, y_value: float, yaw_rad: float) -> tuple[float, float]:
+    cos_yaw = math.cos(yaw_rad)
+    sin_yaw = math.sin(yaw_rad)
+    return (
+        cos_yaw * x_value - sin_yaw * y_value,
+        sin_yaw * x_value + cos_yaw * y_value,
+    )
+
+
 def valid_range(scan: LaserScan, index: int) -> Optional[float]:
     if index < 0 or index >= len(scan.ranges):
         return None
@@ -55,6 +64,11 @@ class ScanCmdVelSafety(Node):
         self.declare_parameter('clearance_window_deg', 15.0)
         self.declare_parameter('stop_distance_m', 0.65)
         self.declare_parameter('slowdown_distance_m', 0.85)
+        self.declare_parameter('side_clearance_window_deg', 20.0)
+        self.declare_parameter('side_stop_distance_m', 0.38)
+        self.declare_parameter('side_slowdown_distance_m', 0.52)
+        self.declare_parameter('max_side_push_ratio', 0.75)
+        self.declare_parameter('side_push_deadband_m', 0.05)
         self.declare_parameter('preserve_turning_when_blocked', False)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
@@ -75,6 +89,26 @@ class ScanCmdVelSafety(Node):
             self.stop_distance_m,
             float(self.get_parameter('slowdown_distance_m').value),
         )
+        self.side_clearance_window_rad = math.radians(
+            max(1.0, float(self.get_parameter('side_clearance_window_deg').value))
+        )
+        self.side_stop_distance_m = max(
+            0.05,
+            float(self.get_parameter('side_stop_distance_m').value),
+        )
+        self.side_slowdown_distance_m = max(
+            self.side_stop_distance_m,
+            float(self.get_parameter('side_slowdown_distance_m').value),
+        )
+        self.max_side_push_ratio = clamp(
+            float(self.get_parameter('max_side_push_ratio').value),
+            0.0,
+            2.0,
+        )
+        self.side_push_deadband_m = max(
+            0.0,
+            float(self.get_parameter('side_push_deadband_m').value),
+        )
         self.preserve_turning_when_blocked = bool(
             self.get_parameter('preserve_turning_when_blocked').value
         )
@@ -85,6 +119,8 @@ class ScanCmdVelSafety(Node):
         self.latest_cmd: Optional[Twist] = None
         self.latest_cmd_time = None
         self.last_clearance_state = 'clear'
+        self.active_side_escape_direction = 0.0
+        self.active_side_escape_wall_side = ''
 
         self.cmd_publisher = self.create_publisher(Twist, self.output_cmd_vel_topic, 10)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
@@ -98,6 +134,11 @@ class ScanCmdVelSafety(Node):
         self.get_logger().info(
             f'Safety uses scan yaw offset {math.degrees(self.scan_yaw_offset_rad):.1f} deg and '
             f'cmd_vel yaw offset {math.degrees(self.cmd_vel_yaw_offset_rad):.1f} deg.'
+        )
+        self.get_logger().info(
+            f'Side-wall safety: stop {self.side_stop_distance_m:.2f} m, '
+            f'slowdown {self.side_slowdown_distance_m:.2f} m, '
+            f'max push ratio {self.max_side_push_ratio:.2f}.'
         )
 
     def scan_callback(self, msg: LaserScan):
@@ -129,30 +170,134 @@ class ScanCmdVelSafety(Node):
             return
 
         if not self.scan_is_fresh():
+            self.active_side_escape_direction = 0.0
+            self.active_side_escape_wall_side = ''
             if not self.preserve_turning_when_blocked:
                 filtered_cmd.angular.z = 0.0
             self._log_state('blocked', 0.0, 'stale LiDAR data')
             self.cmd_publisher.publish(filtered_cmd)
             return
 
-        motion_angle_rad = (
-            math.atan2(self.latest_cmd.linear.y, self.latest_cmd.linear.x)
-            + self.cmd_vel_yaw_offset_rad
+        body_left_clearance_m = self.clearance_for_angle(
+            math.pi / 2.0,
+            window_rad=self.side_clearance_window_rad,
         )
-        clearance_m = self.clearance_for_angle(motion_angle_rad)
-        scale = self.translation_scale(clearance_m)
+        body_right_clearance_m = self.clearance_for_angle(
+            -math.pi / 2.0,
+            window_rad=self.side_clearance_window_rad,
+        )
+        side_escape_cmd = self.side_escape_command(
+            translation_speed,
+            body_left_clearance_m,
+            body_right_clearance_m,
+        )
+        if side_escape_cmd is not None:
+            self.cmd_publisher.publish(side_escape_cmd)
+            return
 
-        filtered_cmd.linear.x = self.latest_cmd.linear.x * scale
-        filtered_cmd.linear.y = self.latest_cmd.linear.y * scale
+        motion_vector_x, motion_vector_y = rotate_vector(
+            self.latest_cmd.linear.x,
+            self.latest_cmd.linear.y,
+            self.cmd_vel_yaw_offset_rad,
+        )
+        motion_angle_rad = math.atan2(motion_vector_y, motion_vector_x)
+        forward_clearance_m = self.clearance_for_angle(motion_angle_rad)
+        left_clearance_m = self.clearance_for_angle(
+            motion_angle_rad + math.pi / 2.0,
+            window_rad=self.side_clearance_window_rad,
+        )
+        right_clearance_m = self.clearance_for_angle(
+            motion_angle_rad - math.pi / 2.0,
+            window_rad=self.side_clearance_window_rad,
+        )
+        forward_scale = self.translation_scale(forward_clearance_m)
+        side_scale = min(
+            self.clearance_scale(
+                left_clearance_m,
+                self.side_stop_distance_m,
+                self.side_slowdown_distance_m,
+            ),
+            self.clearance_scale(
+                right_clearance_m,
+                self.side_stop_distance_m,
+                self.side_slowdown_distance_m,
+            ),
+        )
+        scale = min(forward_scale, side_scale)
+
+        side_push_ratio = self.side_push_ratio(left_clearance_m, right_clearance_m)
+        away_sign = 0.0
+        if left_clearance_m + self.side_push_deadband_m < right_clearance_m:
+            away_sign = -1.0
+        elif right_clearance_m + self.side_push_deadband_m < left_clearance_m:
+            away_sign = 1.0
+
+        if scale > 0.0:
+            forward_x = math.cos(motion_angle_rad)
+            forward_y = math.sin(motion_angle_rad)
+            corrected_x = forward_x
+            corrected_y = forward_y
+            if side_push_ratio > 0.0 and away_sign != 0.0:
+                corrected_x += away_sign * side_push_ratio * -forward_y
+                corrected_y += away_sign * side_push_ratio * forward_x
+            corrected_norm = math.hypot(corrected_x, corrected_y)
+            if corrected_norm > 1e-6:
+                corrected_x /= corrected_norm
+                corrected_y /= corrected_norm
+            corrected_speed = translation_speed * scale
+            corrected_cmd_x, corrected_cmd_y = rotate_vector(
+                corrected_x * corrected_speed,
+                corrected_y * corrected_speed,
+                -self.cmd_vel_yaw_offset_rad,
+            )
+            filtered_cmd.linear.x = corrected_cmd_x
+            filtered_cmd.linear.y = corrected_cmd_y
+
         if scale <= 0.0 and not self.preserve_turning_when_blocked:
             filtered_cmd.angular.z = 0.0
 
         if scale <= 0.0:
-            self._log_state('blocked', clearance_m, 'stopping translation')
+            self._log_state(
+                'blocked',
+                min(forward_clearance_m, left_clearance_m, right_clearance_m),
+                (
+                    f'stopping translation '
+                    f'(front {forward_clearance_m:.2f} m, left {left_clearance_m:.2f} m, '
+                    f'right {right_clearance_m:.2f} m)'
+                ),
+            )
         elif scale < 1.0:
-            self._log_state('slow', clearance_m, f'scaling translation to {scale:.2f}')
+            if side_push_ratio > 0.0 and away_sign != 0.0:
+                push_direction = 'right' if away_sign < 0.0 else 'left'
+                description = (
+                    f'scaling translation to {scale:.2f} and nudging {push_direction} '
+                    f'(front {forward_clearance_m:.2f} m, left {left_clearance_m:.2f} m, '
+                    f'right {right_clearance_m:.2f} m)'
+                )
+            else:
+                description = (
+                    f'scaling translation to {scale:.2f} '
+                    f'(front {forward_clearance_m:.2f} m, left {left_clearance_m:.2f} m, '
+                    f'right {right_clearance_m:.2f} m)'
+                )
+            self._log_state('slow', min(forward_clearance_m, left_clearance_m, right_clearance_m), description)
+        elif side_push_ratio > 0.0 and away_sign != 0.0:
+            push_direction = 'right' if away_sign < 0.0 else 'left'
+            self._log_state(
+                'slow',
+                min(forward_clearance_m, left_clearance_m, right_clearance_m),
+                (
+                    f'nudging {push_direction} away from side wall '
+                    f'(front {forward_clearance_m:.2f} m, left {left_clearance_m:.2f} m, '
+                    f'right {right_clearance_m:.2f} m)'
+                ),
+            )
         else:
-            self._log_state('clear', clearance_m, 'path clear')
+            self._log_state(
+                'clear',
+                min(forward_clearance_m, left_clearance_m, right_clearance_m),
+                'path clear',
+            )
 
         self.cmd_publisher.publish(filtered_cmd)
 
@@ -163,18 +308,149 @@ class ScanCmdVelSafety(Node):
         return age_sec <= self.scan_timeout_sec
 
     def translation_scale(self, clearance_m: float) -> float:
-        if clearance_m <= self.stop_distance_m:
+        return self.clearance_scale(
+            clearance_m,
+            self.stop_distance_m,
+            self.slowdown_distance_m,
+        )
+
+    def clearance_scale(
+        self,
+        clearance_m: float,
+        stop_distance_m: float,
+        slowdown_distance_m: float,
+    ) -> float:
+        if clearance_m <= stop_distance_m:
             return 0.0
-        if clearance_m >= self.slowdown_distance_m:
+        if clearance_m >= slowdown_distance_m:
             return 1.0
-        span = self.slowdown_distance_m - self.stop_distance_m
+        span = slowdown_distance_m - stop_distance_m
         if span <= 1e-6:
             return 0.0
-        return clamp((clearance_m - self.stop_distance_m) / span, 0.0, 1.0)
+        return clamp((clearance_m - stop_distance_m) / span, 0.0, 1.0)
 
-    def clearance_for_angle(self, target_angle_rad: float) -> float:
-        current = self.scan_window_clearance(self.latest_scan, target_angle_rad)
-        previous = self.scan_window_clearance(self.previous_scan, target_angle_rad)
+    def side_push_ratio(self, left_clearance_m: float, right_clearance_m: float) -> float:
+        closer_clearance_m = min(left_clearance_m, right_clearance_m)
+        if closer_clearance_m >= self.side_slowdown_distance_m:
+            return 0.0
+        span = self.side_slowdown_distance_m - self.side_stop_distance_m
+        if span <= 1e-6:
+            return 0.0
+        closeness = clamp(
+            (self.side_slowdown_distance_m - closer_clearance_m) / span,
+            0.0,
+            1.0,
+        )
+        imbalance = clamp(
+            (
+                abs(left_clearance_m - right_clearance_m) - self.side_push_deadband_m
+            ) / max(self.side_slowdown_distance_m, 1e-6),
+            0.0,
+            1.0,
+        )
+        return self.max_side_push_ratio * closeness * imbalance
+
+    def side_escape_command(
+        self,
+        translation_speed: float,
+        left_clearance_m: float,
+        right_clearance_m: float,
+    ) -> Optional[Twist]:
+        escape_direction = self.active_side_escape_direction
+        wall_side = self.active_side_escape_wall_side
+
+        if escape_direction != 0.0:
+            wall_clearance_m = (
+                left_clearance_m if wall_side == 'left' else right_clearance_m
+            )
+            if wall_clearance_m >= self.side_slowdown_distance_m:
+                self.active_side_escape_direction = 0.0
+                self.active_side_escape_wall_side = ''
+                escape_direction = 0.0
+                wall_side = ''
+
+        if escape_direction == 0.0:
+            left_too_close = left_clearance_m <= self.side_stop_distance_m
+            right_too_close = right_clearance_m <= self.side_stop_distance_m
+            if not left_too_close and not right_too_close:
+                return None
+
+            if left_too_close and right_too_close:
+                if abs(left_clearance_m - right_clearance_m) <= self.side_push_deadband_m:
+                    self._log_state(
+                        'blocked',
+                        min(left_clearance_m, right_clearance_m),
+                        (
+                            'both side walls are too close for a safe escape '
+                            f'(left {left_clearance_m:.2f} m, right {right_clearance_m:.2f} m)'
+                        ),
+                    )
+                    return Twist()
+                if left_clearance_m < right_clearance_m:
+                    escape_direction = -1.0
+                    wall_side = 'left'
+                else:
+                    escape_direction = 1.0
+                    wall_side = 'right'
+            elif left_too_close:
+                escape_direction = -1.0
+                wall_side = 'left'
+            else:
+                escape_direction = 1.0
+                wall_side = 'right'
+
+            self.active_side_escape_direction = escape_direction
+            self.active_side_escape_wall_side = wall_side
+
+        escape_cmd = Twist()
+        if wall_side == 'left':
+            target_clearance_m = right_clearance_m
+        else:
+            target_clearance_m = left_clearance_m
+
+        if target_clearance_m <= self.side_stop_distance_m:
+            self._log_state(
+                'blocked',
+                min(left_clearance_m, right_clearance_m),
+                (
+                    f'escape away from {wall_side} wall is blocked by the opposite side '
+                    f'(left {left_clearance_m:.2f} m, right {right_clearance_m:.2f} m)'
+                ),
+            )
+            return escape_cmd
+
+        escape_speed = translation_speed * self.clearance_scale(
+            target_clearance_m,
+            self.side_stop_distance_m,
+            self.side_slowdown_distance_m,
+        )
+        escape_cmd.linear.x, escape_cmd.linear.y = rotate_vector(
+            0.0,
+            escape_direction * escape_speed,
+            -self.cmd_vel_yaw_offset_rad,
+        )
+        self._log_state(
+            'escape',
+            min(left_clearance_m, right_clearance_m),
+            (
+                f'forcing {"right" if escape_direction < 0.0 else "left"} escape away from {wall_side} wall '
+                f'(left {left_clearance_m:.2f} m, right {right_clearance_m:.2f} m, '
+                f'speed {escape_speed:.3f} m/s)'
+            ),
+        )
+        return escape_cmd
+
+    def clearance_for_angle(self, target_angle_rad: float, window_rad: Optional[float] = None) -> float:
+        current = self.scan_window_clearance(
+            self.latest_scan,
+            target_angle_rad,
+            window_rad=window_rad,
+        )
+        previous = self.scan_window_clearance(
+            self.previous_scan,
+            target_angle_rad,
+            window_rad=window_rad,
+        )
 
         if current is None:
             return 0.0 if previous is None else previous
@@ -182,12 +458,18 @@ class ScanCmdVelSafety(Node):
             return current
         return min(current, previous)
 
-    def scan_window_clearance(self, scan: Optional[LaserScan], target_angle_rad: float) -> Optional[float]:
+    def scan_window_clearance(
+        self,
+        scan: Optional[LaserScan],
+        target_angle_rad: float,
+        window_rad: Optional[float] = None,
+    ) -> Optional[float]:
         if scan is None or len(scan.ranges) == 0 or abs(scan.angle_increment) < 1e-9:
             return None
 
         angle_increment = abs(scan.angle_increment)
-        window_beams = max(1, int(self.clearance_window_rad / angle_increment))
+        window_width_rad = self.clearance_window_rad if window_rad is None else window_rad
+        window_beams = max(1, int(window_width_rad / angle_increment))
         target_scan_angle_rad = target_angle_rad - self.scan_yaw_offset_rad
         raw_index = (target_scan_angle_rad - scan.angle_min) / scan.angle_increment
         center_index = int(round(raw_index))

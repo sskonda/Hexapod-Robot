@@ -65,6 +65,10 @@ def generate_launch_description():
     safety_stop_distance_m = LaunchConfiguration('safety_stop_distance_m')
     safety_slowdown_distance_m = LaunchConfiguration('safety_slowdown_distance_m')
     safety_clearance_window_deg = LaunchConfiguration('safety_clearance_window_deg')
+    safety_side_stop_distance_m = LaunchConfiguration('safety_side_stop_distance_m')
+    safety_side_slowdown_distance_m = LaunchConfiguration('safety_side_slowdown_distance_m')
+    safety_side_clearance_window_deg = LaunchConfiguration('safety_side_clearance_window_deg')
+    safety_max_side_push_ratio = LaunchConfiguration('safety_max_side_push_ratio')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -354,6 +358,38 @@ def generate_launch_description():
             default_value='15.0',
             description='Half-width of the LiDAR sector checked by the lower-layer scan safety filter.',
         ),
+        DeclareLaunchArgument(
+            'safety_side_stop_distance_m',
+            default_value='0.38',
+            description=(
+                'Minimum allowed LiDAR clearance at the robot flanks before side-wall '
+                'safety blocks translation.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'safety_side_slowdown_distance_m',
+            default_value='0.52',
+            description=(
+                'Side-wall clearance at which the lower-layer safety filter stops '
+                'slowing or nudging away from nearby walls.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'safety_side_clearance_window_deg',
+            default_value='20.0',
+            description=(
+                'Half-width of the LiDAR sectors checked to the left and right of '
+                'the current motion direction.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'safety_max_side_push_ratio',
+            default_value='0.75',
+            description=(
+                'Maximum lateral blend the safety filter may add to bias motion away '
+                'from a nearby side wall.'
+            ),
+        ),
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
@@ -473,6 +509,10 @@ def generate_launch_description():
                 'clearance_window_deg': safety_clearance_window_deg,
                 'stop_distance_m': safety_stop_distance_m,
                 'slowdown_distance_m': safety_slowdown_distance_m,
+                'side_clearance_window_deg': safety_side_clearance_window_deg,
+                'side_stop_distance_m': safety_side_stop_distance_m,
+                'side_slowdown_distance_m': safety_side_slowdown_distance_m,
+                'max_side_push_ratio': safety_max_side_push_ratio,
                 'preserve_turning_when_blocked': False,
             }],
         ),

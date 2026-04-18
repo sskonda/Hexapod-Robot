@@ -65,13 +65,16 @@ import unittest.mock as mock
 # Create a minimal rclpy mock so the module-level import doesn't fail
 _rclpy_mock = types.ModuleType("rclpy")
 _rclpy_mock.node = types.ModuleType("rclpy.node")
+_rclpy_mock.duration = types.ModuleType("rclpy.duration")
 
 class _FakeNode:
     pass
 
 _rclpy_mock.node.Node = _FakeNode
+_rclpy_mock.duration.Duration = object
 sys.modules.setdefault("rclpy", _rclpy_mock)
 sys.modules.setdefault("rclpy.node", _rclpy_mock.node)
+sys.modules.setdefault("rclpy.duration", _rclpy_mock.duration)
 
 # Mock visualization_msgs too
 for _mod in [
@@ -168,6 +171,7 @@ _vis_msg.MarkerArray = _MarkerArray
 
 _geom_msg = sys.modules["geometry_msgs.msg"]
 _geom_msg.Point = _Point
+_geom_msg.PointStamped = object
 _geom_msg.PoseStamped = object
 _geom_msg.Quaternion = _Orientation
 
@@ -180,6 +184,9 @@ _nav_msg = sys.modules["nav_msgs.msg"]
 _nav_msg.OccupancyGrid = object
 _nav_msg.Odometry = object
 _nav_msg.Path = object
+
+_sensor_msg = sys.modules["sensor_msgs.msg"]
+_sensor_msg.LaserScan = object
 
 _bi_msg = sys.modules["builtin_interfaces.msg"]
 _bi_msg.Time = object
@@ -912,9 +919,11 @@ class TestVisualizerMarkers:
 from hexapod_slam.maze_graph_planner import (
     build_path_to_node,
     find_closest_node,
+    regulate_target_between_walls,
     select_next_target_bfs,
     select_next_target_dfs,
 )
+from hexapod_slam.gap_following_explorer import is_backtracking_heading
 
 
 class TestPlannerHelpers:
@@ -989,3 +998,111 @@ class TestPlannerHelpers:
         # (we just check it doesn't crash)
         # Either None or one of the visited nodes
         assert next_id is None or next_id in g.nodes
+
+    def test_backtracking_heading_detects_reverse_half_plane(self):
+        incoming_angle = math.pi
+        assert is_backtracking_heading(math.pi, incoming_angle)
+        assert is_backtracking_heading(math.radians(140.0), incoming_angle)
+        assert not is_backtracking_heading(math.pi / 2.0, incoming_angle)
+        assert not is_backtracking_heading(0.0, incoming_angle)
+
+    def test_wall_regulator_recenters_target_in_corridor(self):
+        safe_free = np.zeros((11, 11), dtype=bool)
+        safe_free[:, 3:8] = True
+
+        nominal_x, nominal_y = grid_to_world(4, 5, 0.0, 0.0, 0.1)
+        regulated_x, regulated_y, applied = regulate_target_between_walls(
+            safe_free,
+            origin_x=0.0,
+            origin_y=0.0,
+            resolution=0.1,
+            nominal_x_m=nominal_x,
+            nominal_y_m=nominal_y,
+            heading_rad=math.pi / 2.0,
+            max_lateral_offset_m=0.30,
+            lateral_step_m=0.05,
+            probe_distance_m=0.40,
+            min_improvement_m=0.01,
+        )
+
+        assert applied is True
+        assert regulated_x > nominal_x
+        assert regulated_x == pytest.approx(0.55, abs=0.051)
+        assert regulated_y == pytest.approx(nominal_y)
+
+    def test_wall_regulator_ignores_open_space(self):
+        safe_free = np.ones((11, 11), dtype=bool)
+        nominal_x, nominal_y = grid_to_world(5, 5, 0.0, 0.0, 0.1)
+
+        regulated_x, regulated_y, applied = regulate_target_between_walls(
+            safe_free,
+            origin_x=0.0,
+            origin_y=0.0,
+            resolution=0.1,
+            nominal_x_m=nominal_x,
+            nominal_y_m=nominal_y,
+            heading_rad=math.pi / 2.0,
+            max_lateral_offset_m=0.30,
+            lateral_step_m=0.05,
+            probe_distance_m=0.35,
+            min_improvement_m=0.01,
+        )
+
+        assert applied is False
+        assert regulated_x == pytest.approx(nominal_x)
+        assert regulated_y == pytest.approx(nominal_y)
+
+    def test_wall_regulator_handles_local_wall_gap(self):
+        safe_free = np.zeros((21, 21), dtype=bool)
+        safe_free[:, 6:15] = True
+        safe_free[9:12, 15:] = True
+
+        nominal_x, nominal_y = grid_to_world(8, 10, 0.0, 0.0, 0.1)
+        regulated_x, regulated_y, applied = regulate_target_between_walls(
+            safe_free,
+            origin_x=0.0,
+            origin_y=0.0,
+            resolution=0.1,
+            nominal_x_m=nominal_x,
+            nominal_y_m=nominal_y,
+            heading_rad=math.pi / 2.0,
+            max_lateral_offset_m=0.40,
+            lateral_step_m=0.05,
+            probe_distance_m=0.80,
+            min_improvement_m=0.01,
+            longitudinal_window_m=0.25,
+            longitudinal_step_m=0.05,
+            required_bounded_fraction=0.45,
+        )
+
+        assert applied is True
+        assert regulated_x > nominal_x
+        assert regulated_x == pytest.approx(1.00, abs=0.051)
+        assert regulated_y == pytest.approx(nominal_y)
+
+    def test_wall_regulator_stays_conservative_at_t_junction(self):
+        safe_free = np.zeros((21, 21), dtype=bool)
+        safe_free[:, 8:13] = True
+        safe_free[10:, 5:16] = True
+
+        nominal_x, nominal_y = grid_to_world(10, 10, 0.0, 0.0, 0.1)
+        regulated_x, regulated_y, applied = regulate_target_between_walls(
+            safe_free,
+            origin_x=0.0,
+            origin_y=0.0,
+            resolution=0.1,
+            nominal_x_m=nominal_x,
+            nominal_y_m=nominal_y,
+            heading_rad=math.pi / 2.0,
+            max_lateral_offset_m=0.30,
+            lateral_step_m=0.05,
+            probe_distance_m=0.80,
+            min_improvement_m=0.01,
+            longitudinal_window_m=0.25,
+            longitudinal_step_m=0.05,
+            required_bounded_fraction=0.45,
+        )
+
+        assert applied is False
+        assert regulated_x == pytest.approx(nominal_x)
+        assert regulated_y == pytest.approx(nominal_y)
