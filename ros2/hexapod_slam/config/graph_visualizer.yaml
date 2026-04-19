@@ -6,9 +6,18 @@ maze_graph_visualizer:
     edge_width_m: 0.03
     frontier_scale_m: 0.05
     label_text_scale_m: 0.10
+    cell_label_text_scale_m: 0.08
     show_node_labels: true
     show_edge_labels: false
     show_frontiers: true
     show_dead_ends: true
     show_active_target: true
+    show_cells: true
+    show_cell_labels: true
+    show_cell_openings: true
+    cell_scale_ratio: 0.25
+    cell_wall_width_m: 0.03
+    cell_commit_confidence: 0.65
+    cell_dominance_margin: 0.15
+    cell_label_min_confidence: 0.35
     show_debug_candidates: false

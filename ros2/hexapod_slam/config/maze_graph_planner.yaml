@@ -15,6 +15,14 @@ maze_graph_planner:
     heading_alignment_gain: 0.5
     backtrack_penalty_gain: 0.5
     free_threshold: 20
+    cell_memory_enabled: true
+    cell_commit_confidence: 0.65
+    cell_dominance_margin: 0.15
+    cell_unvisited_bonus_gain: 1.5
+    cell_revisit_penalty_gain: 0.35
+    cell_opening_bonus_gain: 0.25
+    progress_stall_timeout_sec: 8.0
+    progress_stall_min_improvement_m: 0.10
     wall_centering_enabled: true
     wall_centering_inflation_radius_m: 0.20
     wall_centering_max_lateral_offset_m: 0.30

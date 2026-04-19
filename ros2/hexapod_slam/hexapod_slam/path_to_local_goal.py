@@ -14,7 +14,9 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Quaternion
 from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import String
+from tf2_ros import Buffer, TransformListener
 
+from .frame_utils import lookup_point_2d
 from .map_frontier_utils import distance_m, heading_between_points
 
 
@@ -84,22 +86,28 @@ class PathToLocalGoal(Node):
         self.declare_parameter("lookahead_distance_m", 0.30)
         self.declare_parameter("goal_tolerance_m", 0.15)
         self.declare_parameter("map_frame", "map")
+        self.declare_parameter("odom_topic", "odom")
 
         self._rate = self.get_parameter("update_rate_hz").value
         self._lookahead = self.get_parameter("lookahead_distance_m").value
         self._tolerance = self.get_parameter("goal_tolerance_m").value
         self._map_frame = self.get_parameter("map_frame").value
+        self._odom_topic = self.get_parameter("odom_topic").value
 
         # State
         self._current_target: Optional[PoseStamped] = None
         self._path: Optional[Path] = None
         self._robot_x: float = 0.0
         self._robot_y: float = 0.0
+        self._robot_pose_frame: str = self._odom_topic
+        self._last_tf_warn_time: float = 0.0
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
         # Subscriptions
         self.create_subscription(PoseStamped, "/maze_graph/current_target", self._target_cb, 1)
         self.create_subscription(Path, "/maze_graph/path", self._path_cb, 1)
-        self.create_subscription(Odometry, "/odom", self._odom_cb, 10)
+        self.create_subscription(Odometry, self._odom_topic, self._odom_cb, 10)
 
         # Publishers
         self._pub_local_goal = self.create_publisher(PoseStamped, "/maze_graph/local_goal", 1)
@@ -120,6 +128,20 @@ class PathToLocalGoal(Node):
     def _odom_cb(self, msg: Odometry):
         self._robot_x = msg.pose.pose.position.x
         self._robot_y = msg.pose.pose.position.y
+        if msg.header.frame_id:
+            self._robot_pose_frame = msg.header.frame_id
+
+    def _robot_position_in_map(self) -> Optional[tuple[float, float]]:
+        robot_map_position = lookup_point_2d(
+            self._tf_buffer,
+            self._map_frame,
+            self._robot_pose_frame,
+            self._robot_x,
+            self._robot_y,
+        )
+        if robot_map_position is None and self._map_frame == self._robot_pose_frame:
+            return self._robot_x, self._robot_y
+        return robot_map_position
 
     # ------------------------------------------------------------------
     def _update(self):
@@ -132,7 +154,21 @@ class PathToLocalGoal(Node):
 
         tx = self._current_target.pose.position.x
         ty = self._current_target.pose.position.y
-        dist_to_target = distance_m(self._robot_x, self._robot_y, tx, ty)
+        robot_map_position = self._robot_position_in_map()
+        if robot_map_position is None:
+            now_sec = self.get_clock().now().nanoseconds * 1e-9
+            if now_sec - self._last_tf_warn_time > 5.0:
+                self.get_logger().warn(
+                    f'Unable to transform robot pose from {self._robot_pose_frame} '
+                    f'to {self._map_frame}; local-goal update skipped.'
+                )
+                self._last_tf_warn_time = now_sec
+            status_msg.data = "no_pose_in_map"
+            self._pub_status.publish(status_msg)
+            return
+
+        robot_x_m, robot_y_m = robot_map_position
+        dist_to_target = distance_m(robot_x_m, robot_y_m, tx, ty)
 
         if dist_to_target < self._tolerance:
             status_msg.data = "reached"
@@ -143,8 +179,8 @@ class PathToLocalGoal(Node):
         local_goal: Optional[PoseStamped] = None
         if self._path is not None and self._path.poses:
             local_goal = compute_local_goal(
-                self._robot_x,
-                self._robot_y,
+                robot_x_m,
+                robot_y_m,
                 self._path.poses,
                 self._lookahead,
             )
@@ -156,7 +192,7 @@ class PathToLocalGoal(Node):
             local_goal.header.stamp = self.get_clock().now().to_msg()
             local_goal.pose.position.x = tx
             local_goal.pose.position.y = ty
-            yaw = heading_between_points(self._robot_x, self._robot_y, tx, ty)
+            yaw = heading_between_points(robot_x_m, robot_y_m, tx, ty)
             local_goal.pose.orientation = _yaw_to_quat(yaw)
 
         local_goal.header.stamp = self.get_clock().now().to_msg()

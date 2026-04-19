@@ -7,6 +7,7 @@ Publishes /maze_graph/graph_json (JSON) plus debug MarkerArrays.
 """
 
 import math
+import os
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -18,11 +19,19 @@ from builtin_interfaces.msg import Time as RosTime
 from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import ColorRGBA, Header, String
+from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
+from .frame_utils import lookup_point_2d
 from .graph_io import graph_to_json, load_graph, save_graph
 from .graph_types import (
     EdgeState, GraphState, MazeEdge, MazeNode, NodeType, VisitState,
+)
+from .maze_cell_memory import (
+    associate_nodes_to_cells,
+    extract_cell_observations,
+    update_cell_memory,
+    update_robot_cell_visit,
 )
 from .map_frontier_utils import (
     detect_frontiers,
@@ -446,6 +455,9 @@ class MazeGraphBuilder(Node):
         # --- parameters ---
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("odom_frame", "odom")
+        self.declare_parameter("map_topic", "/map")
+        self.declare_parameter("odom_topic", "odom")
         self.declare_parameter("update_rate_hz", 2.0)
         self.declare_parameter("min_feature_observations", 2)
         self.declare_parameter("node_merge_distance_m", 0.25)
@@ -458,32 +470,122 @@ class MazeGraphBuilder(Node):
         self.declare_parameter("probe_distance_m", 0.50)
         self.declare_parameter("candidate_grid_spacing_m", 0.20)
         self.declare_parameter("min_corridor_width_m", 0.20)
-        self.declare_parameter("graph_save_path", "/tmp/maze_graph.json")
+        self.declare_parameter("graph_save_path", "~/.ros/maze_graph.json")
         self.declare_parameter("graph_autosave_period_sec", 30.0)
+        self.declare_parameter("cell_memory_enabled", True)
+        self.declare_parameter("cell_size_m", 1.2192)
+        self.declare_parameter("cell_origin_x_m", 0.0)
+        self.declare_parameter("cell_origin_y_m", 0.0)
+        self.declare_parameter("cell_center_probe_radius_m", 0.18)
+        self.declare_parameter("cell_center_probe_step_m", 0.05)
+        self.declare_parameter("cell_min_center_free_fraction", 0.55)
+        self.declare_parameter("cell_min_center_known_fraction", 0.35)
+        self.declare_parameter("cell_side_sample_spacing_m", 0.05)
+        self.declare_parameter("cell_side_band_half_width_m", 0.06)
+        self.declare_parameter("cell_side_tangential_margin_m", 0.12)
+        self.declare_parameter("cell_min_side_known_fraction", 0.35)
+        self.declare_parameter("cell_wall_presence_threshold", 0.55)
+        self.declare_parameter("cell_open_presence_threshold", 0.55)
+        self.declare_parameter("cell_observation_gain", 0.20)
+        self.declare_parameter("cell_wall_gain", 0.18)
+        self.declare_parameter("cell_open_gain", 0.12)
+        self.declare_parameter("cell_side_decay", 0.03)
+        self.declare_parameter("cell_node_association_radius_m", 0.35)
+        self.declare_parameter("cell_visit_radius_m", 0.30)
 
         self._map_frame = self.get_parameter("map_frame").value
+        self._odom_frame = self.get_parameter("odom_frame").value
+        self._map_topic = self.get_parameter("map_topic").value
+        self._odom_topic = self.get_parameter("odom_topic").value
         self._update_rate = self.get_parameter("update_rate_hz").value
         self._min_obs = self.get_parameter("min_feature_observations").value
         self._merge_dist = self.get_parameter("node_merge_distance_m").value
+        self._occupied_thresh = int(self.get_parameter("occupied_threshold").value)
         self._free_thresh = self.get_parameter("free_threshold").value
         self._inflation_m = self.get_parameter("inflation_radius_m").value
         self._corner_thresh = self.get_parameter("corner_angle_threshold_deg").value
         self._probe_dist = self.get_parameter("probe_distance_m").value
         self._spacing_m = self.get_parameter("candidate_grid_spacing_m").value
-        self._save_path = self.get_parameter("graph_save_path").value
+        self._save_path = os.path.abspath(
+            os.path.expanduser(str(self.get_parameter("graph_save_path").value))
+        )
         self._autosave_period = self.get_parameter("graph_autosave_period_sec").value
+        self._cell_memory_enabled = bool(self.get_parameter("cell_memory_enabled").value)
+        self._cell_size_m = float(self.get_parameter("cell_size_m").value)
+        self._cell_origin_x_m = float(self.get_parameter("cell_origin_x_m").value)
+        self._cell_origin_y_m = float(self.get_parameter("cell_origin_y_m").value)
+        self._cell_center_probe_radius_m = float(
+            self.get_parameter("cell_center_probe_radius_m").value
+        )
+        self._cell_center_probe_step_m = float(
+            self.get_parameter("cell_center_probe_step_m").value
+        )
+        self._cell_min_center_free_fraction = float(
+            self.get_parameter("cell_min_center_free_fraction").value
+        )
+        self._cell_min_center_known_fraction = float(
+            self.get_parameter("cell_min_center_known_fraction").value
+        )
+        self._cell_side_sample_spacing_m = float(
+            self.get_parameter("cell_side_sample_spacing_m").value
+        )
+        self._cell_side_band_half_width_m = float(
+            self.get_parameter("cell_side_band_half_width_m").value
+        )
+        self._cell_side_tangential_margin_m = float(
+            self.get_parameter("cell_side_tangential_margin_m").value
+        )
+        self._cell_min_side_known_fraction = float(
+            self.get_parameter("cell_min_side_known_fraction").value
+        )
+        self._cell_wall_presence_threshold = float(
+            self.get_parameter("cell_wall_presence_threshold").value
+        )
+        self._cell_open_presence_threshold = float(
+            self.get_parameter("cell_open_presence_threshold").value
+        )
+        self._cell_observation_gain = float(
+            self.get_parameter("cell_observation_gain").value
+        )
+        self._cell_wall_gain = float(self.get_parameter("cell_wall_gain").value)
+        self._cell_open_gain = float(self.get_parameter("cell_open_gain").value)
+        self._cell_side_decay = float(self.get_parameter("cell_side_decay").value)
+        self._cell_node_association_radius_m = float(
+            self.get_parameter("cell_node_association_radius_m").value
+        )
+        self._cell_visit_radius_m = float(
+            self.get_parameter("cell_visit_radius_m").value
+        )
 
         # --- state ---
         self._graph = GraphState()
         self._last_map: Optional[OccupancyGrid] = None
         self._robot_x: float = 0.0
         self._robot_y: float = 0.0
+        self._robot_pose_frame: str = self._odom_frame
         self._last_save_time: float = time.time()
         self._last_frontier_cells: List[Tuple[int, int]] = []
+        self._last_robot_cell_key: Optional[str] = None
+        self._last_tf_warn_time: float = 0.0
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
+
+        if os.path.exists(self._save_path):
+            try:
+                self._graph = load_graph(self._save_path)
+                self.get_logger().info(
+                    f'Loaded persisted maze memory from {self._save_path} '
+                    f'({self._graph.node_count()} nodes, {self._graph.edge_count()} edges, '
+                    f'{self._graph.cell_count()} cells).'
+                )
+            except Exception as exc:
+                self.get_logger().warn(
+                    f'Failed to load persisted maze memory from {self._save_path}: {exc}'
+                )
 
         # --- subscriptions ---
-        self.create_subscription(OccupancyGrid, "/map", self._map_callback, 1)
-        self.create_subscription(Odometry, "/odom", self._odom_callback, 10)
+        self.create_subscription(OccupancyGrid, self._map_topic, self._map_callback, 1)
+        self.create_subscription(Odometry, self._odom_topic, self._odom_callback, 10)
 
         # --- publishers ---
         self._pub_json = self.create_publisher(String, "/maze_graph/graph_json", 1)
@@ -496,6 +598,12 @@ class MazeGraphBuilder(Node):
         self.create_timer(period, self._timer_callback)
 
         self.get_logger().info("MazeGraphBuilder started.")
+        if self._cell_memory_enabled:
+            self.get_logger().info(
+                f'Hybrid cell memory enabled: cell_size={self._cell_size_m:.3f} m, '
+                f'origin=({self._cell_origin_x_m:.2f}, {self._cell_origin_y_m:.2f}), '
+                f'save_path={self._save_path}'
+            )
 
     # ------------------------------------------------------------------
     def _map_callback(self, msg: OccupancyGrid):
@@ -504,6 +612,8 @@ class MazeGraphBuilder(Node):
     def _odom_callback(self, msg: Odometry):
         self._robot_x = msg.pose.pose.position.x
         self._robot_y = msg.pose.pose.position.y
+        if msg.header.frame_id:
+            self._robot_pose_frame = msg.header.frame_id
 
     # ------------------------------------------------------------------
     def _timer_callback(self):
@@ -554,6 +664,9 @@ class MazeGraphBuilder(Node):
         now = time.time()
         if now - self._last_save_time >= self._autosave_period:
             try:
+                save_dir = os.path.dirname(self._save_path)
+                if save_dir:
+                    os.makedirs(save_dir, exist_ok=True)
                 save_graph(self._graph, self._save_path)
                 self._last_save_time = now
             except Exception as exc:
@@ -650,6 +763,78 @@ class MazeGraphBuilder(Node):
             self._merge_dist,
             next_id,
         )
+
+        if self._cell_memory_enabled:
+            self._graph.cell_size_m = self._cell_size_m
+            self._graph.cell_origin_x_m = self._cell_origin_x_m
+            self._graph.cell_origin_y_m = self._cell_origin_y_m
+
+            cell_observations = extract_cell_observations(
+                grid_array=grid_array,
+                origin_x_m=origin_x,
+                origin_y_m=origin_y,
+                resolution_m=resolution,
+                free_threshold=self._free_thresh,
+                occupied_threshold=self._occupied_thresh,
+                cell_size_m=self._cell_size_m,
+                cell_origin_x_m=self._cell_origin_x_m,
+                cell_origin_y_m=self._cell_origin_y_m,
+                center_probe_radius_m=self._cell_center_probe_radius_m,
+                center_probe_step_m=self._cell_center_probe_step_m,
+                min_center_free_fraction=self._cell_min_center_free_fraction,
+                min_center_known_fraction=self._cell_min_center_known_fraction,
+                side_sample_spacing_m=self._cell_side_sample_spacing_m,
+                side_band_half_width_m=self._cell_side_band_half_width_m,
+                side_tangential_margin_m=self._cell_side_tangential_margin_m,
+            )
+            update_cell_memory(
+                self._graph,
+                cell_observations,
+                time.time(),
+                min_side_known_fraction=self._cell_min_side_known_fraction,
+                wall_presence_threshold=self._cell_wall_presence_threshold,
+                open_presence_threshold=self._cell_open_presence_threshold,
+                observation_gain=self._cell_observation_gain,
+                wall_gain=self._cell_wall_gain,
+                open_gain=self._cell_open_gain,
+                side_decay=self._cell_side_decay,
+            )
+            associate_nodes_to_cells(
+                self._graph,
+                self._cell_origin_x_m,
+                self._cell_origin_y_m,
+                self._cell_size_m,
+                self._cell_node_association_radius_m,
+            )
+            robot_map_position = lookup_point_2d(
+                self._tf_buffer,
+                self._map_frame,
+                self._robot_pose_frame,
+                self._robot_x,
+                self._robot_y,
+            )
+            if robot_map_position is None and self._map_frame == self._robot_pose_frame:
+                robot_map_position = (self._robot_x, self._robot_y)
+            if robot_map_position is None:
+                now = time.time()
+                if now - self._last_tf_warn_time > 5.0:
+                    self.get_logger().warn(
+                        f'Unable to transform robot pose from {self._robot_pose_frame} '
+                        f'to {self._map_frame}; skipping cell visit update.'
+                    )
+                    self._last_tf_warn_time = now
+            else:
+                robot_map_x_m, robot_map_y_m = robot_map_position
+                self._last_robot_cell_key = update_robot_cell_visit(
+                    self._graph,
+                    robot_map_x_m,
+                    robot_map_y_m,
+                    self._cell_origin_x_m,
+                    self._cell_origin_y_m,
+                    self._cell_size_m,
+                    self._cell_visit_radius_m,
+                    self._last_robot_cell_key,
+                )
 
         self._graph.version += 1
         self._graph.timestamp = time.time()
