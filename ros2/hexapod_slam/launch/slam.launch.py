@@ -2,10 +2,14 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
 from launch.conditions import IfCondition
+from launch.events.matchers import matches_action
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+from launch_ros.actions import LifecycleNode, Node
+from launch_ros.event_handlers import OnStateTransition
+from launch_ros.events.lifecycle import ChangeState
+from lifecycle_msgs.msg import Transition
 
 
 def generate_launch_description():
@@ -22,6 +26,7 @@ def generate_launch_description():
     base_frame = LaunchConfiguration('base_frame')
     enable_explorer = LaunchConfiguration('enable_explorer')
     enable_robot_localization = LaunchConfiguration('enable_robot_localization')
+    autostart_slam = LaunchConfiguration('autostart_slam')
     laser_frame = LaunchConfiguration('laser_frame')
     laser_x = LaunchConfiguration('laser_x')
     laser_y = LaunchConfiguration('laser_y')
@@ -70,6 +75,25 @@ def generate_launch_description():
     safety_side_clearance_window_deg = LaunchConfiguration('safety_side_clearance_window_deg')
     safety_max_side_push_ratio = LaunchConfiguration('safety_max_side_push_ratio')
 
+    slam_toolbox_node = LifecycleNode(
+        package='slam_toolbox',
+        executable='async_slam_toolbox_node',
+        name='slam_toolbox',
+        output='screen',
+        parameters=[
+            slam_params_file,
+            {
+                'use_sim_time': use_sim_time,
+                'map_frame': map_frame,
+                'odom_frame': odom_frame,
+                'base_frame': base_frame,
+            },
+        ],
+        remappings=[
+            ('scan', scan_topic),
+        ],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument(
             'use_sim_time',
@@ -117,6 +141,14 @@ def generate_launch_description():
             description=(
                 'Launch robot_localization to fuse raw odom and IMU into the odom topic '
                 'used by the explorer, follower, and SLAM.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'autostart_slam',
+            default_value='true',
+            description=(
+                'Automatically configure and activate the slam_toolbox lifecycle node. '
+                'Disable for manual lifecycle debugging.'
             ),
         ),
         DeclareLaunchArgument(
@@ -421,23 +453,28 @@ def generate_launch_description():
                 ('odometry/filtered', odom_topic),
             ],
         ),
-        Node(
-            package='slam_toolbox',
-            executable='async_slam_toolbox_node',
-            name='slam_toolbox',
-            output='screen',
-            parameters=[
-                slam_params_file,
-                {
-                    'use_sim_time': use_sim_time,
-                    'map_frame': map_frame,
-                    'odom_frame': odom_frame,
-                    'base_frame': base_frame,
-                },
-            ],
-            remappings=[
-                ('scan', scan_topic),
-            ],
+        slam_toolbox_node,
+        EmitEvent(
+            event=ChangeState(
+                lifecycle_node_matcher=matches_action(slam_toolbox_node),
+                transition_id=Transition.TRANSITION_CONFIGURE,
+            ),
+            condition=IfCondition(autostart_slam),
+        ),
+        RegisterEventHandler(
+            OnStateTransition(
+                target_lifecycle_node=slam_toolbox_node,
+                goal_state='inactive',
+                entities=[
+                    EmitEvent(
+                        event=ChangeState(
+                            lifecycle_node_matcher=matches_action(slam_toolbox_node),
+                            transition_id=Transition.TRANSITION_ACTIVATE,
+                        ),
+                    ),
+                ],
+            ),
+            condition=IfCondition(autostart_slam),
         ),
         Node(
             package='hexapod_slam',
