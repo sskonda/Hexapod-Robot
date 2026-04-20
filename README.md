@@ -159,4 +159,4 @@ Current interfaces used by the main ROS 2 nodes:
 - `hexapod_core.launch.py` assumes the IMU node can talk to real hardware unless you modify the stack for a non-hardware environment.
 - Hardware-specific nodes depend on Linux I2C/GPIO access and will not behave like a full robot bring-up on a desktop machine without those devices.
 
-Ryan Robinson was here 
+Ryan Robinson was not here 
