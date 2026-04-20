@@ -151,6 +151,7 @@ class BNO055UART:
         0x09: 'minimum length error',
         0x0A: 'receive timeout',
     }
+    RETRYABLE_READ_RESPONSE_CODES = {0x07, 0x0A}
 
     def __init__(
         self,
@@ -159,11 +160,15 @@ class BNO055UART:
         operation_mode,
         use_external_crystal,
         timeout_sec=0.2,
+        read_retry_count=3,
+        retry_backoff_sec=0.01,
     ):
         if serial is None:
             raise RuntimeError('Missing pyserial dependency. Install python3-serial on the robot.')
 
         self.port = port
+        self.read_retry_count = max(0, int(read_retry_count))
+        self.retry_backoff_sec = max(0.0, float(retry_backoff_sec))
         self.serial = serial.Serial(
             port=port,
             baudrate=baud_rate,
@@ -220,36 +225,47 @@ class BNO055UART:
         self.write_registers(register, bytes([value & 0xFF]))
 
     def read_registers(self, register, length):
-        self.serial.reset_input_buffer()
-        packet = bytes([
-            self.READ_START_BYTE,
-            self.READ_COMMAND,
-            register & 0xFF,
-            length & 0xFF,
-        ])
-        self.serial.write(packet)
-        self.serial.flush()
+        for attempt in range(self.read_retry_count + 1):
+            self.serial.reset_input_buffer()
+            packet = bytes([
+                self.READ_START_BYTE,
+                self.READ_COMMAND,
+                register & 0xFF,
+                length & 0xFF,
+            ])
+            self.serial.write(packet)
+            self.serial.flush()
 
-        header = self._read_exact(2)
-        if header[0] == self.READ_RESPONSE:
-            response_length = header[1]
-            payload = self._read_exact(response_length)
-            if response_length != length:
+            header = self._read_exact(2)
+            if header[0] == self.READ_RESPONSE:
+                response_length = header[1]
+                payload = self._read_exact(response_length)
+                if response_length != length:
+                    raise BNO055ProtocolError(
+                        f'Expected {length} bytes from register 0x{register:02X}, '
+                        f'but received {response_length}.'
+                    )
+                return payload
+
+            if header[0] == self.ACK_RESPONSE:
+                error_code = header[1]
+                if (
+                    error_code in self.RETRYABLE_READ_RESPONSE_CODES
+                    and attempt < self.read_retry_count
+                ):
+                    time.sleep(self.retry_backoff_sec * (attempt + 1))
+                    continue
                 raise BNO055ProtocolError(
-                    f'Expected {length} bytes from register 0x{register:02X}, '
-                    f'but received {response_length}.'
+                    f'Read from register 0x{register:02X} failed: {self.describe_response(error_code)}'
                 )
-            return payload
 
-        if header[0] == self.ACK_RESPONSE:
-            error_code = header[1]
             raise BNO055ProtocolError(
-                f'Read from register 0x{register:02X} failed: {self.describe_response(error_code)}'
+                f'Unexpected BNO055 response header 0x{header[0]:02X} '
+                f'while reading register 0x{register:02X}.'
             )
 
         raise BNO055ProtocolError(
-            f'Unexpected BNO055 response header 0x{header[0]:02X} '
-            f'while reading register 0x{register:02X}.'
+            f'Read from register 0x{register:02X} failed after retries.'
         )
 
     def write_registers(self, register, payload):
@@ -336,6 +352,8 @@ class BNO055Publisher(Node):
         self.declare_parameter('baud_rate', 115200)
         self.declare_parameter('mode', 'AMG_MODE')
         self.declare_parameter('use_external_crystal', True)
+        self.declare_parameter('read_retry_count', 3)
+        self.declare_parameter('retry_backoff_sec', 0.01)
         self.declare_parameter('orientation_covariance', 0.05)
         self.declare_parameter('angular_velocity_covariance', 0.02)
         self.declare_parameter('linear_acceleration_covariance', 0.04)
@@ -350,6 +368,8 @@ class BNO055Publisher(Node):
         self.baud_rate = int(self.get_parameter('baud_rate').value)
         self.mode_name = str(self.get_parameter('mode').value).strip()
         self.use_external_crystal = bool(self.get_parameter('use_external_crystal').value)
+        self.read_retry_count = max(0, int(self.get_parameter('read_retry_count').value))
+        self.retry_backoff_sec = max(0.0, float(self.get_parameter('retry_backoff_sec').value))
         self.orientation_covariance = float(self.get_parameter('orientation_covariance').value)
         self.angular_velocity_covariance = float(
             self.get_parameter('angular_velocity_covariance').value
@@ -372,6 +392,8 @@ class BNO055Publisher(Node):
             baud_rate=self.baud_rate,
             operation_mode=self.mode_name,
             use_external_crystal=self.use_external_crystal,
+            read_retry_count=self.read_retry_count,
+            retry_backoff_sec=self.retry_backoff_sec,
         )
         self.yaw_filter = YawComplementaryFilter(
             time_constant_sec=self.yaw_filter_time_constant_sec,
