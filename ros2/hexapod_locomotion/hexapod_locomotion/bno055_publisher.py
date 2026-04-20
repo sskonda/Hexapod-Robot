@@ -112,6 +112,7 @@ class BNO055UART:
     ACCEL_DATA_X_LSB_REGISTER = 0x08
     MAG_DATA_X_LSB_REGISTER = 0x0E
     GYRO_DATA_X_LSB_REGISTER = 0x14
+    RAW_IMU_BLOCK_LENGTH = 18
     CALIB_STAT_REGISTER = 0x35
     UNIT_SEL_REGISTER = 0x3B
     OPR_MODE_REGISTER = 0x3D
@@ -283,6 +284,24 @@ class BNO055UART:
     def _read_vector(self, register):
         return struct.unpack('<hhh', self.read_registers(register, 6))
 
+    def read_imu_measurements(self):
+        """Read accel, magnetometer, and gyro in one burst transaction."""
+        raw_values = struct.unpack(
+            '<hhhhhhhhh',
+            self.read_registers(
+                self.ACCEL_DATA_X_LSB_REGISTER,
+                self.RAW_IMU_BLOCK_LENGTH,
+            ),
+        )
+        accel_raw = raw_values[0:3]
+        mag_raw = raw_values[3:6]
+        gyro_raw = raw_values[6:9]
+        return (
+            tuple(value / 100.0 for value in accel_raw),
+            tuple((value / 16.0) * 1e-6 for value in mag_raw),
+            tuple(math.radians(value / 16.0) for value in gyro_raw),
+        )
+
     def read_acceleration_m_s2(self):
         raw_values = self._read_vector(self.ACCEL_DATA_X_LSB_REGISTER)
         return tuple(value / 100.0 for value in raw_values)
@@ -378,9 +397,7 @@ class BNO055Publisher(Node):
 
     def publish_measurements(self):
         try:
-            accel = self.sensor.read_acceleration_m_s2()
-            gyro = self.sensor.read_gyro_rad_s()
-            magnetic_field = self.sensor.read_magnetic_field_t()
+            accel, magnetic_field, gyro = self.sensor.read_imu_measurements()
             orientation = orientation_from_accel_and_mag(accel, magnetic_field)
         except Exception as exc:
             self._warn_throttled(f'BNO055 read failed: {exc}')
