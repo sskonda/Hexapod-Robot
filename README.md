@@ -26,7 +26,7 @@ This README reflects the current state of the `bno055` branch, not an aspiration
   - `gap_following_explorer`, which looks for open lidar gaps and publishes a short rolling `nav_msgs/Path`
   - `crab_path_follower`, which converts that path into `cmd_vel`
 - The locomotion node publishes `odom` and the `odom -> base_link` transform from commanded gait motion. Position is still open-loop, but yaw is anchored to IMU orientation when available instead of being purely integrated from commanded turn rate.
-- The locomotion node uses IMU roll/pitch for balance compensation when enabled and uses magnetometer-backed yaw correction to hold a constant heading while translating without a yaw command.
+- The locomotion node uses IMU roll/pitch for balance compensation when enabled and uses the filtered BNO055 yaw estimate from `/imu/data_raw` to hold a constant heading while translating without a yaw command.
 - The exploration behavior is still crab-motion based. The follower commands `linear.x` and `linear.y` to move sideways/forward in body coordinates and may add a bounded `angular.z` correction to hold heading, but it does not try to rotate the body to face the path direction.
 - The explorer stops when an obstacle gets too close, publishes a stop/decision point, waits briefly, and chooses a new heading. If it cannot find a traversable gap after repeated replans, it halts.
 - `slam.launch.py` can optionally start `robot_localization` to fuse raw odometry and IMU data, but that path is still optional and off by default.
@@ -72,7 +72,8 @@ Notes:
 - `servo_dry_run:=true` is the safest first test and keeps the robot from moving.
 - The launch file defaults to `servo_dry_run:=false`, so do not omit that flag unless you want hardware output.
 - `apply_offsets:=true` by default, so saved calibration offsets are applied unless you disable them.
-- The default IMU bring-up uses `imu_uart_port:=/dev/ttyAMA5`, `imu_mode:=AMG_MODE`, `imu_publish_rate_hz:=50.0`, and `yaw_correction_gain:=0.6`.
+- The default IMU bring-up uses `imu_uart_port:=/dev/ttyAMA5`, `imu_mode:=AMG_MODE`, `imu_publish_rate_hz:=50.0`, `imu_use_external_crystal:=false`, and `yaw_correction_gain:=0.6`.
+- The default BNO055 UART recovery settings are `imu_read_retry_count:=3`, `imu_retry_backoff_sec:=0.01`, and `imu_yaw_filter_time_constant_sec:=0.5`.
 - The core stack now publishes both `/imu/data_raw` and `/imu/mag`.
 
 ### 2. Servo Calibration

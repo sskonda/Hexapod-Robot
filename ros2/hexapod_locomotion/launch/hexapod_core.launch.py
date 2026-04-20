@@ -22,6 +22,9 @@ def generate_launch_description():
     imu_baud_rate = LaunchConfiguration('imu_baud_rate')
     imu_mode = LaunchConfiguration('imu_mode')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
+    imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
+    imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
+    imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -97,8 +100,26 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',
-            default_value='true',
-            description='Enable the BNO055 external crystal for better heading stability.',
+            default_value='false',
+            description=(
+                'Enable the BNO055 external crystal. The current robot wiring is '
+                'validated with the internal crystal on UART.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'imu_read_retry_count',
+            default_value='3',
+            description='How many times the BNO055 UART driver retries transient read overruns/timeouts.',
+        ),
+        DeclareLaunchArgument(
+            'imu_retry_backoff_sec',
+            default_value='0.01',
+            description='Base retry backoff for transient BNO055 UART read errors.',
+        ),
+        DeclareLaunchArgument(
+            'imu_yaw_filter_time_constant_sec',
+            default_value='0.5',
+            description='Complementary-filter time constant for gyro-smoothed magnetometer yaw.',
         ),
         DeclareLaunchArgument(
             'imu_x',
@@ -155,6 +176,9 @@ def generate_launch_description():
                 'baud_rate': imu_baud_rate,
                 'mode': imu_mode,
                 'use_external_crystal': imu_use_external_crystal,
+                'read_retry_count': imu_read_retry_count,
+                'retry_backoff_sec': imu_retry_backoff_sec,
+                'yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
             }]
         ),
         Node(

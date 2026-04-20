@@ -113,6 +113,10 @@ def generate_launch_description():
     locomotion_odom_topic = LaunchConfiguration('locomotion_odom_topic')
     locomotion_publish_odom_tf = LaunchConfiguration('locomotion_publish_odom_tf')
     imu_frame = LaunchConfiguration('imu_frame')
+    imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
+    imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
+    imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
+    imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -271,6 +275,26 @@ def generate_launch_description():
             'imu_frame',
             default_value='imu_link',
             description='Frame id used by the IMU publisher and base_link->imu static TF.',
+        ),
+        DeclareLaunchArgument(
+            'imu_use_external_crystal',
+            default_value='false',
+            description='Use the BNO055 external crystal. The current robot setup is validated with false.',
+        ),
+        DeclareLaunchArgument(
+            'imu_read_retry_count',
+            default_value='3',
+            description='How many transient BNO055 UART read retries to allow before dropping a sample.',
+        ),
+        DeclareLaunchArgument(
+            'imu_retry_backoff_sec',
+            default_value='0.01',
+            description='Base retry backoff for transient BNO055 UART read errors.',
+        ),
+        DeclareLaunchArgument(
+            'imu_yaw_filter_time_constant_sec',
+            default_value='0.5',
+            description='Complementary-filter time constant for the BNO055 yaw estimate.',
         ),
         DeclareLaunchArgument(
             'imu_x',
@@ -457,6 +481,10 @@ def generate_launch_description():
                     "' == 'true' else '", locomotion_publish_odom_tf, "'",
                 ]),
                 'imu_frame': imu_frame,
+                'imu_use_external_crystal': imu_use_external_crystal,
+                'imu_read_retry_count': imu_read_retry_count,
+                'imu_retry_backoff_sec': imu_retry_backoff_sec,
+                'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'imu_x': imu_x,
                 'imu_y': imu_y,
                 'imu_z': imu_z,
