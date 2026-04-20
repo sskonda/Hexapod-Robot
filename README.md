@@ -21,7 +21,7 @@ This README reflects the current state of the `bno055` branch, not an aspiration
 
 - `hexapod_core.launch.py` starts the hardware-facing locomotion stack: `bno055_publisher` (under the node name `imu_publisher`), `locomotion`, and `servo_driver`.
 - `path_plan.launch.py` includes the core stack and adds a `path_plan` node that publishes a simple linear or square `cmd_vel` test path.
-- `bno055_publisher` reads the BNO055 over UART, publishes `sensor_msgs/Imu` on `/imu/data_raw`, publishes `sensor_msgs/MagneticField` on `/imu/mag`, and computes a tilt-compensated orientation estimate from accelerometer + magnetometer data.
+- `bno055_publisher` reads the BNO055 over UART, publishes `sensor_msgs/Imu` on `/imu/data_raw`, publishes `sensor_msgs/MagneticField` on `/imu/mag`, and computes a tilt-compensated orientation estimate with gyro-smoothed yaw correction from the magnetometer.
 - `slam.launch.py` starts `slam_toolbox` and, by default, also starts:
   - `gap_following_explorer`, which looks for open lidar gaps and publishes a short rolling `nav_msgs/Path`
   - `crab_path_follower`, which converts that path into `cmd_vel`
@@ -166,7 +166,7 @@ Current interfaces used by the main ROS 2 nodes:
 - `body_pose`: optional body roll/pitch/yaw offsets for `locomotion`
 - `body_shift`: optional body x/y/z shifts for `locomotion`
 - `servo_targets`: joint targets produced by `locomotion` and consumed by `servo_driver`
-- `imu/data_raw`: IMU output from the BNO055 publisher, including accel, gyro, and orientation estimated from accel + magnetometer
+- `imu/data_raw`: IMU output from the BNO055 publisher, including accel, gyro, and orientation with roll/pitch from tilt compensation plus gyro-smoothed magnetometer yaw
 - `imu/mag`: raw magnetometer output from the BNO055 publisher
 - `odom`: locomotion odometry by default, or filtered odometry if you enable `robot_localization` and wire topics accordingly
 - `scan`: lidar input for `slam_toolbox` and `gap_following_explorer`

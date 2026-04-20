@@ -4,7 +4,8 @@
 
 This node publishes:
   - ``sensor_msgs/msg/Imu`` on ``/imu/data_raw`` with accel, gyro, and a
-    tilt-compensated orientation estimate derived from accel + magnetometer
+    tilt-compensated orientation estimate whose yaw is fused from gyro +
+    magnetometer
   - ``sensor_msgs/msg/MagneticField`` on ``/imu/mag`` with the raw
     magnetometer measurement
 
@@ -20,6 +21,8 @@ import traceback
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, MagneticField
+
+from .kalman_filter import YawComplementaryFilter
 
 try:
     import serial
@@ -318,6 +321,7 @@ class BNO055Publisher(Node):
         self.declare_parameter('angular_velocity_covariance', 0.02)
         self.declare_parameter('linear_acceleration_covariance', 0.04)
         self.declare_parameter('magnetic_field_covariance', 1e-6)
+        self.declare_parameter('yaw_filter_time_constant_sec', 0.5)
 
         self.frame_id = str(self.get_parameter('frame_id').value)
         self.topic = str(self.get_parameter('topic').value)
@@ -337,13 +341,21 @@ class BNO055Publisher(Node):
         self.magnetic_field_covariance = float(
             self.get_parameter('magnetic_field_covariance').value
         )
+        self.yaw_filter_time_constant_sec = max(
+            1e-3,
+            float(self.get_parameter('yaw_filter_time_constant_sec').value),
+        )
         self.last_warning_text = ''
+        self.last_measurement_monotonic = None
 
         self.sensor = BNO055UART(
             port=self.uart_port,
             baud_rate=self.baud_rate,
             operation_mode=self.mode_name,
             use_external_crystal=self.use_external_crystal,
+        )
+        self.yaw_filter = YawComplementaryFilter(
+            time_constant_sec=self.yaw_filter_time_constant_sec,
         )
         self.imu_publisher = self.create_publisher(Imu, self.topic, 10)
         self.mag_publisher = self.create_publisher(MagneticField, self.mag_topic, 10)
@@ -378,6 +390,14 @@ class BNO055Publisher(Node):
             self._warn_throttled('BNO055 acceleration or gyro data is unavailable.')
             return
 
+        measurement_time = time.monotonic()
+        if self.last_measurement_monotonic is None:
+            dt = 1.0 / self.publish_rate_hz
+        else:
+            dt = measurement_time - self.last_measurement_monotonic
+            dt = max(1e-4, min(dt, 1.0))
+        self.last_measurement_monotonic = measurement_time
+
         stamp = self.get_clock().now().to_msg()
 
         imu_msg = Imu()
@@ -401,7 +421,17 @@ class BNO055Publisher(Node):
         if orientation is None:
             imu_msg.orientation_covariance[0] = -1.0
         else:
-            orientation_quaternion = quaternion_from_euler(*orientation)
+            roll_rad, pitch_rad, measured_yaw_rad = orientation
+            filtered_yaw_rad = self.yaw_filter.update(
+                measured_yaw_rad,
+                gyro[2],
+                dt,
+            )
+            orientation_quaternion = quaternion_from_euler(
+                roll_rad,
+                pitch_rad,
+                filtered_yaw_rad,
+            )
             imu_msg.orientation.x = float(orientation_quaternion[0])
             imu_msg.orientation.y = float(orientation_quaternion[1])
             imu_msg.orientation.z = float(orientation_quaternion[2])

@@ -1,3 +1,10 @@
+import math
+
+
+def normalize_angle(angle_rad):
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+
 class AngleKalmanFilter:
     """
     Two-state Kalman filter for tilt angle estimation from IMU data.
@@ -75,3 +82,54 @@ class AngleKalmanFilter:
         self.P[1][1] -= K1 * P01_tmp
 
         return self.angle
+
+
+class YawComplementaryFilter:
+    """
+    Complementary filter for wrapped yaw angles.
+
+    The gyroscope provides the short-term yaw estimate by integrating angular
+    rate, while the magnetometer-derived yaw slowly corrects long-term drift.
+    A time constant controls how aggressively the estimate is pulled back
+    toward the measured magnetic heading.
+    """
+
+    def __init__(self, time_constant_sec=0.5):
+        self.time_constant_sec = max(1e-3, float(time_constant_sec))
+        self.yaw_rad = 0.0
+        self.initialized = False
+
+    def reset(self, yaw_rad=None):
+        if yaw_rad is None:
+            self.yaw_rad = 0.0
+            self.initialized = False
+            return
+
+        self.yaw_rad = normalize_angle(float(yaw_rad))
+        self.initialized = True
+
+    def update(self, measured_yaw_rad, gyro_yaw_rate_rad_s, dt):
+        """
+        Fuse a magnetometer yaw measurement with gyroscope yaw rate.
+
+        Args:
+            measured_yaw_rad: absolute yaw measurement (radians)
+            gyro_yaw_rate_rad_s: gyroscope yaw rate (radians/second)
+            dt: elapsed time since the previous update (seconds)
+
+        Returns:
+            Filtered yaw estimate (radians)
+        """
+        measured_yaw_rad = normalize_angle(float(measured_yaw_rad))
+        dt = max(0.0, float(dt))
+
+        if not self.initialized:
+            self.yaw_rad = measured_yaw_rad
+            self.initialized = True
+            return self.yaw_rad
+
+        predicted_yaw_rad = normalize_angle(self.yaw_rad + float(gyro_yaw_rate_rad_s) * dt)
+        correction_gain = dt / (self.time_constant_sec + dt)
+        innovation = normalize_angle(measured_yaw_rad - predicted_yaw_rad)
+        self.yaw_rad = normalize_angle(predicted_yaw_rad + correction_gain * innovation)
+        return self.yaw_rad
