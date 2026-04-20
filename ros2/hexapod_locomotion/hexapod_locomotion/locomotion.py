@@ -52,6 +52,16 @@ def map_value(value, from_low, from_high, to_low, to_high):
     return (to_high - to_low) * (value - from_low) / (from_high - from_low) + to_low
 
 
+def normalize_angle(angle_rad):
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+
+def quaternion_to_yaw(x_value, y_value, z_value, w_value):
+    siny_cosp = 2.0 * (w_value * z_value + x_value * y_value)
+    cosy_cosp = 1.0 - 2.0 * (y_value * y_value + z_value * z_value)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
 def matrix_multiply(a, b):
     return [
         [
@@ -137,9 +147,12 @@ class LocomotionNode(Node):
         self.imu_roll_deg = 0.0
         self.imu_pitch_deg = 0.0
         self.imu_yaw_rate_rps = 0.0
+        self.imu_yaw_rad = 0.0
+        self.imu_yaw_valid = False
         self.roll_filter = AngleKalmanFilter()
         self.pitch_filter = AngleKalmanFilter()
         self.last_imu_stamp = None
+        self.heading_hold_target_rad = None
         self.last_invalid_warn_time = 0.0
         self.gait_state = None
 
@@ -217,7 +230,7 @@ class LocomotionNode(Node):
         gyro_pitch_rate = math.degrees(msg.angular_velocity.y)
 
         if self.last_imu_stamp is None:
-            dt = 0.1  # matches the 10 Hz publish rate in imu_publisher.py
+            dt = 0.02  # fallback used only for the first sample before timestamps are available
         else:
             dt = (
                 msg.header.stamp.sec - self.last_imu_stamp.sec
@@ -228,8 +241,28 @@ class LocomotionNode(Node):
 
         self.imu_roll_deg = self.roll_filter.update(accel_roll, gyro_roll_rate, dt)
         self.imu_pitch_deg = self.pitch_filter.update(accel_pitch, gyro_pitch_rate, dt)
-        # angular_velocity.z is already in rad/s (imu_publisher converts gyro data)
         self.imu_yaw_rate_rps = msg.angular_velocity.z
+
+        orientation_covariance = msg.orientation_covariance
+        orientation_available = (
+            orientation_covariance[0] >= 0.0
+            and any(abs(value) > 1e-6 for value in (
+                msg.orientation.x,
+                msg.orientation.y,
+                msg.orientation.z,
+                msg.orientation.w,
+            ))
+        )
+        if orientation_available:
+            self.imu_yaw_rad = quaternion_to_yaw(
+                msg.orientation.x,
+                msg.orientation.y,
+                msg.orientation.z,
+                msg.orientation.w,
+            )
+            self.imu_yaw_valid = True
+        else:
+            self.imu_yaw_valid = False
 
     def control_loop(self):
         stance_points = self.calculate_stance_points()
@@ -260,16 +293,21 @@ class LocomotionNode(Node):
         else:
             vx = vy = vtheta = 0.0
 
-        # Use IMU gyro Z for heading — it measures actual rotation including slip,
-        # unlike the kinematic estimate which assumes the commanded turn was executed.
-        heading_rate = self.imu_yaw_rate_rps if self.use_imu else vtheta
+        heading_rate = vtheta
+        if self.use_imu:
+            heading_rate = self.imu_yaw_rate_rps
+            if self.imu_yaw_valid:
+                self.odom_theta_rad = self.imu_yaw_rad
+            else:
+                self.odom_theta_rad = normalize_angle(self.odom_theta_rad + heading_rate * dt)
+        else:
+            self.odom_theta_rad = normalize_angle(self.odom_theta_rad + heading_rate * dt)
 
         # Rotate body-frame velocity into world frame and integrate position
         cos_h = math.cos(self.odom_theta_rad)
         sin_h = math.sin(self.odom_theta_rad)
         self.odom_x_m += (vx * cos_h - vy * sin_h) * dt
         self.odom_y_m += (vx * sin_h + vy * cos_h) * dt
-        self.odom_theta_rad += heading_rate * dt
 
         msg = Odometry()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -317,18 +355,34 @@ class LocomotionNode(Node):
     def active_motion_command(self):
         age_sec = (self.get_clock().now() - self.last_motion_cmd_time).nanoseconds / 1e9
         if age_sec > self.command_timeout_sec:
+            self.heading_hold_target_rad = None
             return 0.0, 0.0, 0.0
 
+        linear_x = self.cmd_linear_x_mps
+        linear_y = self.cmd_linear_y_mps
         yaw_rate = self.cmd_yaw_rate_rad_s
+        translating = abs(linear_x) > 1e-6 or abs(linear_y) > 1e-6
 
-        # When no yaw is commanded but the IMU detects rotation (leg slip or imbalance),
-        # inject a counter-rotation proportional to the measured drift rate.
-        # Capped at 30% of max yaw to avoid overwhelming the translation.
-        if self.use_imu and self.yaw_correction_gain != 0.0 and abs(yaw_rate) < 1e-6:
-            correction = -self.imu_yaw_rate_rps * self.yaw_correction_gain
-            yaw_rate = clamp(correction, -self.max_yaw_rate_rad_s * 0.3, self.max_yaw_rate_rad_s * 0.3)
+        if not translating:
+            self.heading_hold_target_rad = None
+        elif abs(yaw_rate) >= 1e-6:
+            self.heading_hold_target_rad = None
+        elif self.use_imu and self.yaw_correction_gain != 0.0:
+            if self.imu_yaw_valid:
+                if self.heading_hold_target_rad is None:
+                    self.heading_hold_target_rad = self.imu_yaw_rad
+                yaw_error = normalize_angle(self.heading_hold_target_rad - self.imu_yaw_rad)
+                correction = yaw_error * self.yaw_correction_gain
+            else:
+                correction = -self.imu_yaw_rate_rps * self.yaw_correction_gain
 
-        return self.cmd_linear_x_mps, self.cmd_linear_y_mps, yaw_rate
+            yaw_rate = clamp(
+                correction,
+                -self.max_yaw_rate_rad_s * 0.3,
+                self.max_yaw_rate_rad_s * 0.3,
+            )
+
+        return linear_x, linear_y, yaw_rate
 
     def motion_is_zero(self, motion):
         return all(abs(value) < 1e-6 for value in motion)

@@ -36,8 +36,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.0',
-            description='IMU-based yaw damping gain passed through to hexapod_core.launch.py.',
+            default_value='0.6',
+            description='IMU heading-hold gain passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'publish_rate_hz',

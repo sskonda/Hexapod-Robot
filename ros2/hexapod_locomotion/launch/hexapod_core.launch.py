@@ -16,6 +16,12 @@ def generate_launch_description():
     base_frame_id = LaunchConfiguration('base_frame_id')
     publish_odom_tf = LaunchConfiguration('publish_odom_tf')
     imu_frame = LaunchConfiguration('imu_frame')
+    imu_publish_rate_hz = LaunchConfiguration('imu_publish_rate_hz')
+    imu_mag_topic = LaunchConfiguration('imu_mag_topic')
+    imu_uart_port = LaunchConfiguration('imu_uart_port')
+    imu_baud_rate = LaunchConfiguration('imu_baud_rate')
+    imu_mode = LaunchConfiguration('imu_mode')
+    imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -36,8 +42,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.0',
-            description='IMU-based yaw damping gain used by locomotion when no yaw is commanded.',
+            default_value='0.6',
+            description='IMU heading-hold gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
             'odom_topic',
@@ -63,6 +69,36 @@ def generate_launch_description():
             'imu_frame',
             default_value='imu_link',
             description='Frame id stamped onto IMU data and used for the base->imu static TF.',
+        ),
+        DeclareLaunchArgument(
+            'imu_publish_rate_hz',
+            default_value='50.0',
+            description='BNO055 publish rate in Hz.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mag_topic',
+            default_value='/imu/mag',
+            description='Magnetometer topic published by the BNO055 driver.',
+        ),
+        DeclareLaunchArgument(
+            'imu_uart_port',
+            default_value='/dev/ttyAMA5',
+            description='UART device used by the BNO055.',
+        ),
+        DeclareLaunchArgument(
+            'imu_baud_rate',
+            default_value='115200',
+            description='UART baud rate used by the BNO055.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mode',
+            default_value='AMG_MODE',
+            description='BNO055 operating mode. AMG_MODE keeps accel, gyro, and mag raw for explicit yaw correction.',
+        ),
+        DeclareLaunchArgument(
+            'imu_use_external_crystal',
+            default_value='true',
+            description='Enable the BNO055 external crystal for better heading stability.',
         ),
         DeclareLaunchArgument(
             'imu_x',
@@ -107,11 +143,18 @@ def generate_launch_description():
         ),
         Node(
             package='hexapod_locomotion',
-            executable='imu_publisher',
+            executable='bno055_publisher',
             name='imu_publisher',
             output='screen',
             parameters=[{
                 'frame_id': imu_frame,
+                'topic': '/imu/data_raw',
+                'mag_topic': imu_mag_topic,
+                'publish_rate_hz': imu_publish_rate_hz,
+                'uart_port': imu_uart_port,
+                'baud_rate': imu_baud_rate,
+                'mode': imu_mode,
+                'use_external_crystal': imu_use_external_crystal,
             }]
         ),
         Node(
