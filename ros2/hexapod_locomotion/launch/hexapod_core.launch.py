@@ -27,6 +27,7 @@ def generate_launch_description():
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
+    imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -134,6 +135,11 @@ def generate_launch_description():
             description='Continuous still time required before IMU yaw heading hold becomes active.',
         ),
         DeclareLaunchArgument(
+            'imu_startup_motion_grace_sec',
+            default_value='0.5',
+            description='Continuous motion time that resets the IMU startup stillness timer.',
+        ),
+        DeclareLaunchArgument(
             'imu_x',
             default_value='0.0',
             description='X offset of the IMU from base_link in metres (forward +).',
@@ -192,6 +198,7 @@ def generate_launch_description():
                 'retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
+                'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
             }]
         ),
         Node(

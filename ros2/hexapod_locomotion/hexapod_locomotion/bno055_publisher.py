@@ -373,6 +373,7 @@ class BNO055Publisher(Node):
         self.declare_parameter('imu_startup_still_time_sec', 15.0)
         self.declare_parameter('imu_startup_accel_still_tolerance_m_s2', 0.75)
         self.declare_parameter('imu_startup_gyro_still_tolerance_rad_s', 0.12)
+        self.declare_parameter('imu_startup_motion_grace_sec', 0.5)
         self.declare_parameter('imu_startup_status_log_interval_sec', 2.0)
 
         self.frame_id = str(self.get_parameter('frame_id').value)
@@ -416,6 +417,10 @@ class BNO055Publisher(Node):
             0.0,
             float(self.get_parameter('imu_startup_gyro_still_tolerance_rad_s').value),
         )
+        self.startup_motion_grace_sec = max(
+            0.0,
+            float(self.get_parameter('imu_startup_motion_grace_sec').value),
+        )
         self.startup_status_log_interval_sec = max(
             0.5,
             float(self.get_parameter('imu_startup_status_log_interval_sec').value),
@@ -427,6 +432,7 @@ class BNO055Publisher(Node):
             required_still_time_sec=self.startup_still_time_sec,
             accel_tolerance_m_s2=self.startup_accel_still_tolerance_m_s2,
             gyro_tolerance_rad_s=self.startup_gyro_still_tolerance_rad_s,
+            motion_grace_sec=self.startup_motion_grace_sec,
         )
         self.startup_settle_logged = self.startup_still_gate.ready
 

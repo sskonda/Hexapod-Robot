@@ -21,6 +21,9 @@ def generate_launch_description():
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
+    imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
+    wait_for_imu_yaw = LaunchConfiguration('wait_for_imu_yaw')
+    imu_topic = LaunchConfiguration('imu_topic')
     publish_rate_hz = LaunchConfiguration('publish_rate_hz')
     startup_delay_sec = LaunchConfiguration('startup_delay_sec')
     forward_distance_m = LaunchConfiguration('forward_distance_m')
@@ -76,6 +79,21 @@ def generate_launch_description():
             description='Pass through to hexapod_core.launch.py for the IMU startup settle period.',
         ),
         DeclareLaunchArgument(
+            'imu_startup_motion_grace_sec',
+            default_value='0.5',
+            description='Pass through to hexapod_core.launch.py for startup stillness motion grace.',
+        ),
+        DeclareLaunchArgument(
+            'wait_for_imu_yaw',
+            default_value='true',
+            description='Wait for valid IMU yaw before starting the predefined path.',
+        ),
+        DeclareLaunchArgument(
+            'imu_topic',
+            default_value='/imu/data_raw',
+            description='IMU topic monitored by path_plan when wait_for_imu_yaw is true.',
+        ),
+        DeclareLaunchArgument(
             'publish_rate_hz',
             default_value='20.0',
             description='How often the path planner publishes cmd_vel commands.',
@@ -122,6 +140,7 @@ def generate_launch_description():
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
+                'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
             }.items(),
         ),
         Node(
@@ -137,6 +156,8 @@ def generate_launch_description():
                 'linear_speed_mps': linear_speed_mps,
                 'path_type': path_type,
                 'square_side_m': square_side_m,
+                'wait_for_imu_yaw': wait_for_imu_yaw,
+                'imu_topic': imu_topic,
             }],
         ),
     ])

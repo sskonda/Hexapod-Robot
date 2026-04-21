@@ -33,10 +33,13 @@ def test_imu_is_still_checks_accel_and_gyro_thresholds():
     assert not imu_is_still((0.0, 0.0, 9.81), (0.25, 0.0, 0.0))
 
 
-def test_startup_stillness_gate_requires_continuous_quiet_time():
-    gate = StartupStillnessGate(required_still_time_sec=1.0)
+def test_startup_stillness_gate_tolerates_short_motion_spikes():
+    gate = StartupStillnessGate(required_still_time_sec=1.0, motion_grace_sec=0.2)
 
     assert not gate.update(0.4, (0.0, 0.0, 9.81), (0.0, 0.0, 0.0))
+    assert gate.remaining_time_sec == pytest.approx(0.6)
+
+    assert not gate.update(0.1, (0.0, 0.0, 9.81), (0.3, 0.0, 0.0))
     assert gate.remaining_time_sec == pytest.approx(0.6)
 
     assert not gate.update(0.1, (0.0, 0.0, 9.81), (0.3, 0.0, 0.0))
