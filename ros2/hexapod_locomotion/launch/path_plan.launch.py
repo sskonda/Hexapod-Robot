@@ -20,6 +20,7 @@ def generate_launch_description():
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
+    imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
     wait_for_imu_yaw = LaunchConfiguration('wait_for_imu_yaw')
@@ -72,6 +73,11 @@ def generate_launch_description():
             'imu_yaw_filter_time_constant_sec',
             default_value='0.5',
             description='Pass through to hexapod_core.launch.py for the BNO055 yaw filter.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_mag_calibration_for_yaw',
+            default_value='3',
+            description='Pass through to hexapod_core.launch.py for magnetic yaw correction gating.',
         ),
         DeclareLaunchArgument(
             'imu_startup_still_time_sec',
@@ -139,6 +145,7 @@ def generate_launch_description():
                 'imu_read_retry_count': imu_read_retry_count,
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
+                'imu_min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
             }.items(),

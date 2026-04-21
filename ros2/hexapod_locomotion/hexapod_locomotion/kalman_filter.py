@@ -133,3 +133,20 @@ class YawComplementaryFilter:
         innovation = normalize_angle(measured_yaw_rad - predicted_yaw_rad)
         self.yaw_rad = normalize_angle(predicted_yaw_rad + correction_gain * innovation)
         return self.yaw_rad
+
+    def predict(self, gyro_yaw_rate_rad_s, dt, fallback_yaw_rad=None):
+        """
+        Advance yaw using only gyro integration.
+
+        This is useful when the absolute magnetic heading is known to be
+        uncalibrated but short-term relative yaw is still needed.
+        """
+        dt = max(0.0, float(dt))
+
+        if not self.initialized:
+            self.yaw_rad = normalize_angle(0.0 if fallback_yaw_rad is None else fallback_yaw_rad)
+            self.initialized = True
+            return self.yaw_rad
+
+        self.yaw_rad = normalize_angle(self.yaw_rad + float(gyro_yaw_rate_rad_s) * dt)
+        return self.yaw_rad

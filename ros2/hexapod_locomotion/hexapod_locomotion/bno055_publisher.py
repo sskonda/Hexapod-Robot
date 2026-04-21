@@ -362,6 +362,8 @@ class BNO055Publisher(Node):
         self.declare_parameter('angular_velocity_covariance', 0.02)
         self.declare_parameter('linear_acceleration_covariance', 0.04)
         self.declare_parameter('magnetic_field_covariance', 1e-6)
+        self.declare_parameter('min_mag_calibration_for_yaw', 3)
+        self.declare_parameter('calibration_status_period_sec', 0.5)
         self.declare_parameter(
             'imu_yaw_filter_time_constant_sec',
             self.DEFAULT_YAW_FILTER_TIME_CONSTANT_SEC,
@@ -396,6 +398,14 @@ class BNO055Publisher(Node):
         self.magnetic_field_covariance = float(
             self.get_parameter('magnetic_field_covariance').value
         )
+        self.min_mag_calibration_for_yaw = min(
+            3,
+            max(0, int(self.get_parameter('min_mag_calibration_for_yaw').value)),
+        )
+        self.calibration_status_period_sec = max(
+            0.05,
+            float(self.get_parameter('calibration_status_period_sec').value),
+        )
         self.yaw_filter_time_constant_sec, yaw_param_conflict = resolve_parameter_value(
             float(self.get_parameter('imu_yaw_filter_time_constant_sec').value),
             float(self.get_parameter('yaw_filter_time_constant_sec').value),
@@ -428,6 +438,9 @@ class BNO055Publisher(Node):
         self.last_warning_text = ''
         self.last_measurement_monotonic = None
         self.last_startup_status_log_monotonic = 0.0
+        self.last_calibration_read_monotonic = 0.0
+        self.last_calibration_status = (0, 0, 0, 0)
+        self.last_yaw_source = None
         self.startup_still_gate = StartupStillnessGate(
             required_still_time_sec=self.startup_still_time_sec,
             accel_tolerance_m_s2=self.startup_accel_still_tolerance_m_s2,
@@ -452,7 +465,7 @@ class BNO055Publisher(Node):
         self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self.publish_measurements)
 
-        calibration = self.sensor.read_calibration_status()
+        calibration = self._read_calibration_status_cached(time.monotonic(), force=True)
         self.get_logger().info(
             f'BNO055 publisher started on {self.topic} and {self.mag_topic} '
             f'from {self.uart_port} @ {self.baud_rate} baud, mode {self.mode_name}'
@@ -470,6 +483,11 @@ class BNO055Publisher(Node):
             self.get_logger().info(
                 'IMU startup settle enabled: keep the robot still for '
                 f'{self.startup_still_time_sec:.1f} s before yaw heading hold activates.'
+            )
+        if self.min_mag_calibration_for_yaw > 0:
+            self.get_logger().info(
+                'Magnetometer yaw correction requires mag calibration >= '
+                f'{self.min_mag_calibration_for_yaw}; below that, yaw will be gyro-only.'
             )
 
     def parameter_update_callback(self, parameters):
@@ -490,6 +508,17 @@ class BNO055Publisher(Node):
                 self.yaw_filter.time_constant_sec = value
                 changed_fields.append(
                     f'{parameter.name}={self.yaw_filter_time_constant_sec:.3f}'
+                )
+            elif parameter.name == 'min_mag_calibration_for_yaw':
+                value = int(parameter.value)
+                if value < 0 or value > 3:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='min_mag_calibration_for_yaw must be in the range 0..3.',
+                    )
+                self.min_mag_calibration_for_yaw = value
+                changed_fields.append(
+                    f'min_mag_calibration_for_yaw={self.min_mag_calibration_for_yaw}'
                 )
 
         if changed_fields:
@@ -525,6 +554,7 @@ class BNO055Publisher(Node):
         self.last_measurement_monotonic = measurement_time
         accumulated_still_time_sec = self.startup_still_gate.accumulated_still_time_sec
         startup_ready = self.startup_still_gate.update(dt, accel, gyro)
+        calibration = self._read_calibration_status_cached(measurement_time)
 
         stamp = self.get_clock().now().to_msg()
 
@@ -562,7 +592,6 @@ class BNO055Publisher(Node):
             imu_msg.orientation_covariance[0] = -1.0
         else:
             if not self.startup_settle_logged:
-                calibration = self.sensor.read_calibration_status()
                 self.get_logger().info(
                     'IMU startup settle complete; yaw heading hold enabled. '
                     f'Calibration status (sys={calibration[0]}, gyro={calibration[1]}, '
@@ -570,11 +599,20 @@ class BNO055Publisher(Node):
                 )
                 self.startup_settle_logged = True
             roll_rad, pitch_rad, measured_yaw_rad = orientation
-            filtered_yaw_rad = self.yaw_filter.update(
-                measured_yaw_rad,
-                gyro[2],
-                dt,
-            )
+            if calibration[3] >= self.min_mag_calibration_for_yaw:
+                filtered_yaw_rad = self.yaw_filter.update(
+                    measured_yaw_rad,
+                    gyro[2],
+                    dt,
+                )
+                self._log_yaw_source_once('mag')
+            else:
+                filtered_yaw_rad = self.yaw_filter.predict(
+                    gyro[2],
+                    dt,
+                    fallback_yaw_rad=measured_yaw_rad,
+                )
+                self._log_yaw_source_once('gyro_only', calibration)
             orientation_quaternion = quaternion_from_euler(
                 roll_rad,
                 pitch_rad,
@@ -604,6 +642,36 @@ class BNO055Publisher(Node):
             )
             self.mag_publisher.publish(mag_msg)
 
+    def _read_calibration_status_cached(self, measurement_time, force=False):
+        if (
+            force
+            or measurement_time - self.last_calibration_read_monotonic
+            >= self.calibration_status_period_sec
+        ):
+            self.last_calibration_status = self.sensor.read_calibration_status()
+            self.last_calibration_read_monotonic = measurement_time
+
+        return self.last_calibration_status
+
+    def _log_yaw_source_once(self, yaw_source, calibration=None):
+        if yaw_source == self.last_yaw_source:
+            return
+
+        self.last_yaw_source = yaw_source
+        if yaw_source == 'mag':
+            self.get_logger().info(
+                'Using magnetometer-corrected yaw because mag calibration is high enough.'
+            )
+            return
+
+        if calibration is None:
+            calibration = self.last_calibration_status
+        self.get_logger().warn(
+            'Magnetometer calibration is too low for absolute yaw correction '
+            f'(mag={calibration[3]}, required={self.min_mag_calibration_for_yaw}). '
+            'Publishing gyro-only relative yaw to avoid magnetic heading jumps.'
+        )
+
     def _log_startup_status(self, measurement_time, accel, gyro):
         if self.startup_still_gate.ready:
             return
@@ -615,7 +683,7 @@ class BNO055Publisher(Node):
             return
 
         self.last_startup_status_log_monotonic = measurement_time
-        calibration = self.sensor.read_calibration_status()
+        calibration = self._read_calibration_status_cached(measurement_time, force=True)
         self.get_logger().info(
             'IMU startup settle in progress: '
             f'{self.startup_still_gate.remaining_time_sec:.1f} s still remaining, '

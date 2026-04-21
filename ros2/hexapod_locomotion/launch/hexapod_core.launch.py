@@ -26,6 +26,7 @@ def generate_launch_description():
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
+    imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
     imu_x = LaunchConfiguration('imu_x')
@@ -130,6 +131,11 @@ def generate_launch_description():
             description='Complementary-filter time constant for gyro-smoothed magnetometer yaw.',
         ),
         DeclareLaunchArgument(
+            'imu_min_mag_calibration_for_yaw',
+            default_value='3',
+            description='Minimum BNO055 magnetometer calibration level required for magnetic yaw correction.',
+        ),
+        DeclareLaunchArgument(
             'imu_startup_still_time_sec',
             default_value='15.0',
             description='Continuous still time required before IMU yaw heading hold becomes active.',
@@ -197,6 +203,7 @@ def generate_launch_description():
                 'read_retry_count': imu_read_retry_count,
                 'retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
+                'min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
             }]

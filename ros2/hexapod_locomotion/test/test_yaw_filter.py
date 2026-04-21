@@ -22,6 +22,15 @@ def test_yaw_filter_tracks_gyro_between_mag_corrections():
     assert estimate == pytest.approx(0.09900990099)
 
 
+def test_yaw_filter_predict_integrates_gyro_without_mag_correction():
+    yaw_filter = YawComplementaryFilter(time_constant_sec=0.1)
+    yaw_filter.reset(0.5)
+
+    estimate = yaw_filter.predict(1.0, 0.2)
+
+    assert estimate == pytest.approx(0.7)
+
+
 def test_yaw_filter_wraps_cleanly_across_pi_boundary():
     yaw_filter = YawComplementaryFilter(time_constant_sec=0.1)
     yaw_filter.update(math.pi - 0.05, 0.0, 0.02)
