@@ -117,6 +117,7 @@ def generate_launch_description():
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
+    imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -295,6 +296,11 @@ def generate_launch_description():
             'imu_yaw_filter_time_constant_sec',
             default_value='0.5',
             description='Complementary-filter time constant for the BNO055 yaw estimate.',
+        ),
+        DeclareLaunchArgument(
+            'imu_startup_still_time_sec',
+            default_value='15.0',
+            description='Continuous still time required before IMU yaw heading hold activates.',
         ),
         DeclareLaunchArgument(
             'imu_x',
@@ -485,6 +491,7 @@ def generate_launch_description():
                 'imu_read_retry_count': imu_read_retry_count,
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
+                'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_x': imu_x,
                 'imu_y': imu_y,
                 'imu_z': imu_z,

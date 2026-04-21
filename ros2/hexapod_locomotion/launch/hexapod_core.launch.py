@@ -11,6 +11,7 @@ def generate_launch_description():
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
+    yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_frame_id = LaunchConfiguration('odom_frame_id')
     base_frame_id = LaunchConfiguration('base_frame_id')
@@ -25,6 +26,7 @@ def generate_launch_description():
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
+    imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -45,8 +47,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.6',
+            default_value='0.3',
             description='IMU heading-hold gain used by locomotion when no yaw is commanded.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_deadband_deg',
+            default_value='5.0',
+            description='Yaw-error deadband used by locomotion heading hold.',
         ),
         DeclareLaunchArgument(
             'odom_topic',
@@ -122,6 +129,11 @@ def generate_launch_description():
             description='Complementary-filter time constant for gyro-smoothed magnetometer yaw.',
         ),
         DeclareLaunchArgument(
+            'imu_startup_still_time_sec',
+            default_value='15.0',
+            description='Continuous still time required before IMU yaw heading hold becomes active.',
+        ),
+        DeclareLaunchArgument(
             'imu_x',
             default_value='0.0',
             description='X offset of the IMU from base_link in metres (forward +).',
@@ -178,7 +190,8 @@ def generate_launch_description():
                 'use_external_crystal': imu_use_external_crystal,
                 'read_retry_count': imu_read_retry_count,
                 'retry_backoff_sec': imu_retry_backoff_sec,
-                'yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
+                'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
+                'imu_startup_still_time_sec': imu_startup_still_time_sec,
             }]
         ),
         Node(
@@ -190,6 +203,7 @@ def generate_launch_description():
                 str(config_dir / 'locomotion.yaml'),
                 {
                     'yaw_correction_gain': yaw_correction_gain,
+                    'yaw_deadband_deg': yaw_deadband_deg,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,
                     'base_frame_id': base_frame_id,

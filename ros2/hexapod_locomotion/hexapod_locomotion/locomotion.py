@@ -2,17 +2,20 @@
 
 import copy
 import math
+import time
 from dataclasses import dataclass
 
 import rclpy
 from geometry_msgs.msg import TransformStamped, Twist, Vector3
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, JointState
 from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
 from .kalman_filter import AngleKalmanFilter
+from .yaw_control import apply_angular_deadband
 
 
 BASE_FOOTPOINTS = [
@@ -103,6 +106,7 @@ class LocomotionNode(Node):
         self.declare_parameter('max_pitch_deg', 15.0)
         self.declare_parameter('max_yaw_deg', 15.0)
         self.declare_parameter('yaw_correction_gain', 0.0)
+        self.declare_parameter('yaw_deadband_deg', 5.0)
         self.declare_parameter('odom_topic', 'odom')
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
@@ -127,6 +131,9 @@ class LocomotionNode(Node):
         self.max_pitch_deg = max(0.0, float(self.get_parameter('max_pitch_deg').value))
         self.max_yaw_deg = max(0.0, float(self.get_parameter('max_yaw_deg').value))
         self.yaw_correction_gain = float(self.get_parameter('yaw_correction_gain').value)
+        self.yaw_deadband_rad = math.radians(
+            max(0.0, float(self.get_parameter('yaw_deadband_deg').value))
+        )
         self.odom_topic = str(self.get_parameter('odom_topic').value)
         self.odom_frame_id = str(self.get_parameter('odom_frame_id').value)
         self.base_frame_id = str(self.get_parameter('base_frame_id').value)
@@ -192,6 +199,7 @@ class LocomotionNode(Node):
                 10,
             )
 
+        self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self.control_loop)
 
         self.get_logger().info('Locomotion controller ready')
@@ -201,6 +209,39 @@ class LocomotionNode(Node):
             f'body_shift uses x/y/z in mm. Publishing odom on /{self.odom_topic} '
             f'with TF {"enabled" if self.publish_odom_tf else "disabled"}.'
         )
+        self.get_logger().info(
+            f'Heading hold gain {self.yaw_correction_gain:.3f}, '
+            f'deadband {math.degrees(self.yaw_deadband_rad):.1f} deg.'
+        )
+
+    def parameter_update_callback(self, parameters):
+        changed_fields = []
+
+        for parameter in parameters:
+            if parameter.name == 'yaw_correction_gain':
+                self.yaw_correction_gain = float(parameter.value)
+                changed_fields.append(
+                    f'yaw_correction_gain={self.yaw_correction_gain:.3f}'
+                )
+            elif parameter.name == 'yaw_deadband_deg':
+                yaw_deadband_deg = float(parameter.value)
+                if yaw_deadband_deg < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_deadband_deg must be non-negative.',
+                    )
+                self.yaw_deadband_rad = math.radians(yaw_deadband_deg)
+                changed_fields.append(
+                    f'yaw_deadband_deg={yaw_deadband_deg:.2f}'
+                )
+
+        if changed_fields:
+            self.get_logger().info(
+                'Updated locomotion heading-hold tuning: '
+                + ', '.join(changed_fields)
+            )
+
+        return SetParametersResult(successful=True)
 
     def cmd_vel_callback(self, msg: Twist):
         self.cmd_linear_x_mps = clamp(msg.linear.x, -self.max_linear_speed_mps, self.max_linear_speed_mps)
@@ -368,13 +409,17 @@ class LocomotionNode(Node):
         elif abs(yaw_rate) >= 1e-6:
             self.heading_hold_target_rad = None
         elif self.use_imu and self.yaw_correction_gain != 0.0:
+            correction = 0.0
             if self.imu_yaw_valid:
                 if self.heading_hold_target_rad is None:
                     self.heading_hold_target_rad = self.imu_yaw_rad
                 yaw_error = normalize_angle(self.heading_hold_target_rad - self.imu_yaw_rad)
-                correction = yaw_error * self.yaw_correction_gain
+                correction = (
+                    apply_angular_deadband(yaw_error, self.yaw_deadband_rad)
+                    * self.yaw_correction_gain
+                )
             else:
-                correction = -self.imu_yaw_rate_rps * self.yaw_correction_gain
+                self._warn_missing_yaw_estimate()
 
             yaw_rate = clamp(
                 correction,
@@ -383,6 +428,17 @@ class LocomotionNode(Node):
             )
 
         return linear_x, linear_y, yaw_rate
+
+    def _warn_missing_yaw_estimate(self):
+        now = time.monotonic()
+        if now - self.last_invalid_warn_time < 2.0:
+            return
+
+        self.last_invalid_warn_time = now
+        self.get_logger().warn(
+            'Heading hold is enabled, but no valid IMU yaw estimate is available yet. '
+            'Yaw correction is temporarily disabled.'
+        )
 
     def motion_is_zero(self, motion):
         return all(abs(value) < 1e-6 for value in motion)

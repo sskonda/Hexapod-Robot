@@ -19,10 +19,12 @@ import time
 import traceback
 
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, MagneticField
 
 from .kalman_filter import YawComplementaryFilter
+from .yaw_control import StartupStillnessGate, resolve_parameter_value, vector_norm
 
 try:
     import serial
@@ -341,6 +343,8 @@ class BNO055UART:
 
 
 class BNO055Publisher(Node):
+    DEFAULT_YAW_FILTER_TIME_CONSTANT_SEC = 0.5
+
     def __init__(self):
         super().__init__('bno055_publisher')
 
@@ -358,7 +362,18 @@ class BNO055Publisher(Node):
         self.declare_parameter('angular_velocity_covariance', 0.02)
         self.declare_parameter('linear_acceleration_covariance', 0.04)
         self.declare_parameter('magnetic_field_covariance', 1e-6)
-        self.declare_parameter('yaw_filter_time_constant_sec', 0.5)
+        self.declare_parameter(
+            'imu_yaw_filter_time_constant_sec',
+            self.DEFAULT_YAW_FILTER_TIME_CONSTANT_SEC,
+        )
+        self.declare_parameter(
+            'yaw_filter_time_constant_sec',
+            self.DEFAULT_YAW_FILTER_TIME_CONSTANT_SEC,
+        )
+        self.declare_parameter('imu_startup_still_time_sec', 15.0)
+        self.declare_parameter('imu_startup_accel_still_tolerance_m_s2', 0.75)
+        self.declare_parameter('imu_startup_gyro_still_tolerance_rad_s', 0.12)
+        self.declare_parameter('imu_startup_status_log_interval_sec', 2.0)
 
         self.frame_id = str(self.get_parameter('frame_id').value)
         self.topic = str(self.get_parameter('topic').value)
@@ -380,12 +395,40 @@ class BNO055Publisher(Node):
         self.magnetic_field_covariance = float(
             self.get_parameter('magnetic_field_covariance').value
         )
+        self.yaw_filter_time_constant_sec, yaw_param_conflict = resolve_parameter_value(
+            float(self.get_parameter('imu_yaw_filter_time_constant_sec').value),
+            float(self.get_parameter('yaw_filter_time_constant_sec').value),
+            self.DEFAULT_YAW_FILTER_TIME_CONSTANT_SEC,
+        )
         self.yaw_filter_time_constant_sec = max(
             1e-3,
-            float(self.get_parameter('yaw_filter_time_constant_sec').value),
+            self.yaw_filter_time_constant_sec,
+        )
+        self.startup_still_time_sec = max(
+            0.0,
+            float(self.get_parameter('imu_startup_still_time_sec').value),
+        )
+        self.startup_accel_still_tolerance_m_s2 = max(
+            0.0,
+            float(self.get_parameter('imu_startup_accel_still_tolerance_m_s2').value),
+        )
+        self.startup_gyro_still_tolerance_rad_s = max(
+            0.0,
+            float(self.get_parameter('imu_startup_gyro_still_tolerance_rad_s').value),
+        )
+        self.startup_status_log_interval_sec = max(
+            0.5,
+            float(self.get_parameter('imu_startup_status_log_interval_sec').value),
         )
         self.last_warning_text = ''
         self.last_measurement_monotonic = None
+        self.last_startup_status_log_monotonic = 0.0
+        self.startup_still_gate = StartupStillnessGate(
+            required_still_time_sec=self.startup_still_time_sec,
+            accel_tolerance_m_s2=self.startup_accel_still_tolerance_m_s2,
+            gyro_tolerance_rad_s=self.startup_gyro_still_tolerance_rad_s,
+        )
+        self.startup_settle_logged = self.startup_still_gate.ready
 
         self.sensor = BNO055UART(
             port=self.uart_port,
@@ -400,6 +443,7 @@ class BNO055Publisher(Node):
         )
         self.imu_publisher = self.create_publisher(Imu, self.topic, 10)
         self.mag_publisher = self.create_publisher(MagneticField, self.mag_topic, 10)
+        self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self.publish_measurements)
 
         calibration = self.sensor.read_calibration_status()
@@ -411,6 +455,43 @@ class BNO055Publisher(Node):
             'Initial calibration status '
             f'(sys={calibration[0]}, gyro={calibration[1]}, accel={calibration[2]}, mag={calibration[3]})'
         )
+        if yaw_param_conflict:
+            self.get_logger().warn(
+                'Both imu_yaw_filter_time_constant_sec and yaw_filter_time_constant_sec were set. '
+                'Using imu_yaw_filter_time_constant_sec.'
+            )
+        if self.startup_still_time_sec > 0.0:
+            self.get_logger().info(
+                'IMU startup settle enabled: keep the robot still for '
+                f'{self.startup_still_time_sec:.1f} s before yaw heading hold activates.'
+            )
+
+    def parameter_update_callback(self, parameters):
+        changed_fields = []
+
+        for parameter in parameters:
+            if parameter.name in (
+                'imu_yaw_filter_time_constant_sec',
+                'yaw_filter_time_constant_sec',
+            ):
+                value = float(parameter.value)
+                if value <= 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw filter time constant must be greater than zero.',
+                    )
+                self.yaw_filter_time_constant_sec = value
+                self.yaw_filter.time_constant_sec = value
+                changed_fields.append(
+                    f'{parameter.name}={self.yaw_filter_time_constant_sec:.3f}'
+                )
+
+        if changed_fields:
+            self.get_logger().info(
+                'Updated BNO055 yaw tuning: ' + ', '.join(changed_fields)
+            )
+
+        return SetParametersResult(successful=True)
 
     def destroy_node(self):
         if getattr(self, 'sensor', None) is not None:
@@ -436,6 +517,8 @@ class BNO055Publisher(Node):
             dt = measurement_time - self.last_measurement_monotonic
             dt = max(1e-4, min(dt, 1.0))
         self.last_measurement_monotonic = measurement_time
+        accumulated_still_time_sec = self.startup_still_gate.accumulated_still_time_sec
+        startup_ready = self.startup_still_gate.update(dt, accel, gyro)
 
         stamp = self.get_clock().now().to_msg()
 
@@ -457,9 +540,29 @@ class BNO055Publisher(Node):
             self.linear_acceleration_covariance,
         )
 
-        if orientation is None:
+        if not startup_ready:
+            if accumulated_still_time_sec > 0.0 and not self.startup_still_gate.is_still:
+                self._warn_throttled(
+                    'BNO055 startup settle was interrupted by motion. '
+                    'Hold the robot still to restart the settle timer.'
+                )
+            if orientation is None:
+                self.yaw_filter.reset()
+            else:
+                self.yaw_filter.reset(orientation[2])
+            imu_msg.orientation_covariance[0] = -1.0
+            self._log_startup_status(measurement_time, accel, gyro)
+        elif orientation is None:
             imu_msg.orientation_covariance[0] = -1.0
         else:
+            if not self.startup_settle_logged:
+                calibration = self.sensor.read_calibration_status()
+                self.get_logger().info(
+                    'IMU startup settle complete; yaw heading hold enabled. '
+                    f'Calibration status (sys={calibration[0]}, gyro={calibration[1]}, '
+                    f'accel={calibration[2]}, mag={calibration[3]}).'
+                )
+                self.startup_settle_logged = True
             roll_rad, pitch_rad, measured_yaw_rad = orientation
             filtered_yaw_rad = self.yaw_filter.update(
                 measured_yaw_rad,
@@ -494,6 +597,27 @@ class BNO055Publisher(Node):
                 self.magnetic_field_covariance,
             )
             self.mag_publisher.publish(mag_msg)
+
+    def _log_startup_status(self, measurement_time, accel, gyro):
+        if self.startup_still_gate.ready:
+            return
+
+        if (
+            measurement_time - self.last_startup_status_log_monotonic
+            < self.startup_status_log_interval_sec
+        ):
+            return
+
+        self.last_startup_status_log_monotonic = measurement_time
+        calibration = self.sensor.read_calibration_status()
+        self.get_logger().info(
+            'IMU startup settle in progress: '
+            f'{self.startup_still_gate.remaining_time_sec:.1f} s still remaining, '
+            f'gyro_norm={vector_norm(gyro):.3f} rad/s, '
+            f'accel_error={abs(vector_norm(accel) - 9.80665):.3f} m/s^2, '
+            f'calib=(sys={calibration[0]}, gyro={calibration[1]}, '
+            f'accel={calibration[2]}, mag={calibration[3]}).'
+        )
 
     def _warn_throttled(self, text):
         if text == self.last_warning_text:

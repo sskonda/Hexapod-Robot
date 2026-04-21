@@ -15,10 +15,12 @@ def generate_launch_description():
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
+    yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
+    imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     publish_rate_hz = LaunchConfiguration('publish_rate_hz')
     startup_delay_sec = LaunchConfiguration('startup_delay_sec')
     forward_distance_m = LaunchConfiguration('forward_distance_m')
@@ -40,8 +42,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.6',
+            default_value='0.3',
             description='IMU heading-hold gain passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_deadband_deg',
+            default_value='5.0',
+            description='Yaw-error deadband passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',
@@ -62,6 +69,11 @@ def generate_launch_description():
             'imu_yaw_filter_time_constant_sec',
             default_value='0.5',
             description='Pass through to hexapod_core.launch.py for the BNO055 yaw filter.',
+        ),
+        DeclareLaunchArgument(
+            'imu_startup_still_time_sec',
+            default_value='15.0',
+            description='Pass through to hexapod_core.launch.py for the IMU startup settle period.',
         ),
         DeclareLaunchArgument(
             'publish_rate_hz',
@@ -104,10 +116,12 @@ def generate_launch_description():
                 'servo_dry_run': servo_dry_run,
                 'apply_offsets': apply_offsets,
                 'yaw_correction_gain': yaw_correction_gain,
+                'yaw_deadband_deg': yaw_deadband_deg,
                 'imu_use_external_crystal': imu_use_external_crystal,
                 'imu_read_retry_count': imu_read_retry_count,
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
+                'imu_startup_still_time_sec': imu_startup_still_time_sec,
             }.items(),
         ),
         Node(
