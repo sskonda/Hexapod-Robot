@@ -692,7 +692,6 @@ class BNO055Publisher(Node):
             f'calib=(sys={calibration[0]}, gyro={calibration[1]}, '
             f'accel={calibration[2]}, mag={calibration[3]}).'
         )
-
     def _warn_throttled(self, text):
         if text == self.last_warning_text:
             return
