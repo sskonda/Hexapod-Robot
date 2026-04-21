@@ -47,7 +47,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.3',
+            default_value='0.1',
             description='IMU heading-hold gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
