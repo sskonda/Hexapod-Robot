@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+
+from hexapod_interfaces.camera_led import main
+
+
+if __name__ == '__main__':
+    main()

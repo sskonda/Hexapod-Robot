@@ -8,6 +8,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     start_camera = LaunchConfiguration('start_camera')
+    start_led_output = LaunchConfiguration('start_led_output')
     show_rqt = LaunchConfiguration('show_rqt')
     video_device = LaunchConfiguration('video_device')
     pixel_format = LaunchConfiguration('pixel_format')
@@ -17,6 +18,10 @@ def generate_launch_description():
     image_topic = LaunchConfiguration('image_topic')
     output_image_topic = LaunchConfiguration('output_image_topic')
     bounding_box_topic = LaunchConfiguration('bounding_box_topic')
+    led_backend = LaunchConfiguration('led_backend')
+    led_count = LaunchConfiguration('led_count')
+    led_brightness = LaunchConfiguration('led_brightness')
+    led_sequence = LaunchConfiguration('led_sequence')
     scale_factor = LaunchConfiguration('scale_factor')
     min_neighbors = LaunchConfiguration('min_neighbors')
     min_size_pixels = LaunchConfiguration('min_size_pixels')
@@ -26,6 +31,11 @@ def generate_launch_description():
             'start_camera',
             default_value='true',
             description='Start usb_cam along with the face detector.',
+        ),
+        DeclareLaunchArgument(
+            'start_led_output',
+            default_value='true',
+            description='Start the camera-to-LED color mirror node.',
         ),
         DeclareLaunchArgument(
             'show_rqt',
@@ -73,6 +83,26 @@ def generate_launch_description():
             description='RegionOfInterest topic for the largest detected face.',
         ),
         DeclareLaunchArgument(
+            'led_backend',
+            default_value='spi',
+            description='LED backend for the onboard strip: spi, pwm, or auto.',
+        ),
+        DeclareLaunchArgument(
+            'led_count',
+            default_value='7',
+            description='Number of LEDs on the onboard strip.',
+        ),
+        DeclareLaunchArgument(
+            'led_brightness',
+            default_value='64',
+            description='Maximum LED brightness from 0 to 255.',
+        ),
+        DeclareLaunchArgument(
+            'led_sequence',
+            default_value='GRB',
+            description='LED color channel order for the strip.',
+        ),
+        DeclareLaunchArgument(
             'scale_factor',
             default_value='1.1',
             description='OpenCV Haar cascade scale factor.',
@@ -99,6 +129,20 @@ def generate_launch_description():
                 'image_width': ParameterValue(image_width, value_type=int),
                 'image_height': ParameterValue(image_height, value_type=int),
                 'framerate': ParameterValue(framerate, value_type=float),
+            }],
+        ),
+        Node(
+            package='hexapod_interfaces',
+            executable='camera_led',
+            name='camera_led',
+            output='screen',
+            condition=IfCondition(start_led_output),
+            parameters=[{
+                'image_topic': image_topic,
+                'led_backend': led_backend,
+                'led_count': ParameterValue(led_count, value_type=int),
+                'led_brightness': ParameterValue(led_brightness, value_type=int),
+                'led_sequence': led_sequence,
             }],
         ),
         Node(
