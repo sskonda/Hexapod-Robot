@@ -182,3 +182,4 @@ Current interfaces used by the main ROS 2 nodes:
 - `slam.launch.py` is still tightly coupled to crab-style exploration. It holds heading while translating, but it does not rotate the body to face the path direction.
 - `slam.launch.py` still does not launch the locomotion stack, lidar driver, or servo driver by itself.
 - Hardware-specific nodes depend on Linux UART/I2C/GPIO access and will not behave like a full robot bring-up on a desktop machine without those devices.
+efn
