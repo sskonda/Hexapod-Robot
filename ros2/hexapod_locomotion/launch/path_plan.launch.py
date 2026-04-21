@@ -82,8 +82,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'startup_delay_sec',
-            default_value='1.0',
-            description='Delay before the predefined path starts.',
+            default_value='20.0',
+            description='Delay before the predefined path starts. Keep this longer than the IMU startup settle time.',
         ),
         DeclareLaunchArgument(
             'forward_distance_m',
