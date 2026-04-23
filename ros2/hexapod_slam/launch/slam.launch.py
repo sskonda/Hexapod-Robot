@@ -54,6 +54,30 @@ def generate_launch_description():
     explorer_clearance_window_deg = LaunchConfiguration('explorer_clearance_window_deg')
     explorer_min_gap_width_deg = LaunchConfiguration('explorer_min_gap_width_deg')
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
+    explorer_corner_mode_enabled = LaunchConfiguration('explorer_corner_mode_enabled')
+    explorer_corner_forward_blocked_distance_m = LaunchConfiguration(
+        'explorer_corner_forward_blocked_distance_m'
+    )
+    explorer_corner_side_open_distance_m = LaunchConfiguration(
+        'explorer_corner_side_open_distance_m'
+    )
+    explorer_corner_clearance_window_deg = LaunchConfiguration(
+        'explorer_corner_clearance_window_deg'
+    )
+    explorer_corner_min_turn_angle_deg = LaunchConfiguration(
+        'explorer_corner_min_turn_angle_deg'
+    )
+    explorer_corner_max_turn_angle_deg = LaunchConfiguration(
+        'explorer_corner_max_turn_angle_deg'
+    )
+    explorer_corner_preferred_turn_angle_deg = LaunchConfiguration(
+        'explorer_corner_preferred_turn_angle_deg'
+    )
+    explorer_corner_goal_distance_m = LaunchConfiguration('explorer_corner_goal_distance_m')
+    explorer_corner_outer_wall_bias_m = LaunchConfiguration(
+        'explorer_corner_outer_wall_bias_m'
+    )
+    explorer_corner_commit_time_sec = LaunchConfiguration('explorer_corner_commit_time_sec')
     explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
     explorer_forward_bias_weight = LaunchConfiguration('explorer_forward_bias_weight')
     explorer_max_yaw_drift_deg = LaunchConfiguration('explorer_max_yaw_drift_deg')
@@ -244,20 +268,20 @@ def generate_launch_description():
         # Body-to-wall clearance when centred: 0.6096 - 0.4572 = 0.152 m (6 in)
         # Min traversable gap: 2 × (footprint + margin) = 2 × 0.5572 = 1.114 m
         #   -> 4 ft corridor = 1.2192 m  ✓  (~8 cm of angular margin each side)
-        # stop_distance = 0.72 m -> robot edge clears wall by 0.72 - 0.4572 = 0.26 m
+        # stop_distance = 0.60 m -> robot edge clears wall by 0.60 - 0.4572 = 0.14 m
         # -----------------------------------------------------------------------
         DeclareLaunchArgument(
             'explorer_stop_distance_m',
-            default_value='0.65',
+            default_value='0.60',
             description=(
                 'LiDAR clearance below which the robot stops and replans. '
-                'Tune this to the robot footprint and maze width; 0.65 m is a '
+                'Tune this to the robot footprint and maze width; 0.60 m is a '
                 'safer starting point for the current hexapod hardware.'
             ),
         ),
         DeclareLaunchArgument(
             'explorer_open_distance_m',
-            default_value='0.80',
+            default_value='0.72',
             description=(
                 'Preferred clearance for scoring open gaps. '
                 'Must exceed stop_distance.'
@@ -311,6 +335,56 @@ def generate_launch_description():
             'explorer_reverse_avoidance_deg',
             default_value='70.0',
             description='Penalty sector that discourages selecting the direction just travelled.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_mode_enabled',
+            default_value='true',
+            description='Enable corner-specific heading selection and target shaping.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_forward_blocked_distance_m',
+            default_value='0.72',
+            description='Front clearance below which the explorer considers explicit corner handling.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_side_open_distance_m',
+            default_value='0.82',
+            description='Side clearance required to treat left or right as the open corner direction.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_clearance_window_deg',
+            default_value='8.0',
+            description='Narrow LiDAR window used when scoring headings through corners.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_min_turn_angle_deg',
+            default_value='35.0',
+            description='Minimum turn angle considered for explicit corner handling.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_max_turn_angle_deg',
+            default_value='105.0',
+            description='Maximum turn angle considered for explicit corner handling.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_preferred_turn_angle_deg',
+            default_value='70.0',
+            description='Preferred corner turn angle used to score corner candidates.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_goal_distance_m',
+            default_value='0.28',
+            description='Short rolling-path look-ahead used during corner mode.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_outer_wall_bias_m',
+            default_value='0.10',
+            description='Lateral bias that pushes the corner target away from the inside wall.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_commit_time_sec',
+            default_value='1.0',
+            description='How long corner-mode target shaping stays active after a corner heading is chosen.',
         ),
         DeclareLaunchArgument(
             'explorer_max_replan_attempts',
@@ -393,7 +467,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'safety_side_stop_distance_m',
-            default_value='0.38',
+            default_value='0.32',
             description=(
                 'Minimum allowed LiDAR clearance at the robot flanks before side-wall '
                 'safety blocks translation.'
@@ -401,7 +475,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'safety_side_slowdown_distance_m',
-            default_value='0.52',
+            default_value='0.46',
             description=(
                 'Side-wall clearance at which the lower-layer safety filter stops '
                 'slowing or nudging away from nearby walls.'
@@ -502,6 +576,16 @@ def generate_launch_description():
                 'clearance_window_deg': explorer_clearance_window_deg,
                 'min_gap_width_deg': explorer_min_gap_width_deg,
                 'reverse_avoidance_deg': explorer_reverse_avoidance_deg,
+                'corner_mode_enabled': explorer_corner_mode_enabled,
+                'corner_forward_blocked_distance_m': explorer_corner_forward_blocked_distance_m,
+                'corner_side_open_distance_m': explorer_corner_side_open_distance_m,
+                'corner_clearance_window_deg': explorer_corner_clearance_window_deg,
+                'corner_min_turn_angle_deg': explorer_corner_min_turn_angle_deg,
+                'corner_max_turn_angle_deg': explorer_corner_max_turn_angle_deg,
+                'corner_preferred_turn_angle_deg': explorer_corner_preferred_turn_angle_deg,
+                'corner_goal_distance_m': explorer_corner_goal_distance_m,
+                'corner_outer_wall_bias_m': explorer_corner_outer_wall_bias_m,
+                'corner_commit_time_sec': explorer_corner_commit_time_sec,
                 'max_replan_attempts': explorer_max_replan_attempts,
                 'forward_bias_weight': explorer_forward_bias_weight,
                 'max_yaw_drift_deg': explorer_max_yaw_drift_deg,

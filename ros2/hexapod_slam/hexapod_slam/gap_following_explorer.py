@@ -44,9 +44,9 @@ Key parameters:
     - odom_timeout_sec: 1.0
 
     Local navigation thresholds:
-    - stop_distance_m: 0.65
+    - stop_distance_m: 0.60
         Minimum clearance before stopping and replanning.
-    - open_distance_m: 0.80
+    - open_distance_m: 0.72
         Preferred clearance threshold used when scoring open gaps.
     - goal_backoff_m: 0.45
         Distance to remain behind a detected obstacle.
@@ -74,8 +74,24 @@ Key parameters:
         Avoid selecting headings too close to the reverse direction.
     - candidate_sample_count: 121
         Number of scan samples evaluated during heading selection.
-    - max_replan_attempts: 5
+    - max_replan_attempts: 8
         Number of consecutive failed replans before declaring mission complete.
+
+    Corner-handling parameters:
+    - corner_mode_enabled: True
+        Detect "front blocked, one side open" turns and use a corner-specific heading policy.
+    - corner_forward_blocked_distance_m: 0.72
+        Front clearance below which the robot treats the current view as a corner candidate.
+    - corner_side_open_distance_m: 0.82
+        Side clearance required to treat left or right as the open turn direction.
+    - corner_clearance_window_deg: 8.0
+        Narrower window used to evaluate headings while turning a corner.
+    - corner_goal_distance_m: 0.28
+        Shorter rolling-path distance used during corner mode.
+    - corner_outer_wall_bias_m: 0.10
+        Lateral offset that biases the corner target away from the inside wall.
+    - corner_commit_time_sec: 1.0
+        How long the corner-specific target shaping remains active after selecting a corner heading.
 
 Notes:
     - This node is best used as a local obstacle-aware motion primitive.
@@ -156,8 +172,8 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('decision_pause_sec', 0.75)
         self.declare_parameter('scan_timeout_sec', 1.0)
         self.declare_parameter('odom_timeout_sec', 1.0)
-        self.declare_parameter('stop_distance_m', 0.65)
-        self.declare_parameter('open_distance_m', 0.80)
+        self.declare_parameter('stop_distance_m', 0.60)
+        self.declare_parameter('open_distance_m', 0.72)
         self.declare_parameter('goal_backoff_m', 0.45)
         self.declare_parameter('max_goal_distance_m', 1.25)
         self.declare_parameter('min_goal_distance_m', 0.20)
@@ -170,6 +186,16 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('min_gap_width_deg', 18.0)
         self.declare_parameter('reverse_avoidance_deg', 70.0)
         self.declare_parameter('candidate_sample_count', 121)
+        self.declare_parameter('corner_mode_enabled', True)
+        self.declare_parameter('corner_forward_blocked_distance_m', 0.72)
+        self.declare_parameter('corner_side_open_distance_m', 0.82)
+        self.declare_parameter('corner_clearance_window_deg', 8.0)
+        self.declare_parameter('corner_min_turn_angle_deg', 35.0)
+        self.declare_parameter('corner_max_turn_angle_deg', 105.0)
+        self.declare_parameter('corner_preferred_turn_angle_deg', 70.0)
+        self.declare_parameter('corner_goal_distance_m', 0.28)
+        self.declare_parameter('corner_outer_wall_bias_m', 0.10)
+        self.declare_parameter('corner_commit_time_sec', 1.0)
         self.declare_parameter('max_replan_attempts', 8)
         self.declare_parameter('max_yaw_drift_deg', 30.0)
         self.declare_parameter('min_progress_m', 0.10)
@@ -221,6 +247,48 @@ class GapFollowingExplorerNode(Node):
             max(0.0, float(self.get_parameter('reverse_avoidance_deg').value))
         )
         self.candidate_sample_count = max(12, int(self.get_parameter('candidate_sample_count').value))
+        self.corner_mode_enabled = bool(self.get_parameter('corner_mode_enabled').value)
+        self.corner_forward_blocked_distance_m = max(
+            self.stop_distance_m,
+            float(self.get_parameter('corner_forward_blocked_distance_m').value),
+        )
+        self.corner_side_open_distance_m = max(
+            self.open_distance_m,
+            float(self.get_parameter('corner_side_open_distance_m').value),
+        )
+        self.corner_clearance_window_rad = math.radians(
+            max(1.0, float(self.get_parameter('corner_clearance_window_deg').value))
+        )
+        corner_min_turn_angle_deg = max(
+            5.0,
+            float(self.get_parameter('corner_min_turn_angle_deg').value),
+        )
+        corner_max_turn_angle_deg = max(
+            corner_min_turn_angle_deg,
+            float(self.get_parameter('corner_max_turn_angle_deg').value),
+        )
+        self.corner_min_turn_angle_rad = math.radians(corner_min_turn_angle_deg)
+        self.corner_max_turn_angle_rad = math.radians(corner_max_turn_angle_deg)
+        corner_preferred_turn_angle_deg = max(
+            corner_min_turn_angle_deg,
+            min(
+                corner_max_turn_angle_deg,
+                float(self.get_parameter('corner_preferred_turn_angle_deg').value),
+            ),
+        )
+        self.corner_preferred_turn_angle_rad = math.radians(corner_preferred_turn_angle_deg)
+        self.corner_goal_distance_m = max(
+            0.05,
+            float(self.get_parameter('corner_goal_distance_m').value),
+        )
+        self.corner_outer_wall_bias_m = max(
+            0.0,
+            float(self.get_parameter('corner_outer_wall_bias_m').value),
+        )
+        self.corner_commit_time_sec = max(
+            0.0,
+            float(self.get_parameter('corner_commit_time_sec').value),
+        )
         self.max_replan_attempts = max(1, int(self.get_parameter('max_replan_attempts').value))
         self.max_yaw_drift_rad = math.radians(
             max(5.0, float(self.get_parameter('max_yaw_drift_deg').value))
@@ -263,6 +331,8 @@ class GapFollowingExplorerNode(Node):
 
         self.active_heading_world_rad: Optional[float] = None
         self.last_committed_heading_world_rad: Optional[float] = None
+        self.corner_active_until = self.get_clock().now()
+        self.corner_turn_sign = 0.0
         self.replan_ready_time = self.get_clock().now()
         self.last_path_publish_time = None
         self.last_data_warn_time_sec = -1.0
@@ -297,6 +367,13 @@ class GapFollowingExplorerNode(Node):
             f'Approx tile debug uses tile_size={self.tile_size_m:.4f} m with origin at '
             f'({self.tile_origin_x_m:.2f}, {self.tile_origin_y_m:.2f}) in odom.'
         )
+        if self.corner_mode_enabled:
+            self.get_logger().info(
+                f'Corner mode enabled: front_blocked={self.corner_forward_blocked_distance_m:.2f} m, '
+                f'side_open={self.corner_side_open_distance_m:.2f} m, '
+                f'goal={self.corner_goal_distance_m:.2f} m, '
+                f'bias={self.corner_outer_wall_bias_m:.2f} m.'
+            )
 
     def scan_callback(self, msg: LaserScan):
         self._previous_scan = self.latest_scan
@@ -336,14 +413,21 @@ class GapFollowingExplorerNode(Node):
 
         if self.active_heading_world_rad is None:
             selection_mode = 'forward_only'
-            selected = self.select_heading(allow_reverse=False)
-            if selected is None:
-                self.get_logger().info(
-                    f'No forward-only heading survived the current thresholds at '
-                    f'{self.format_tile_estimate()} — retrying with reverse headings allowed.'
-                )
-                selection_mode = 'allow_reverse'
-                selected = self.select_heading(allow_reverse=True)
+            selected = None
+            corner_selected = self.select_corner_heading()
+            if corner_selected is not None:
+                selected = corner_selected
+                selection_mode = 'corner_mode'
+            else:
+                self.reset_corner_mode()
+                selected = self.select_heading(allow_reverse=False)
+                if selected is None:
+                    self.get_logger().info(
+                        f'No forward-only heading survived the current thresholds at '
+                        f'{self.format_tile_estimate()} — retrying with reverse headings allowed.'
+                    )
+                    selection_mode = 'allow_reverse'
+                    selected = self.select_heading(allow_reverse=True)
             if selected is None:
                 # No traversable gap exists.  If we have already tried enough
                 # times the robot has reached a true dead end.
@@ -391,9 +475,13 @@ class GapFollowingExplorerNode(Node):
             )
             return
 
+        active_clearance_window_rad = (
+            self.corner_clearance_window_rad if self.corner_mode_is_active() else None
+        )
         forward_clearance = self.clearance_for_world_heading(
             self.active_heading_world_rad,
             use_stable=True,
+            window_rad=active_clearance_window_rad,
         )
         if forward_clearance <= self.stop_distance_m:
             self.handle_replan_stop(forward_clearance)
@@ -454,6 +542,7 @@ class GapFollowingExplorerNode(Node):
         )
         self.last_committed_heading_world_rad = self.active_heading_world_rad
         self.active_heading_world_rad = None
+        self.reset_corner_mode()
         self.publish_stop_point()
 
         if self.replan_attempts >= self.max_replan_attempts:
@@ -550,31 +639,167 @@ class GapFollowingExplorerNode(Node):
         self.log_heading_decision(allow_reverse, incoming_angle_base_rad, candidates, best_candidate)
         return best_candidate
 
+    def select_corner_heading(self) -> Optional[HeadingCandidate]:
+        if not self.corner_mode_enabled or self.latest_scan is None:
+            return None
+
+        front_clearance_m = self.scan_window_clearance(
+            0.0,
+            window_rad=self.corner_clearance_window_rad,
+            use_stable=True,
+        )
+        left_clearance_m = self.scan_window_clearance(
+            math.pi / 2.0,
+            window_rad=self.corner_clearance_window_rad,
+            use_stable=True,
+        )
+        right_clearance_m = self.scan_window_clearance(
+            -math.pi / 2.0,
+            window_rad=self.corner_clearance_window_rad,
+            use_stable=True,
+        )
+
+        if front_clearance_m is None or left_clearance_m is None or right_clearance_m is None:
+            return None
+
+        if front_clearance_m > self.corner_forward_blocked_distance_m:
+            return None
+
+        turn_sign = 0.0
+        if (
+            left_clearance_m >= self.corner_side_open_distance_m
+            and right_clearance_m < self.corner_side_open_distance_m
+        ):
+            turn_sign = 1.0
+        elif (
+            right_clearance_m >= self.corner_side_open_distance_m
+            and left_clearance_m < self.corner_side_open_distance_m
+        ):
+            turn_sign = -1.0
+        else:
+            return None
+
+        scan = self.latest_scan
+        angle_increment = abs(scan.angle_increment)
+        if angle_increment < 1e-9:
+            return None
+        window_beams = max(1, int(self.corner_clearance_window_rad / angle_increment))
+        sample_stride = max(1, len(scan.ranges) // self.candidate_sample_count)
+
+        best_candidate = None
+        for index in range(window_beams, len(scan.ranges) - window_beams, sample_stride):
+            angle_rad = scan.angle_min + index * scan.angle_increment
+            angle_rad = normalize_angle(angle_rad + self.scan_yaw_offset_rad)
+
+            if turn_sign > 0.0:
+                if not (self.corner_min_turn_angle_rad <= angle_rad <= self.corner_max_turn_angle_rad):
+                    continue
+            else:
+                if not (
+                    -self.corner_max_turn_angle_rad <= angle_rad <= -self.corner_min_turn_angle_rad
+                ):
+                    continue
+
+            clearance_m = self.stable_window_clearance(index, window_beams)
+            if clearance_m is None or clearance_m < self.stop_distance_m:
+                continue
+
+            gap_width_beams = self.gap_width_beams(index, self.stop_distance_m)
+            gap_width_rad = gap_width_beams * angle_increment
+            gap_width_m = self.gap_width_m(clearance_m, gap_width_rad)
+            if gap_width_m < (0.8 * self.minimum_gap_width_m):
+                continue
+
+            preferred_angle_rad = turn_sign * self.corner_preferred_turn_angle_rad
+            angle_error_rad = abs(angular_distance(angle_rad, preferred_angle_rad))
+            score_clearance = min(clearance_m, self.max_goal_distance_m)
+            score_turn_preference = -0.8 * angle_error_rad
+            score_gap_bonus = 0.15 * min(gap_width_rad, math.pi)
+            score = score_clearance + score_turn_preference + score_gap_bonus
+
+            candidate = HeadingCandidate(
+                angle_rad=angle_rad,
+                clearance_m=clearance_m,
+                gap_width_rad=gap_width_rad,
+                gap_width_m=gap_width_m,
+                score=score,
+                score_clearance=score_clearance,
+                score_gap_bonus=score_gap_bonus,
+                score_forward_bias=score_turn_preference,
+                score_reverse_penalty=0.0,
+            )
+            if best_candidate is None or candidate.score > best_candidate.score:
+                best_candidate = candidate
+
+        if best_candidate is None:
+            return None
+
+        self.corner_turn_sign = turn_sign
+        self.corner_active_until = self.get_clock().now() + Duration(
+            seconds=self.corner_commit_time_sec
+        )
+        return best_candidate
+
     def incoming_angle_base_frame(self) -> Optional[float]:
         if self.last_committed_heading_world_rad is None:
             return None
         return normalize_angle(self.last_committed_heading_world_rad + math.pi - self.odom_yaw_rad)
 
-    def clearance_for_world_heading(self, heading_world_rad: float, use_stable: bool = False) -> float:
-        target_angle_rad = normalize_angle(heading_world_rad - self.odom_yaw_rad)
-        return self.clearance_for_base_angle(target_angle_rad, use_stable=use_stable)
+    def corner_mode_is_active(self) -> bool:
+        return self.corner_turn_sign != 0.0 and self.get_clock().now() < self.corner_active_until
 
-    def clearance_for_base_angle(self, target_angle_rad: float, use_stable: bool = False) -> float:
+    def reset_corner_mode(self):
+        self.corner_turn_sign = 0.0
+        self.corner_active_until = self.get_clock().now()
+
+    def clearance_for_world_heading(
+        self,
+        heading_world_rad: float,
+        use_stable: bool = False,
+        window_rad: Optional[float] = None,
+    ) -> float:
+        target_angle_rad = normalize_angle(heading_world_rad - self.odom_yaw_rad)
+        return self.clearance_for_base_angle(
+            target_angle_rad,
+            use_stable=use_stable,
+            window_rad=window_rad,
+        )
+
+    def clearance_for_base_angle(
+        self,
+        target_angle_rad: float,
+        use_stable: bool = False,
+        window_rad: Optional[float] = None,
+    ) -> float:
+        clearance_m = self.scan_window_clearance(
+            target_angle_rad,
+            window_rad=window_rad,
+            use_stable=use_stable,
+        )
+        return 0.0 if clearance_m is None else clearance_m
+
+    def scan_window_clearance(
+        self,
+        target_angle_rad: float,
+        window_rad: Optional[float] = None,
+        use_stable: bool = False,
+    ) -> Optional[float]:
         if self.latest_scan is None or len(self.latest_scan.ranges) == 0:
-            return 0.0
+            return None
 
         scan = self.latest_scan
         angle_increment = abs(scan.angle_increment)
-        window_beams = max(1, int(self.clearance_window_rad / angle_increment))
+        if angle_increment < 1e-9:
+            return None
+        window_width_rad = self.clearance_window_rad if window_rad is None else window_rad
+        window_beams = max(1, int(window_width_rad / angle_increment))
         target_scan_angle_rad = normalize_angle(target_angle_rad - self.scan_yaw_offset_rad)
         raw_index = (target_scan_angle_rad - scan.angle_min) / scan.angle_increment
         center_index = int(round(raw_index))
         center_index = max(window_beams, min(len(scan.ranges) - 1 - window_beams, center_index))
         if use_stable:
-            clearance_m = self.stable_window_clearance(center_index, window_beams)
-        else:
-            clearance_m = self.window_clearance(center_index, window_beams)
-        return 0.0 if clearance_m is None else clearance_m
+            return self.stable_window_clearance(center_index, window_beams)
+        return self.window_clearance(center_index, window_beams)
 
     def window_clearance(self, center_index: int, window_beams: int) -> Optional[float]:
         if self.latest_scan is None:
@@ -656,9 +881,18 @@ class GapFollowingExplorerNode(Node):
         if self.active_heading_world_rad is None:
             return
 
-        goal_distance_m = min(self.max_goal_distance_m, max(0.0, forward_clearance_m - self.goal_backoff_m))
+        goal_distance_m = min(
+            self.max_goal_distance_m,
+            max(0.0, forward_clearance_m - self.goal_backoff_m),
+        )
         if goal_distance_m < self.min_goal_distance_m:
-            goal_distance_m = min(self.min_goal_distance_m, max(0.0, forward_clearance_m - 0.05))
+            goal_distance_m = min(
+                self.min_goal_distance_m,
+                max(0.0, forward_clearance_m - 0.05),
+            )
+
+        if self.corner_mode_is_active():
+            goal_distance_m = min(goal_distance_m, self.corner_goal_distance_m)
 
         if goal_distance_m <= 0.0:
             self.handle_replan_stop(forward_clearance_m)
@@ -666,6 +900,12 @@ class GapFollowingExplorerNode(Node):
 
         target_x_m = self.odom_x_m + goal_distance_m * math.cos(self.active_heading_world_rad)
         target_y_m = self.odom_y_m + goal_distance_m * math.sin(self.active_heading_world_rad)
+        if self.corner_mode_is_active() and self.corner_outer_wall_bias_m > 0.0:
+            lateral_left_x = -math.sin(self.active_heading_world_rad)
+            lateral_left_y = math.cos(self.active_heading_world_rad)
+            outward_sign = -self.corner_turn_sign
+            target_x_m += outward_sign * self.corner_outer_wall_bias_m * lateral_left_x
+            target_y_m += outward_sign * self.corner_outer_wall_bias_m * lateral_left_y
 
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
@@ -697,6 +937,7 @@ class GapFollowingExplorerNode(Node):
         self.last_path_publish_time = self.get_clock().now()
 
     def publish_stop_path(self):
+        self.reset_corner_mode()
         path_msg = Path()
         path_msg.header.stamp = self.get_clock().now().to_msg()
         path_msg.header.frame_id = self.odom_frame_id
