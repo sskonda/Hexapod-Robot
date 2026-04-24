@@ -7,6 +7,8 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
+from .yaw_control import heading_is_trusted, orientation_quaternion_is_available
+
 
 @dataclass(frozen=True)
 class MotionSegment:
@@ -77,19 +79,13 @@ class PathPlanNode(Node):
             self.get_logger().warn('No motion segments configured. The node will publish stop and exit.')
         if self.wait_for_imu_yaw:
             self.get_logger().info(
-                f'Waiting for valid IMU yaw on {self.imu_topic} before starting motion.'
+                f'Waiting for trusted IMU yaw on {self.imu_topic} before starting motion.'
             )
 
     def imu_callback(self, msg: Imu):
-        orientation_covariance = msg.orientation_covariance
         self.imu_yaw_ready = (
-            orientation_covariance[0] >= 0.0
-            and any(abs(value) > 1e-6 for value in (
-                msg.orientation.x,
-                msg.orientation.y,
-                msg.orientation.z,
-                msg.orientation.w,
-            ))
+            orientation_quaternion_is_available(msg)
+            and heading_is_trusted(msg.orientation_covariance)
         )
 
     def build_segments(self):
@@ -183,7 +179,7 @@ class PathPlanNode(Node):
                 if self.elapsed_since(self.last_wait_log_time) >= 2.0:
                     self.last_wait_log_time = self.get_clock().now()
                     self.get_logger().info(
-                        'Startup delay elapsed, but IMU yaw is not valid yet. '
+                        'Startup delay elapsed, but IMU yaw is not trusted yet. '
                         'Holding position until yaw heading hold is ready.'
                     )
                 return

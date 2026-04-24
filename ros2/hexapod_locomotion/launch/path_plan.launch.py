@@ -12,15 +12,24 @@ def generate_launch_description():
     share_dir = Path(get_package_share_directory('hexapod_locomotion'))
     core_launch = share_dir / 'launch' / 'hexapod_core.launch.py'
 
+    yaw_kp = LaunchConfiguration('yaw_kp')
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
+    yaw_ki = LaunchConfiguration('yaw_ki')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
+    yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
+    yaw_rate_fault_threshold_rad_s = LaunchConfiguration('yaw_rate_fault_threshold_rad_s')
+    yaw_rate_fault_time_sec = LaunchConfiguration('yaw_rate_fault_time_sec')
+    heading_valid_timeout_sec = LaunchConfiguration('heading_valid_timeout_sec')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
+    imu_accel_heading_tolerance_m_s2 = LaunchConfiguration('imu_accel_heading_tolerance_m_s2')
+    imu_mag_norm_tolerance_ratio = LaunchConfiguration('imu_mag_norm_tolerance_ratio')
+    imu_mag_yaw_jump_reject_deg = LaunchConfiguration('imu_mag_yaw_jump_reject_deg')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
     wait_for_imu_yaw = LaunchConfiguration('wait_for_imu_yaw')
@@ -45,14 +54,44 @@ def generate_launch_description():
             description='Apply saved calibration offsets in servo_driver.',
         ),
         DeclareLaunchArgument(
+            'yaw_kp',
+            default_value='0.45',
+            description='PI heading-hold proportional gain passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.1',
-            description='IMU heading-hold gain passed through to hexapod_core.launch.py.',
+            default_value='0.0',
+            description='Legacy alias for yaw_kp passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_ki',
+            default_value='0.12',
+            description='PI heading-hold integral gain passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'yaw_deadband_deg',
-            default_value='5.0',
+            default_value='2.5',
             description='Yaw-error deadband passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_integrator_limit',
+            default_value='1.2',
+            description='Heading-hold integrator limit passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_rate_fault_threshold_rad_s',
+            default_value='0.35',
+            description='Spin-fault yaw-rate threshold passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_rate_fault_time_sec',
+            default_value='0.75',
+            description='Spin-fault hold time passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'heading_valid_timeout_sec',
+            default_value='0.25',
+            description='Heading freshness timeout passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',
@@ -78,6 +117,21 @@ def generate_launch_description():
             'imu_min_mag_calibration_for_yaw',
             default_value='3',
             description='Pass through to hexapod_core.launch.py for magnetic yaw correction gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_accel_heading_tolerance_m_s2',
+            default_value='1.0',
+            description='Pass through to hexapod_core.launch.py for acceleration-based mag gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mag_norm_tolerance_ratio',
+            default_value='0.25',
+            description='Pass through to hexapod_core.launch.py for mag-field-magnitude gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mag_yaw_jump_reject_deg',
+            default_value='25.0',
+            description='Pass through to hexapod_core.launch.py for mag-yaw innovation gating.',
         ),
         DeclareLaunchArgument(
             'imu_startup_still_time_sec',
@@ -139,13 +193,22 @@ def generate_launch_description():
             launch_arguments={
                 'servo_dry_run': servo_dry_run,
                 'apply_offsets': apply_offsets,
+                'yaw_kp': yaw_kp,
                 'yaw_correction_gain': yaw_correction_gain,
+                'yaw_ki': yaw_ki,
                 'yaw_deadband_deg': yaw_deadband_deg,
+                'yaw_integrator_limit': yaw_integrator_limit,
+                'yaw_rate_fault_threshold_rad_s': yaw_rate_fault_threshold_rad_s,
+                'yaw_rate_fault_time_sec': yaw_rate_fault_time_sec,
+                'heading_valid_timeout_sec': heading_valid_timeout_sec,
                 'imu_use_external_crystal': imu_use_external_crystal,
                 'imu_read_retry_count': imu_read_retry_count,
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'imu_min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
+                'imu_accel_heading_tolerance_m_s2': imu_accel_heading_tolerance_m_s2,
+                'imu_mag_norm_tolerance_ratio': imu_mag_norm_tolerance_ratio,
+                'imu_mag_yaw_jump_reject_deg': imu_mag_yaw_jump_reject_deg,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
             }.items(),

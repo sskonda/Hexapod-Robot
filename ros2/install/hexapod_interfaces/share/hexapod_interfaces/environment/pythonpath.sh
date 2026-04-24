@@ -1,0 +1,1 @@
+/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_cmake_environment_hooks/pythonpath.sh

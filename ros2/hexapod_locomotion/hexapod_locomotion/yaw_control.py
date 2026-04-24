@@ -1,11 +1,19 @@
 #!/usr/bin/env python3
 
-"""Shared helpers for yaw control and IMU startup settling."""
+"""Shared helpers for yaw control, IMU frame alignment, and startup settling."""
 
 import math
 
 
 STANDARD_GRAVITY_M_S2 = 9.80665
+
+
+def clamp(value: float, min_value: float, max_value: float) -> float:
+    return max(min_value, min(max_value, value))
+
+
+def normalize_angle(angle_rad: float) -> float:
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
 def apply_angular_deadband(error_rad: float, deadband_rad: float) -> float:
@@ -21,6 +29,117 @@ def apply_angular_deadband(error_rad: float, deadband_rad: float) -> float:
 
 def vector_norm(values) -> float:
     return math.sqrt(sum(float(value) * float(value) for value in values))
+
+
+def quaternion_from_euler(roll_rad: float, pitch_rad: float, yaw_rad: float):
+    half_roll = float(roll_rad) * 0.5
+    half_pitch = float(pitch_rad) * 0.5
+    half_yaw = float(yaw_rad) * 0.5
+
+    cr = math.cos(half_roll)
+    sr = math.sin(half_roll)
+    cp = math.cos(half_pitch)
+    sp = math.sin(half_pitch)
+    cy = math.cos(half_yaw)
+    sy = math.sin(half_yaw)
+
+    return (
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    )
+
+
+def quaternion_conjugate(quaternion):
+    x_value, y_value, z_value, w_value = quaternion
+    return (-float(x_value), -float(y_value), -float(z_value), float(w_value))
+
+
+def quaternion_normalize(quaternion):
+    x_value, y_value, z_value, w_value = quaternion
+    norm = math.sqrt(
+        x_value * x_value
+        + y_value * y_value
+        + z_value * z_value
+        + w_value * w_value
+    )
+    if norm < 1e-12:
+        return 0.0, 0.0, 0.0, 1.0
+
+    return (
+        float(x_value) / norm,
+        float(y_value) / norm,
+        float(z_value) / norm,
+        float(w_value) / norm,
+    )
+
+
+def quaternion_multiply(first, second):
+    ax, ay, az, aw = first
+    bx, by, bz, bw = second
+    return quaternion_normalize((
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ))
+
+
+def rotate_vector_by_quaternion(vector, quaternion):
+    x_value, y_value, z_value, w_value = quaternion_normalize(quaternion)
+    vx, vy, vz = vector
+
+    # Quaternion sandwich product optimized for pure-vector input.
+    tx = 2.0 * (y_value * vz - z_value * vy)
+    ty = 2.0 * (z_value * vx - x_value * vz)
+    tz = 2.0 * (x_value * vy - y_value * vx)
+
+    return (
+        float(vx) + w_value * tx + (y_value * tz - z_value * ty),
+        float(vy) + w_value * ty + (z_value * tx - x_value * tz),
+        float(vz) + w_value * tz + (x_value * ty - y_value * tx),
+    )
+
+
+def quaternion_to_yaw(x_value: float, y_value: float, z_value: float, w_value: float) -> float:
+    siny_cosp = 2.0 * (w_value * z_value + x_value * y_value)
+    cosy_cosp = 1.0 - 2.0 * (y_value * y_value + z_value * z_value)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def orientation_quaternion_is_available(msg) -> bool:
+    covariance = getattr(msg, 'orientation_covariance', None)
+    if covariance is None or len(covariance) < 1 or covariance[0] < 0.0:
+        return False
+
+    return any(abs(value) > 1e-6 for value in (
+        msg.orientation.x,
+        msg.orientation.y,
+        msg.orientation.z,
+        msg.orientation.w,
+    ))
+
+
+def orientation_yaw_variance(orientation_covariance) -> float:
+    if orientation_covariance is None or len(orientation_covariance) < 9:
+        return math.inf
+
+    yaw_variance = float(orientation_covariance[8])
+    if yaw_variance < 0.0:
+        return math.inf
+
+    return yaw_variance
+
+
+def heading_is_trusted(
+    orientation_covariance,
+    max_yaw_variance_rad2: float = 1.0,
+) -> bool:
+    return orientation_yaw_variance(orientation_covariance) <= max(
+        0.0,
+        float(max_yaw_variance_rad2),
+    )
 
 
 def imu_is_still(
@@ -52,6 +171,7 @@ def resolve_parameter_value(
     legacy_value: float,
     default_value: float,
     tolerance: float = 1e-9,
+    legacy_default_value: float | None = None,
 ) -> tuple[float, bool]:
     """Resolve a preferred parameter alias against a legacy name.
 
@@ -61,6 +181,9 @@ def resolve_parameter_value(
     preferred_value = float(preferred_value)
     legacy_value = float(legacy_value)
     default_value = float(default_value)
+    if legacy_default_value is None:
+        legacy_default_value = default_value
+    legacy_default_value = float(legacy_default_value)
 
     preferred_overridden = not math.isclose(
         preferred_value,
@@ -70,7 +193,7 @@ def resolve_parameter_value(
     )
     legacy_overridden = not math.isclose(
         legacy_value,
-        default_value,
+        legacy_default_value,
         rel_tol=0.0,
         abs_tol=tolerance,
     )

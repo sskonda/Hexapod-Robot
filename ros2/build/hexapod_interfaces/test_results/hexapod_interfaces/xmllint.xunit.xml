@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite
+  name="hexapod_interfaces.xmllint"
+  tests="1"
+  errors="0"
+  failures="1"
+  time="0.006"
+>
+  <testcase
+    name="package.xml"
+    classname="hexapod_interfaces.xmllint"
+  >
+      <failure message="Diff with 295 lines"><![CDATA[warning: failed to load external entity "http://download.ros.org/schema/package_format3.xsd"
+Schemas parser error : Failed to locate the main schema resource at 'http://download.ros.org/schema/package_format3.xsd'.
+WXS schema http://download.ros.org/schema/package_format3.xsd failed to compile
+]]></failure>
+  </testcase>
+  <system-out>Checked files:
+* package.xml</system-out>
+</testsuite>

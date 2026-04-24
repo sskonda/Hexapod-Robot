@@ -19,12 +19,20 @@ import time
 import traceback
 
 import rclpy
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, MagneticField
 
 from .kalman_filter import YawComplementaryFilter
-from .yaw_control import StartupStillnessGate, resolve_parameter_value, vector_norm
+from .yaw_control import (
+    STANDARD_GRAVITY_M_S2,
+    StartupStillnessGate,
+    normalize_angle,
+    quaternion_from_euler,
+    resolve_parameter_value,
+    vector_norm,
+)
 
 try:
     import serial
@@ -46,42 +54,29 @@ def set_diagonal_covariance(covariance, diagonal_value):
     covariance[8] = diagonal_value
 
 
-def normalize_angle(angle_rad):
-    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
-
-
-def quaternion_from_euler(roll_rad, pitch_rad, yaw_rad):
-    half_roll = roll_rad * 0.5
-    half_pitch = pitch_rad * 0.5
-    half_yaw = yaw_rad * 0.5
-
-    cr = math.cos(half_roll)
-    sr = math.sin(half_roll)
-    cp = math.cos(half_pitch)
-    sp = math.sin(half_pitch)
-    cy = math.cos(half_yaw)
-    sy = math.sin(half_yaw)
-
-    return (
-        sr * cp * cy - cr * sp * sy,
-        cr * sp * cy + sr * cp * sy,
-        cr * cp * sy - sr * sp * cy,
-        cr * cp * cy + sr * sp * sy,
-    )
-
-
-def orientation_from_accel_and_mag(accel_m_s2, magnetic_field_t):
+def roll_pitch_from_accel(accel_m_s2):
     ax, ay, az = accel_m_s2
-    mx, my, mz = magnetic_field_t
 
     accel_norm = math.sqrt(ax * ax + ay * ay + az * az)
-    mag_norm = math.sqrt(mx * mx + my * my + mz * mz)
-    if accel_norm < 1e-6 or mag_norm < 1e-12:
+    if accel_norm < 1e-6:
         return None
 
     roll_rad = math.atan2(ay, az)
     pitch_rad = math.atan2(-ax, math.sqrt(ay * ay + az * az))
+    return roll_rad, pitch_rad
 
+
+def tilt_compensated_yaw_from_mag(accel_m_s2, magnetic_field_t):
+    roll_pitch = roll_pitch_from_accel(accel_m_s2)
+    if roll_pitch is None:
+        return None
+
+    mx, my, mz = magnetic_field_t
+    mag_norm = math.sqrt(mx * mx + my * my + mz * mz)
+    if mag_norm < 1e-12:
+        return None
+
+    roll_rad, pitch_rad = roll_pitch
     cos_roll = math.cos(roll_rad)
     sin_roll = math.sin(roll_rad)
     cos_pitch = math.cos(pitch_rad)
@@ -94,8 +89,7 @@ def orientation_from_accel_and_mag(accel_m_s2, magnetic_field_t):
         - mz * sin_roll * cos_pitch
     )
     yaw_rad = normalize_angle(math.atan2(-mag_y, mag_x))
-
-    return roll_rad, pitch_rad, yaw_rad
+    return yaw_rad
 
 
 class BNO055ProtocolError(RuntimeError):
@@ -344,6 +338,15 @@ class BNO055UART:
 
 class BNO055Publisher(Node):
     DEFAULT_YAW_FILTER_TIME_CONSTANT_SEC = 0.5
+    DEFAULT_ABSOLUTE_YAW_COVARIANCE = 0.05
+    DEFAULT_RELATIVE_YAW_COVARIANCE = 25.0
+    DEFAULT_ACCEL_HEADING_TOLERANCE_M_S2 = 1.0
+    DEFAULT_MAG_NORM_TOLERANCE_RATIO = 0.25
+    DEFAULT_MAG_YAW_JUMP_REJECT_DEG = 25.0
+    DEFAULT_YAW_BIAS_CORRECTION_GAIN = 0.05
+    DEFAULT_MAX_GYRO_BIAS_RAD_S = 0.25
+    MAG_REFERENCE_ALPHA = 0.02
+    DIAGNOSTIC_PUBLISH_PERIOD_SEC = 0.5
 
     def __init__(self):
         super().__init__('bno055_publisher')
@@ -362,6 +365,14 @@ class BNO055Publisher(Node):
         self.declare_parameter('angular_velocity_covariance', 0.02)
         self.declare_parameter('linear_acceleration_covariance', 0.04)
         self.declare_parameter('magnetic_field_covariance', 1e-6)
+        self.declare_parameter(
+            'absolute_yaw_covariance',
+            self.DEFAULT_ABSOLUTE_YAW_COVARIANCE,
+        )
+        self.declare_parameter(
+            'relative_yaw_covariance',
+            self.DEFAULT_RELATIVE_YAW_COVARIANCE,
+        )
         self.declare_parameter('min_mag_calibration_for_yaw', 3)
         self.declare_parameter('calibration_status_period_sec', 0.5)
         self.declare_parameter(
@@ -372,11 +383,32 @@ class BNO055Publisher(Node):
             'yaw_filter_time_constant_sec',
             self.DEFAULT_YAW_FILTER_TIME_CONSTANT_SEC,
         )
+        self.declare_parameter(
+            'imu_accel_heading_tolerance_m_s2',
+            self.DEFAULT_ACCEL_HEADING_TOLERANCE_M_S2,
+        )
+        self.declare_parameter(
+            'imu_mag_norm_tolerance_ratio',
+            self.DEFAULT_MAG_NORM_TOLERANCE_RATIO,
+        )
+        self.declare_parameter(
+            'imu_mag_yaw_jump_reject_deg',
+            self.DEFAULT_MAG_YAW_JUMP_REJECT_DEG,
+        )
+        self.declare_parameter(
+            'imu_yaw_bias_correction_gain',
+            self.DEFAULT_YAW_BIAS_CORRECTION_GAIN,
+        )
+        self.declare_parameter(
+            'imu_max_gyro_bias_rad_s',
+            self.DEFAULT_MAX_GYRO_BIAS_RAD_S,
+        )
         self.declare_parameter('imu_startup_still_time_sec', 15.0)
         self.declare_parameter('imu_startup_accel_still_tolerance_m_s2', 0.75)
         self.declare_parameter('imu_startup_gyro_still_tolerance_rad_s', 0.12)
         self.declare_parameter('imu_startup_motion_grace_sec', 0.5)
         self.declare_parameter('imu_startup_status_log_interval_sec', 2.0)
+        self.declare_parameter('diagnostic_topic', '/imu/yaw_diagnostics')
 
         self.frame_id = str(self.get_parameter('frame_id').value)
         self.topic = str(self.get_parameter('topic').value)
@@ -398,6 +430,14 @@ class BNO055Publisher(Node):
         self.magnetic_field_covariance = float(
             self.get_parameter('magnetic_field_covariance').value
         )
+        self.absolute_yaw_covariance = max(
+            1e-6,
+            float(self.get_parameter('absolute_yaw_covariance').value),
+        )
+        self.relative_yaw_covariance = max(
+            self.absolute_yaw_covariance,
+            float(self.get_parameter('relative_yaw_covariance').value),
+        )
         self.min_mag_calibration_for_yaw = min(
             3,
             max(0, int(self.get_parameter('min_mag_calibration_for_yaw').value)),
@@ -414,6 +454,25 @@ class BNO055Publisher(Node):
         self.yaw_filter_time_constant_sec = max(
             1e-3,
             self.yaw_filter_time_constant_sec,
+        )
+        self.accel_heading_tolerance_m_s2 = max(
+            0.0,
+            float(self.get_parameter('imu_accel_heading_tolerance_m_s2').value),
+        )
+        self.mag_norm_tolerance_ratio = max(
+            0.0,
+            float(self.get_parameter('imu_mag_norm_tolerance_ratio').value),
+        )
+        self.mag_yaw_jump_reject_rad = math.radians(
+            max(0.0, float(self.get_parameter('imu_mag_yaw_jump_reject_deg').value))
+        )
+        self.yaw_bias_correction_gain = max(
+            0.0,
+            float(self.get_parameter('imu_yaw_bias_correction_gain').value),
+        )
+        self.max_gyro_bias_rad_s = max(
+            0.0,
+            float(self.get_parameter('imu_max_gyro_bias_rad_s').value),
         )
         self.startup_still_time_sec = max(
             0.0,
@@ -435,12 +494,25 @@ class BNO055Publisher(Node):
             0.5,
             float(self.get_parameter('imu_startup_status_log_interval_sec').value),
         )
+        self.diagnostic_topic = str(self.get_parameter('diagnostic_topic').value)
         self.last_warning_text = ''
         self.last_measurement_monotonic = None
         self.last_startup_status_log_monotonic = 0.0
         self.last_calibration_read_monotonic = 0.0
         self.last_calibration_status = (0, 0, 0, 0)
-        self.last_yaw_source = None
+        self.last_yaw_mode_key = None
+        self.last_yaw_source = 'startup'
+        self.last_yaw_reason = 'startup_settle'
+        self.last_yaw_covariance = self.relative_yaw_covariance
+        self.last_yaw_is_absolute = False
+        self.last_yaw_trusted = False
+        self.last_orientation_published = False
+        self.last_mag_norm_t = math.nan
+        self.reference_mag_norm_t = None
+        self.last_mag_norm_error_ratio = 0.0
+        self.last_mag_innovation_rad = 0.0
+        self.last_accel_error_m_s2 = 0.0
+        self.last_diag_publish_monotonic = 0.0
         self.startup_still_gate = StartupStillnessGate(
             required_still_time_sec=self.startup_still_time_sec,
             accel_tolerance_m_s2=self.startup_accel_still_tolerance_m_s2,
@@ -459,15 +531,23 @@ class BNO055Publisher(Node):
         )
         self.yaw_filter = YawComplementaryFilter(
             time_constant_sec=self.yaw_filter_time_constant_sec,
+            bias_gain=self.yaw_bias_correction_gain,
+            max_bias_rad_s=self.max_gyro_bias_rad_s,
         )
         self.imu_publisher = self.create_publisher(Imu, self.topic, 10)
         self.mag_publisher = self.create_publisher(MagneticField, self.mag_topic, 10)
+        self.diag_publisher = self.create_publisher(
+            DiagnosticArray,
+            self.diagnostic_topic,
+            10,
+        )
         self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self.publish_measurements)
 
         calibration = self._read_calibration_status_cached(time.monotonic(), force=True)
         self.get_logger().info(
-            f'BNO055 publisher started on {self.topic} and {self.mag_topic} '
+            f'BNO055 publisher started on {self.topic}, {self.mag_topic}, and '
+            f'{self.diagnostic_topic} '
             f'from {self.uart_port} @ {self.baud_rate} baud, mode {self.mode_name}'
         )
         self.get_logger().info(
@@ -489,6 +569,12 @@ class BNO055Publisher(Node):
                 'Magnetometer yaw correction requires mag calibration >= '
                 f'{self.min_mag_calibration_for_yaw}; below that, yaw will be gyro-only.'
             )
+        self.get_logger().info(
+            'Yaw trust gating: '
+            f'accel tolerance {self.accel_heading_tolerance_m_s2:.2f} m/s^2, '
+            f'mag norm tolerance {self.mag_norm_tolerance_ratio:.2f}, '
+            f'mag jump reject {math.degrees(self.mag_yaw_jump_reject_rad):.1f} deg.'
+        )
 
     def parameter_update_callback(self, parameters):
         changed_fields = []
@@ -509,6 +595,32 @@ class BNO055Publisher(Node):
                 changed_fields.append(
                     f'{parameter.name}={self.yaw_filter_time_constant_sec:.3f}'
                 )
+            elif parameter.name == 'absolute_yaw_covariance':
+                value = float(parameter.value)
+                if value <= 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='absolute_yaw_covariance must be greater than zero.',
+                    )
+                self.absolute_yaw_covariance = value
+                self.relative_yaw_covariance = max(
+                    self.relative_yaw_covariance,
+                    self.absolute_yaw_covariance,
+                )
+                changed_fields.append(
+                    f'absolute_yaw_covariance={self.absolute_yaw_covariance:.3f}'
+                )
+            elif parameter.name == 'relative_yaw_covariance':
+                value = float(parameter.value)
+                if value < self.absolute_yaw_covariance:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='relative_yaw_covariance must be >= absolute_yaw_covariance.',
+                    )
+                self.relative_yaw_covariance = value
+                changed_fields.append(
+                    f'relative_yaw_covariance={self.relative_yaw_covariance:.3f}'
+                )
             elif parameter.name == 'min_mag_calibration_for_yaw':
                 value = int(parameter.value)
                 if value < 0 or value > 3:
@@ -519,6 +631,67 @@ class BNO055Publisher(Node):
                 self.min_mag_calibration_for_yaw = value
                 changed_fields.append(
                     f'min_mag_calibration_for_yaw={self.min_mag_calibration_for_yaw}'
+                )
+            elif parameter.name == 'imu_accel_heading_tolerance_m_s2':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='imu_accel_heading_tolerance_m_s2 must be non-negative.',
+                    )
+                self.accel_heading_tolerance_m_s2 = value
+                changed_fields.append(
+                    f'imu_accel_heading_tolerance_m_s2={self.accel_heading_tolerance_m_s2:.3f}'
+                )
+            elif parameter.name == 'imu_mag_norm_tolerance_ratio':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='imu_mag_norm_tolerance_ratio must be non-negative.',
+                    )
+                self.mag_norm_tolerance_ratio = value
+                changed_fields.append(
+                    f'imu_mag_norm_tolerance_ratio={self.mag_norm_tolerance_ratio:.3f}'
+                )
+            elif parameter.name == 'imu_mag_yaw_jump_reject_deg':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='imu_mag_yaw_jump_reject_deg must be non-negative.',
+                    )
+                self.mag_yaw_jump_reject_rad = math.radians(value)
+                changed_fields.append(
+                    f'imu_mag_yaw_jump_reject_deg={value:.3f}'
+                )
+            elif parameter.name == 'imu_yaw_bias_correction_gain':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='imu_yaw_bias_correction_gain must be non-negative.',
+                    )
+                self.yaw_bias_correction_gain = value
+                self.yaw_filter.bias_gain = value
+                changed_fields.append(
+                    f'imu_yaw_bias_correction_gain={self.yaw_bias_correction_gain:.3f}'
+                )
+            elif parameter.name == 'imu_max_gyro_bias_rad_s':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='imu_max_gyro_bias_rad_s must be non-negative.',
+                    )
+                self.max_gyro_bias_rad_s = value
+                self.yaw_filter.max_bias_rad_s = value
+                self.yaw_filter.gyro_bias_rad_s = max(
+                    -value,
+                    min(value, self.yaw_filter.gyro_bias_rad_s),
+                )
+                changed_fields.append(
+                    f'imu_max_gyro_bias_rad_s={self.max_gyro_bias_rad_s:.3f}'
                 )
 
         if changed_fields:
@@ -536,7 +709,6 @@ class BNO055Publisher(Node):
     def publish_measurements(self):
         try:
             accel, magnetic_field, gyro = self.sensor.read_imu_measurements()
-            orientation = orientation_from_accel_and_mag(accel, magnetic_field)
         except Exception as exc:
             self._warn_throttled(f'BNO055 read failed: {exc}')
             return
@@ -555,6 +727,16 @@ class BNO055Publisher(Node):
         accumulated_still_time_sec = self.startup_still_gate.accumulated_still_time_sec
         startup_ready = self.startup_still_gate.update(dt, accel, gyro)
         calibration = self._read_calibration_status_cached(measurement_time)
+        roll_pitch = roll_pitch_from_accel(accel)
+        measured_yaw_rad = None
+        if vector_is_valid(magnetic_field, 3):
+            self.last_mag_norm_t = vector_norm(magnetic_field)
+            measured_yaw_rad = tilt_compensated_yaw_from_mag(accel, magnetic_field)
+        else:
+            self.last_mag_norm_t = math.nan
+        self.last_accel_error_m_s2 = abs(vector_norm(accel) - STANDARD_GRAVITY_M_S2)
+        self.last_mag_innovation_rad = 0.0
+        self.last_mag_norm_error_ratio = 0.0
 
         stamp = self.get_clock().now().to_msg()
 
@@ -576,43 +758,67 @@ class BNO055Publisher(Node):
             self.linear_acceleration_covariance,
         )
 
+        filtered_yaw_rad = self.yaw_filter.predict(
+            gyro[2],
+            dt,
+            fallback_yaw_rad=measured_yaw_rad,
+        )
+        yaw_source = 'gyro_only'
+        yaw_reason = 'mag_unavailable'
+        yaw_is_absolute = False
+        yaw_trusted = False
+        yaw_covariance = self.relative_yaw_covariance
+
         if not startup_ready:
+            yaw_source = 'gyro_only'
+            yaw_reason = 'startup_settle'
             if accumulated_still_time_sec > 0.0 and not self.startup_still_gate.is_still:
                 self._warn_throttled(
                     'BNO055 startup settle was interrupted by motion. '
                     'Hold the robot still to restart the settle timer.'
                 )
-            if orientation is None:
-                self.yaw_filter.reset()
-            else:
-                self.yaw_filter.reset(orientation[2])
-            imu_msg.orientation_covariance[0] = -1.0
             self._log_startup_status(measurement_time, accel, gyro)
-        elif orientation is None:
-            imu_msg.orientation_covariance[0] = -1.0
+        elif measured_yaw_rad is None:
+            yaw_reason = 'mag_unavailable'
         else:
             if not self.startup_settle_logged:
                 self.get_logger().info(
-                    'IMU startup settle complete; yaw heading hold enabled. '
+                    'IMU startup settle complete; yaw heading hold may activate once yaw is trusted. '
                     f'Calibration status (sys={calibration[0]}, gyro={calibration[1]}, '
                     f'accel={calibration[2]}, mag={calibration[3]}).'
                 )
                 self.startup_settle_logged = True
-            roll_rad, pitch_rad, measured_yaw_rad = orientation
-            if calibration[3] >= self.min_mag_calibration_for_yaw:
+
+            mag_accepted, yaw_reason, mag_innovation_rad = self._mag_yaw_is_acceptable(
+                accel,
+                magnetic_field,
+                calibration,
+                measured_yaw_rad,
+                gyro[2],
+                dt,
+            )
+            self.last_mag_innovation_rad = mag_innovation_rad
+            if mag_accepted:
                 filtered_yaw_rad = self.yaw_filter.update(
                     measured_yaw_rad,
                     gyro[2],
                     dt,
                 )
-                self._log_yaw_source_once('mag')
-            else:
-                filtered_yaw_rad = self.yaw_filter.predict(
-                    gyro[2],
-                    dt,
-                    fallback_yaw_rad=measured_yaw_rad,
-                )
-                self._log_yaw_source_once('gyro_only', calibration)
+                self._update_reference_mag_norm(self.last_mag_norm_t)
+                yaw_source = 'absolute_mag'
+                yaw_reason = 'accepted'
+                yaw_is_absolute = True
+                yaw_trusted = True
+                yaw_covariance = self.absolute_yaw_covariance
+
+        self.last_orientation_published = False
+        if roll_pitch is None:
+            imu_msg.orientation_covariance[0] = -1.0
+            yaw_source = 'unavailable'
+            yaw_reason = 'accel_invalid'
+            self._warn_throttled('BNO055 acceleration data is invalid for roll/pitch estimation.')
+        else:
+            roll_rad, pitch_rad = roll_pitch
             orientation_quaternion = quaternion_from_euler(
                 roll_rad,
                 pitch_rad,
@@ -622,10 +828,12 @@ class BNO055Publisher(Node):
             imu_msg.orientation.y = float(orientation_quaternion[1])
             imu_msg.orientation.z = float(orientation_quaternion[2])
             imu_msg.orientation.w = float(orientation_quaternion[3])
-            set_diagonal_covariance(
+            self._set_orientation_covariance(
                 imu_msg.orientation_covariance,
                 self.orientation_covariance,
+                yaw_covariance,
             )
+            self.last_orientation_published = True
 
         self.imu_publisher.publish(imu_msg)
 
@@ -642,6 +850,19 @@ class BNO055Publisher(Node):
             )
             self.mag_publisher.publish(mag_msg)
 
+        self.last_yaw_source = yaw_source
+        self.last_yaw_reason = yaw_reason
+        self.last_yaw_covariance = yaw_covariance
+        self.last_yaw_is_absolute = yaw_is_absolute
+        self.last_yaw_trusted = yaw_trusted
+        self._log_yaw_source_once(
+            yaw_source,
+            yaw_reason,
+            calibration,
+            self.last_mag_innovation_rad,
+        )
+        self._publish_yaw_diagnostics(stamp, measurement_time, calibration, startup_ready)
+
     def _read_calibration_status_cached(self, measurement_time, force=False):
         if (
             force
@@ -653,23 +874,176 @@ class BNO055Publisher(Node):
 
         return self.last_calibration_status
 
-    def _log_yaw_source_once(self, yaw_source, calibration=None):
-        if yaw_source == self.last_yaw_source:
+    def _mag_yaw_is_acceptable(
+        self,
+        accel,
+        magnetic_field,
+        calibration,
+        measured_yaw_rad,
+        gyro_yaw_rate_rad_s,
+        dt,
+    ):
+        if calibration[3] < self.min_mag_calibration_for_yaw:
+            return False, 'low_calibration', 0.0
+
+        accel_error_m_s2 = abs(vector_norm(accel) - STANDARD_GRAVITY_M_S2)
+        self.last_accel_error_m_s2 = accel_error_m_s2
+        if accel_error_m_s2 > self.accel_heading_tolerance_m_s2:
+            return False, 'dynamic_accel', 0.0
+
+        mag_norm_t = vector_norm(magnetic_field)
+        self.last_mag_norm_t = mag_norm_t
+        if self.reference_mag_norm_t is not None:
+            self.last_mag_norm_error_ratio = abs(
+                mag_norm_t - self.reference_mag_norm_t
+            ) / max(self.reference_mag_norm_t, 1e-9)
+            if self.last_mag_norm_error_ratio > self.mag_norm_tolerance_ratio:
+                return False, 'field_norm', 0.0
+
+        innovation_rad = normalize_angle(
+            measured_yaw_rad
+            - self.yaw_filter.peek_prediction(
+                gyro_yaw_rate_rad_s,
+                dt,
+                fallback_yaw_rad=measured_yaw_rad,
+            )
+        )
+        if (
+            self.yaw_filter.initialized
+            and abs(innovation_rad) > self.mag_yaw_jump_reject_rad
+        ):
+            return False, 'innovation_jump', innovation_rad
+
+        return True, 'accepted', innovation_rad
+
+    def _update_reference_mag_norm(self, mag_norm_t):
+        if not math.isfinite(mag_norm_t) or mag_norm_t <= 0.0:
             return
 
-        self.last_yaw_source = yaw_source
-        if yaw_source == 'mag':
+        if self.reference_mag_norm_t is None:
+            self.reference_mag_norm_t = mag_norm_t
+            return
+
+        alpha = self.MAG_REFERENCE_ALPHA
+        self.reference_mag_norm_t = (
+            (1.0 - alpha) * self.reference_mag_norm_t + alpha * mag_norm_t
+        )
+
+    def _set_orientation_covariance(self, covariance, roll_pitch_covariance, yaw_covariance):
+        covariance[0] = float(roll_pitch_covariance)
+        covariance[1] = 0.0
+        covariance[2] = 0.0
+        covariance[3] = 0.0
+        covariance[4] = float(roll_pitch_covariance)
+        covariance[5] = 0.0
+        covariance[6] = 0.0
+        covariance[7] = 0.0
+        covariance[8] = float(yaw_covariance)
+
+    def _publish_yaw_diagnostics(
+        self,
+        stamp,
+        measurement_time,
+        calibration,
+        startup_ready,
+    ):
+        if (
+            measurement_time - self.last_diag_publish_monotonic
+            < self.DIAGNOSTIC_PUBLISH_PERIOD_SEC
+        ):
+            return
+
+        self.last_diag_publish_monotonic = measurement_time
+
+        diag = DiagnosticArray()
+        diag.header.stamp = stamp
+
+        status = DiagnosticStatus()
+        status.name = 'hexapod_locomotion/bno055_yaw'
+        status.hardware_id = self.uart_port
+        if self.last_orientation_published and self.last_yaw_trusted:
+            status.level = DiagnosticStatus.OK
+        elif self.last_orientation_published:
+            status.level = DiagnosticStatus.WARN
+        else:
+            status.level = DiagnosticStatus.ERROR if startup_ready else DiagnosticStatus.WARN
+        status.message = (
+            'absolute yaw trusted'
+            if self.last_yaw_trusted
+            else f'{self.last_yaw_source}:{self.last_yaw_reason}'
+        )
+        status.values = [
+            KeyValue(key='yaw_source', value=self.last_yaw_source),
+            KeyValue(key='yaw_reason', value=self.last_yaw_reason),
+            KeyValue(key='yaw_absolute', value=str(self.last_yaw_is_absolute).lower()),
+            KeyValue(key='yaw_trusted', value=str(self.last_yaw_trusted).lower()),
+            KeyValue(key='orientation_published', value=str(self.last_orientation_published).lower()),
+            KeyValue(key='startup_ready', value=str(startup_ready).lower()),
+            KeyValue(
+                key='yaw_covariance_rad2',
+                value=f'{self.last_yaw_covariance:.6f}',
+            ),
+            KeyValue(
+                key='gyro_bias_rad_s',
+                value=f'{self.yaw_filter.gyro_bias_rad_s:.6f}',
+            ),
+            KeyValue(
+                key='mag_norm_uT',
+                value='nan' if not math.isfinite(self.last_mag_norm_t) else f'{self.last_mag_norm_t * 1e6:.3f}',
+            ),
+            KeyValue(
+                key='mag_reference_uT',
+                value='nan'
+                if self.reference_mag_norm_t is None
+                else f'{self.reference_mag_norm_t * 1e6:.3f}',
+            ),
+            KeyValue(
+                key='mag_norm_error_ratio',
+                value=f'{self.last_mag_norm_error_ratio:.6f}',
+            ),
+            KeyValue(
+                key='mag_innovation_deg',
+                value=f'{math.degrees(self.last_mag_innovation_rad):.3f}',
+            ),
+            KeyValue(
+                key='accel_heading_error_m_s2',
+                value=f'{self.last_accel_error_m_s2:.4f}',
+            ),
+            KeyValue(key='calib_sys', value=str(calibration[0])),
+            KeyValue(key='calib_gyro', value=str(calibration[1])),
+            KeyValue(key='calib_accel', value=str(calibration[2])),
+            KeyValue(key='calib_mag', value=str(calibration[3])),
+        ]
+        diag.status.append(status)
+        self.diag_publisher.publish(diag)
+
+    def _log_yaw_source_once(
+        self,
+        yaw_source,
+        yaw_reason,
+        calibration=None,
+        innovation_rad=0.0,
+    ):
+        mode_key = f'{yaw_source}:{yaw_reason}'
+        if mode_key == self.last_yaw_mode_key:
+            return
+
+        self.last_yaw_mode_key = mode_key
+        if yaw_source == 'absolute_mag':
             self.get_logger().info(
-                'Using magnetometer-corrected yaw because mag calibration is high enough.'
+                'Yaw source -> magnetometer-corrected absolute heading '
+                f'(mag calib={self.last_calibration_status[3]}, '
+                f'innovation={math.degrees(innovation_rad):.1f} deg).'
             )
             return
 
         if calibration is None:
             calibration = self.last_calibration_status
         self.get_logger().warn(
-            'Magnetometer calibration is too low for absolute yaw correction '
-            f'(mag={calibration[3]}, required={self.min_mag_calibration_for_yaw}). '
-            'Publishing gyro-only relative yaw to avoid magnetic heading jumps.'
+            'Yaw source -> gyro-only relative heading '
+            f'({yaw_reason}, mag calib={calibration[3]}, '
+            f'innovation={math.degrees(innovation_rad):.1f} deg). '
+            'Heading-hold consumers should treat yaw as untrusted until absolute updates resume.'
         )
 
     def _log_startup_status(self, measurement_time, accel, gyro):
@@ -688,7 +1062,7 @@ class BNO055Publisher(Node):
             'IMU startup settle in progress: '
             f'{self.startup_still_gate.remaining_time_sec:.1f} s still remaining, '
             f'gyro_norm={vector_norm(gyro):.3f} rad/s, '
-            f'accel_error={abs(vector_norm(accel) - 9.80665):.3f} m/s^2, '
+            f'accel_error={abs(vector_norm(accel) - STANDARD_GRAVITY_M_S2):.3f} m/s^2, '
             f'calib=(sys={calibration[0]}, gyro={calibration[1]}, '
             f'accel={calibration[2]}, mag={calibration[3]}).'
         )

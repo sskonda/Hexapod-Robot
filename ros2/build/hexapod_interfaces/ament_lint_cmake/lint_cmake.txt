@@ -1,0 +1,9 @@
+-- run_test.py: invoking following command in '/home/sanat/Hexapod-Robot/ros2/hexapod_interfaces':
+ - /opt/ros/jazzy/bin/ament_lint_cmake --xunit-file /home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/lint_cmake.xunit.xml
+
+
+No problems found
+
+
+-- run_test.py: return code 0
+-- run_test.py: verify result file '/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/lint_cmake.xunit.xml'

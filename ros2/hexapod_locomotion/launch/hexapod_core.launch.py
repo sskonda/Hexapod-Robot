@@ -10,8 +10,14 @@ def generate_launch_description():
     config_dir = Path(get_package_share_directory('hexapod_locomotion')) / 'config'
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
+    yaw_kp = LaunchConfiguration('yaw_kp')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
+    yaw_ki = LaunchConfiguration('yaw_ki')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
+    yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
+    yaw_rate_fault_threshold_rad_s = LaunchConfiguration('yaw_rate_fault_threshold_rad_s')
+    yaw_rate_fault_time_sec = LaunchConfiguration('yaw_rate_fault_time_sec')
+    heading_valid_timeout_sec = LaunchConfiguration('heading_valid_timeout_sec')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_frame_id = LaunchConfiguration('odom_frame_id')
     base_frame_id = LaunchConfiguration('base_frame_id')
@@ -27,6 +33,9 @@ def generate_launch_description():
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
+    imu_accel_heading_tolerance_m_s2 = LaunchConfiguration('imu_accel_heading_tolerance_m_s2')
+    imu_mag_norm_tolerance_ratio = LaunchConfiguration('imu_mag_norm_tolerance_ratio')
+    imu_mag_yaw_jump_reject_deg = LaunchConfiguration('imu_mag_yaw_jump_reject_deg')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
     imu_x = LaunchConfiguration('imu_x')
@@ -48,14 +57,44 @@ def generate_launch_description():
             description='Apply saved calibration offsets in servo_driver.',
         ),
         DeclareLaunchArgument(
+            'yaw_kp',
+            default_value='0.45',
+            description='Heading-hold proportional gain used by locomotion when no yaw is commanded.',
+        ),
+        DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.1',
-            description='IMU heading-hold gain used by locomotion when no yaw is commanded.',
+            default_value='0.0',
+            description='Legacy alias for yaw_kp. Leave at 0.0 unless an older script sets it.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_ki',
+            default_value='0.12',
+            description='Heading-hold integral gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
             'yaw_deadband_deg',
-            default_value='5.0',
+            default_value='2.5',
             description='Yaw-error deadband used by locomotion heading hold.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_integrator_limit',
+            default_value='1.2',
+            description='Absolute limit for the locomotion heading-hold integrator state.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_rate_fault_threshold_rad_s',
+            default_value='0.35',
+            description='Measured yaw-rate threshold used to detect pathological spin when yaw command is near zero.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_rate_fault_time_sec',
+            default_value='0.75',
+            description='How long pathological spin must persist before locomotion latches a spin fault.',
+        ),
+        DeclareLaunchArgument(
+            'heading_valid_timeout_sec',
+            default_value='0.25',
+            description='Maximum age of the IMU heading estimate before heading hold is disabled.',
         ),
         DeclareLaunchArgument(
             'odom_topic',
@@ -136,6 +175,21 @@ def generate_launch_description():
             description='Minimum BNO055 magnetometer calibration level required for magnetic yaw correction.',
         ),
         DeclareLaunchArgument(
+            'imu_accel_heading_tolerance_m_s2',
+            default_value='1.0',
+            description='Acceleration-magnitude gate for trusting magnetometer yaw updates.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mag_norm_tolerance_ratio',
+            default_value='0.25',
+            description='Relative magnetic-field-magnitude gate for trusting magnetometer yaw updates.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mag_yaw_jump_reject_deg',
+            default_value='25.0',
+            description='Reject magnetometer yaw corrections whose innovation exceeds this threshold.',
+        ),
+        DeclareLaunchArgument(
             'imu_startup_still_time_sec',
             default_value='15.0',
             description='Continuous still time required before IMU yaw heading hold becomes active.',
@@ -204,6 +258,9 @@ def generate_launch_description():
                 'retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
+                'imu_accel_heading_tolerance_m_s2': imu_accel_heading_tolerance_m_s2,
+                'imu_mag_norm_tolerance_ratio': imu_mag_norm_tolerance_ratio,
+                'imu_mag_yaw_jump_reject_deg': imu_mag_yaw_jump_reject_deg,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
             }]
@@ -216,8 +273,17 @@ def generate_launch_description():
             parameters=[
                 str(config_dir / 'locomotion.yaml'),
                 {
+                    'yaw_kp': yaw_kp,
                     'yaw_correction_gain': yaw_correction_gain,
+                    'yaw_ki': yaw_ki,
                     'yaw_deadband_deg': yaw_deadband_deg,
+                    'yaw_integrator_limit': yaw_integrator_limit,
+                    'yaw_rate_fault_threshold_rad_s': yaw_rate_fault_threshold_rad_s,
+                    'yaw_rate_fault_time_sec': yaw_rate_fault_time_sec,
+                    'heading_valid_timeout_sec': heading_valid_timeout_sec,
+                    'imu_roll': imu_roll,
+                    'imu_pitch': imu_pitch,
+                    'imu_yaw': imu_yaw,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,
                     'base_frame_id': base_frame_id,

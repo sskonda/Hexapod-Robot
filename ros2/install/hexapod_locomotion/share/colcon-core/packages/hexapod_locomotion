@@ -1,1 +1,1 @@
-ament_index_python:geometry_msgs:python3-yaml:rclpy:sensor_msgs:std_msgs:std_srvs
+ament_index_python:cv_bridge:diagnostic_msgs:geometry_msgs:hexapod_interfaces:nav_msgs:python3-opencv:python3-serial:python3-yaml:rclpy:rqt_image_view:sensor_msgs:std_msgs:std_srvs:tf2_ros:usb_cam

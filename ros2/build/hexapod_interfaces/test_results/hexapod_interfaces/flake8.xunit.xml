@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite
+  name="hexapod_interfaces.flake8"
+  tests="5"
+  errors="0"
+  failures="5"
+  time="0.296"
+>
+  <testcase
+    name="I100 (./hexapod_interfaces/camera_led.py:8:1)"
+    classname="hexapod_interfaces.flake8"
+  >
+      <failure message="Import statements are in the wrong order. 'from cv_bridge import CvBridge' should be before 'import rclpy':&#10;from cv_bridge import CvBridge&#10;"/>
+  </testcase>
+  <testcase
+    name="D202 (./hexapod_interfaces/camera_led.py:22:1)"
+    classname="hexapod_interfaces.flake8"
+  >
+      <failure message='No blank lines allowed after function docstring:&#10;    """Return a representative scene color in BGR order."""&#10;'/>
+  </testcase>
+  <testcase
+    name="E501 (./hexapod_interfaces/camera_led.py:136:100)"
+    classname="hexapod_interfaces.flake8"
+  >
+      <failure message="line too long (100 &gt; 99 characters):&#10;                f'LED backend is unavailable, so colors will not be shown on hardware: {init_error}'&#10;"/>
+  </testcase>
+  <testcase
+    name="E501 (./hexapod_interfaces/camera_led.py:140:100)"
+    classname="hexapod_interfaces.flake8"
+  >
+      <failure message="line too long (100 &gt; 99 characters):&#10;                f'LED backend ready using {self.led.driver_name} mode with {self.led.count} pixels.'&#10;"/>
+  </testcase>
+  <testcase
+    name="E501 (./hexapod_interfaces/led.py:57:100)"
+    classname="hexapod_interfaces.flake8"
+  >
+      <failure message="line too long (101 &gt; 99 characters):&#10;            self.init_error = getattr(strip, 'init_error', '') or f'{candidate} backend unavailable.'&#10;"/>
+  </testcase>
+  <system-out>Checked files:
+* ./hexapod_interfaces/rpi_ledpixel.py
+* ./hexapod_interfaces/spi_ledpixel.py
+* ./hexapod_interfaces/__init__.py
+* ./hexapod_interfaces/camera_led.py
+* ./hexapod_interfaces/led.py</system-out>
+</testsuite>

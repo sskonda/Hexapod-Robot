@@ -1,0 +1,1 @@
+/home/sanat/Hexapod-Robot/ros2/hexapod_locomotion/launch/hexapod_core.launch.py

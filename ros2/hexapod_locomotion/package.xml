@@ -10,6 +10,7 @@
 
   <depend>rclpy</depend>
   <exec_depend>hexapod_interfaces</exec_depend>
+  <depend>diagnostic_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
