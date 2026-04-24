@@ -2,7 +2,7 @@
 """Crab-motion path follower for the hexapod robot.
 
 Subscribes to a nav_msgs/Path published by the gap-following explorer and
-converts the 2-pose rolling path into a geometry_msgs/Twist command.
+converts the short rolling path into a geometry_msgs/Twist command.
 
 The explorer publishes goals in the odom frame, but locomotion interprets
 ``cmd_vel`` in the robot body frame.  On a real hexapod the body can yaw a
@@ -186,8 +186,11 @@ class CrabPathFollower(Node):
             self.cmd_pub.publish(cmd)
             return
 
-        # Goal is the second pose in the 2-pose rolling path
-        goal_pose = self.latest_path.poses[1].pose
+        goal_pose = self.select_active_goal_pose()
+        if goal_pose is None:
+            self.heading_hold_yaw = None
+            self.cmd_pub.publish(cmd)
+            return
         goal = goal_pose.position
         dx   = goal.x - self.robot_x
         dy   = goal.y - self.robot_y
@@ -229,6 +232,20 @@ class CrabPathFollower(Node):
             )
 
         self.cmd_pub.publish(cmd)
+
+    def select_active_goal_pose(self):
+        if self.latest_path is None or len(self.latest_path.poses) < 2:
+            return None
+
+        waypoint_reach_tolerance_m = max(0.03, 0.75 * self.tolerance)
+        selected_pose = self.latest_path.poses[-1].pose
+        for pose_stamped in self.latest_path.poses[1:]:
+            dx = pose_stamped.pose.position.x - self.robot_x
+            dy = pose_stamped.pose.position.y - self.robot_y
+            if math.hypot(dx, dy) > waypoint_reach_tolerance_m:
+                selected_pose = pose_stamped.pose
+                break
+        return selected_pose
 
 
 def main(args=None):
