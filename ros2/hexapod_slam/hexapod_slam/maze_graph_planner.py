@@ -17,9 +17,11 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, Quaternion
 from nav_msgs.msg import OccupancyGrid, Odometry, Path
 from std_msgs.msg import String
+from tf2_ros import Buffer, TransformListener
 
+from .frame_utils import lookup_point_2d
 from .graph_io import json_to_graph
-from .graph_types import EdgeState, GraphState, MazeNode, NodeType, VisitState
+from .graph_types import CellSideState, EdgeState, GraphState, MazeCell, MazeNode, NodeType, VisitState
 from .map_frontier_utils import (
     distance_m,
     heading_between_points,
@@ -30,6 +32,7 @@ from .map_frontier_utils import (
     ray_cast_distance,
     world_to_grid,
 )
+from .maze_cell_memory import classify_cell_side
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +62,11 @@ def select_next_target_dfs(
     blocked_edges: Set[int],
     unexplored_bonus: float = 5.0,
     revisit_penalty: float = 1.0,
+    cell_commit_confidence: float = 0.65,
+    cell_dominance_margin: float = 0.15,
+    cell_unvisited_bonus_gain: float = 1.5,
+    cell_revisit_penalty_gain: float = 0.35,
+    cell_opening_bonus_gain: float = 0.25,
 ) -> Optional[int]:
     """
     DFS-style selection: prefer unexplored edges, penalise revisited nodes.
@@ -89,6 +97,15 @@ def select_next_target_dfs(
             score -= revisit_penalty * edge.visit_count
         if other.node_type == NodeType.FRONTIER:
             score += unexplored_bonus * 0.5
+        score += node_cell_score(
+            graph,
+            other_id,
+            cell_commit_confidence,
+            cell_dominance_margin,
+            cell_unvisited_bonus_gain,
+            cell_revisit_penalty_gain,
+            cell_opening_bonus_gain,
+        )
 
         if score > best_score:
             best_score = score
@@ -151,7 +168,7 @@ def build_path_to_node(
         if nid == target_id:
             break
         for edge in graph.get_node_edges(nid):
-            if edge.id in blocked_edges:
+            if edge.id in blocked_edges or edge.edge_state == EdgeState.BLOCKED:
                 continue
             other_id = (edge.end_node_id
                         if edge.start_node_id == nid
@@ -170,6 +187,69 @@ def build_path_to_node(
         cur = prev.get(cur)
     path.reverse()
     return path
+
+
+def find_edge_between_nodes(
+    graph: GraphState,
+    start_id: int,
+    end_id: int,
+) -> Optional[int]:
+    for edge in graph.get_node_edges(start_id):
+        other_id = (
+            edge.end_node_id
+            if edge.start_node_id == start_id
+            else edge.start_node_id
+        )
+        if other_id == end_id:
+            return edge.id
+    return None
+
+
+def associated_cells_for_node(
+    graph: GraphState,
+    node_id: int,
+) -> List[MazeCell]:
+    return [
+        cell
+        for cell in graph.cells.values()
+        if node_id in cell.associated_node_ids
+    ]
+
+
+def node_cell_score(
+    graph: GraphState,
+    node_id: int,
+    commit_confidence: float,
+    dominance_margin: float,
+    unvisited_bonus_gain: float,
+    revisit_penalty_gain: float,
+    opening_bonus_gain: float,
+) -> float:
+    cells = associated_cells_for_node(graph, node_id)
+    if not cells:
+        return 0.0
+
+    unvisited_fraction = sum(1 for cell in cells if cell.visit_count <= 0) / len(cells)
+    min_visit_count = min(cell.visit_count for cell in cells)
+    best_opening_count = max(
+        sum(
+            1
+            for side_index in range(4)
+            if classify_cell_side(
+                cell,
+                side_index,
+                commit_confidence,
+                dominance_margin,
+            ) == CellSideState.OPEN
+        )
+        for cell in cells
+    )
+
+    return (
+        unvisited_bonus_gain * unvisited_fraction
+        - revisit_penalty_gain * float(min_visit_count)
+        + opening_bonus_gain * float(best_opening_count)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +565,7 @@ class MazeGraphPlanner(Node):
         super().__init__("maze_graph_planner")
 
         self.declare_parameter("strategy", "dfs")
+        self.declare_parameter("odom_topic", "odom")
         self.declare_parameter("map_topic", "/map")
         self.declare_parameter("planner_rate_hz", 2.0)
         self.declare_parameter("target_reached_distance_m", 0.20)
@@ -496,6 +577,14 @@ class MazeGraphPlanner(Node):
         self.declare_parameter("heading_alignment_gain", 0.5)
         self.declare_parameter("backtrack_penalty_gain", 0.5)
         self.declare_parameter("free_threshold", 20)
+        self.declare_parameter("cell_memory_enabled", True)
+        self.declare_parameter("cell_commit_confidence", 0.65)
+        self.declare_parameter("cell_dominance_margin", 0.15)
+        self.declare_parameter("cell_unvisited_bonus_gain", 1.5)
+        self.declare_parameter("cell_revisit_penalty_gain", 0.35)
+        self.declare_parameter("cell_opening_bonus_gain", 0.25)
+        self.declare_parameter("progress_stall_timeout_sec", 8.0)
+        self.declare_parameter("progress_stall_min_improvement_m", 0.10)
         self.declare_parameter("wall_centering_enabled", True)
         self.declare_parameter("wall_centering_inflation_radius_m", 0.20)
         self.declare_parameter("wall_centering_max_lateral_offset_m", 0.30)
@@ -509,6 +598,7 @@ class MazeGraphPlanner(Node):
         self.declare_parameter("base_frame", "base_link")
 
         self._strategy = self.get_parameter("strategy").value
+        self._odom_topic = self.get_parameter("odom_topic").value
         self._map_topic = self.get_parameter("map_topic").value
         self._rate = self.get_parameter("planner_rate_hz").value
         self._target_dist = self.get_parameter("target_reached_distance_m").value
@@ -518,6 +608,28 @@ class MazeGraphPlanner(Node):
         self._unexplored_bonus = self.get_parameter("unexplored_bonus_gain").value
         self._revisit_penalty = self.get_parameter("revisit_penalty_gain").value
         self._free_threshold = int(self.get_parameter("free_threshold").value)
+        self._cell_memory_enabled = bool(self.get_parameter("cell_memory_enabled").value)
+        self._cell_commit_confidence = float(
+            self.get_parameter("cell_commit_confidence").value
+        )
+        self._cell_dominance_margin = float(
+            self.get_parameter("cell_dominance_margin").value
+        )
+        self._cell_unvisited_bonus_gain = float(
+            self.get_parameter("cell_unvisited_bonus_gain").value
+        )
+        self._cell_revisit_penalty_gain = float(
+            self.get_parameter("cell_revisit_penalty_gain").value
+        )
+        self._cell_opening_bonus_gain = float(
+            self.get_parameter("cell_opening_bonus_gain").value
+        )
+        self._progress_stall_timeout_sec = float(
+            self.get_parameter("progress_stall_timeout_sec").value
+        )
+        self._progress_stall_min_improvement_m = float(
+            self.get_parameter("progress_stall_min_improvement_m").value
+        )
         self._wall_centering_enabled = bool(
             self.get_parameter("wall_centering_enabled").value
         )
@@ -551,6 +663,7 @@ class MazeGraphPlanner(Node):
         self._graph: Optional[GraphState] = None
         self._robot_x: float = 0.0
         self._robot_y: float = 0.0
+        self._robot_pose_frame: str = self._odom_topic
         self._target_node_id: Optional[int] = None
         self._current_path: List[int] = []
         self._blocked_edges: Set[int] = set()
@@ -559,11 +672,16 @@ class MazeGraphPlanner(Node):
         self._map_origin_x: float = 0.0
         self._map_origin_y: float = 0.0
         self._map_resolution: float = 0.0
+        self._last_tf_warn_time: float = 0.0
+        self._last_progress_time: Optional[float] = None
+        self._best_target_distance_m: Optional[float] = None
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
         # Subscriptions
         self.create_subscription(String, "/maze_graph/graph_json", self._graph_callback, 1)
         self.create_subscription(OccupancyGrid, self._map_topic, self._map_callback, 1)
-        self.create_subscription(Odometry, "/odom", self._odom_callback, 10)
+        self.create_subscription(Odometry, self._odom_topic, self._odom_callback, 10)
 
         # Publishers
         self._pub_target = self.create_publisher(PoseStamped, "/maze_graph/current_target", 1)
@@ -604,6 +722,8 @@ class MazeGraphPlanner(Node):
     def _odom_callback(self, msg: Odometry):
         self._robot_x = msg.pose.pose.position.x
         self._robot_y = msg.pose.pose.position.y
+        if msg.header.frame_id:
+            self._robot_pose_frame = msg.header.frame_id
 
     # ------------------------------------------------------------------
     def _plan_timer(self):
@@ -619,9 +739,31 @@ class MazeGraphPlanner(Node):
 
         self._plan()
 
+    def _robot_position_in_map(self) -> Optional[Tuple[float, float]]:
+        robot_map_position = lookup_point_2d(
+            self._tf_buffer,
+            self._map_frame,
+            self._robot_pose_frame,
+            self._robot_x,
+            self._robot_y,
+        )
+        if robot_map_position is None and self._map_frame == self._robot_pose_frame:
+            return self._robot_x, self._robot_y
+        return robot_map_position
+
     def _plan(self):
         graph = self._graph
-        rx, ry = self._robot_x, self._robot_y
+        robot_map_position = self._robot_position_in_map()
+        if robot_map_position is None:
+            now = time.time()
+            if now - self._last_tf_warn_time > 5.0:
+                self.get_logger().warn(
+                    f'Unable to transform robot pose from {self._robot_pose_frame} '
+                    f'to {self._map_frame}; planner update skipped.'
+                )
+                self._last_tf_warn_time = now
+            return
+        rx, ry = robot_map_position
 
         # 1. Find current node
         current_id = find_closest_node(graph, rx, ry, self._snap_dist)
@@ -646,6 +788,16 @@ class MazeGraphPlanner(Node):
                             edge.visit_count += 1
                     self._target_node_id = None
                     self._current_path = []
+                    self._last_progress_time = None
+                    self._best_target_distance_m = None
+                elif self._stalled_on_target(dist):
+                    self._mark_current_path_blocked(
+                        current_id,
+                        (
+                            f'progress toward node {self._target_node_id} stalled for '
+                            f'{self._progress_stall_timeout_sec:.1f} s'
+                        ),
+                    )
 
         # 3. Select new target if needed
         if self._target_node_id is None:
@@ -661,8 +813,16 @@ class MazeGraphPlanner(Node):
                     next_id = select_next_target_bfs(graph, from_id, self._blocked_edges)
                 else:
                     next_id = select_next_target_dfs(
-                        graph, from_id, self._blocked_edges,
-                        self._unexplored_bonus, self._revisit_penalty,
+                        graph,
+                        from_id,
+                        self._blocked_edges,
+                        self._unexplored_bonus,
+                        self._revisit_penalty,
+                        self._cell_commit_confidence,
+                        self._cell_dominance_margin,
+                        self._cell_unvisited_bonus_gain if self._cell_memory_enabled else 0.0,
+                        self._cell_revisit_penalty_gain if self._cell_memory_enabled else 0.0,
+                        self._cell_opening_bonus_gain if self._cell_memory_enabled else 0.0,
                     )
                 self._target_node_id = next_id
 
@@ -670,6 +830,17 @@ class MazeGraphPlanner(Node):
                 self._current_path = build_path_to_node(
                     graph, current_id, self._target_node_id, self._blocked_edges
                 )
+            if self._target_node_id is not None:
+                target_x_m, target_y_m = self._regulated_target_position(
+                    self._target_node_id,
+                    current_id=current_id,
+                    path_ids=self._current_path,
+                )
+                self._best_target_distance_m = distance_m(rx, ry, target_x_m, target_y_m)
+                self._last_progress_time = time.time()
+            else:
+                self._best_target_distance_m = None
+                self._last_progress_time = None
 
         # 4. Publish
         if self._target_node_id is not None:
@@ -716,7 +887,11 @@ class MazeGraphPlanner(Node):
                     previous.x_m, previous.y_m, current.x_m, current.y_m
                 )
 
-        return heading_between_points(self._robot_x, self._robot_y, current.x_m, current.y_m)
+        robot_map_position = self._robot_position_in_map()
+        if robot_map_position is None:
+            return None
+        robot_x_m, robot_y_m = robot_map_position
+        return heading_between_points(robot_x_m, robot_y_m, current.x_m, current.y_m)
 
     def _regulated_point(
         self,
@@ -776,14 +951,88 @@ class MazeGraphPlanner(Node):
                     target_node.y_m,
                 )
         else:
-            heading_rad = heading_between_points(
-                self._robot_x,
-                self._robot_y,
-                target_node.x_m,
-                target_node.y_m,
-            )
+            robot_map_position = self._robot_position_in_map()
+            if robot_map_position is not None:
+                robot_x_m, robot_y_m = robot_map_position
+                heading_rad = heading_between_points(
+                    robot_x_m,
+                    robot_y_m,
+                    target_node.x_m,
+                    target_node.y_m,
+                )
 
         return self._regulated_point(target_node.x_m, target_node.y_m, heading_rad)
+
+    def _stalled_on_target(self, distance_to_target_m: float) -> bool:
+        if (
+            self._progress_stall_timeout_sec <= 0.0
+            or self._progress_stall_min_improvement_m <= 0.0
+        ):
+            return False
+
+        now = time.time()
+        if self._last_progress_time is None or self._best_target_distance_m is None:
+            self._last_progress_time = now
+            self._best_target_distance_m = distance_to_target_m
+            return False
+
+        if distance_to_target_m <= (
+            self._best_target_distance_m - self._progress_stall_min_improvement_m
+        ):
+            self._best_target_distance_m = distance_to_target_m
+            self._last_progress_time = now
+            return False
+
+        return (now - self._last_progress_time) >= self._progress_stall_timeout_sec
+
+    def _mark_current_path_blocked(
+        self,
+        current_id: Optional[int],
+        reason: str,
+    ) -> None:
+        if self._graph is None:
+            return
+
+        edge_id: Optional[int] = None
+        if len(self._current_path) >= 2:
+            edge_id = find_edge_between_nodes(
+                self._graph,
+                self._current_path[0],
+                self._current_path[1],
+            )
+        elif (
+            current_id is not None
+            and self._target_node_id is not None
+            and current_id != self._target_node_id
+        ):
+            edge_id = find_edge_between_nodes(
+                self._graph,
+                current_id,
+                self._target_node_id,
+            )
+
+        if edge_id is not None:
+            edge = self._graph.edges.get(edge_id)
+            if edge is not None:
+                edge.blocked_count += 1
+                self._blocked_edges.add(edge_id)
+                self._blocked_times[edge_id] = time.time()
+                if edge.blocked_count >= self._retry_limit:
+                    edge.edge_state = EdgeState.BLOCKED
+                self.get_logger().warn(
+                    f'Marking edge {edge_id} blocked while targeting node '
+                    f'{self._target_node_id}: {reason}'
+                )
+        else:
+            self.get_logger().warn(
+                f'Unable to identify an edge to block while targeting node '
+                f'{self._target_node_id}: {reason}'
+            )
+
+        self._target_node_id = None
+        self._current_path = []
+        self._last_progress_time = None
+        self._best_target_distance_m = None
 
     def _publish_target(self, target_x_m: float, target_y_m: float):
         ps = PoseStamped()
@@ -792,7 +1041,12 @@ class MazeGraphPlanner(Node):
         ps.pose.position.x = target_x_m
         ps.pose.position.y = target_y_m
         ps.pose.position.z = 0.0
-        yaw = heading_between_points(self._robot_x, self._robot_y, target_x_m, target_y_m)
+        robot_map_position = self._robot_position_in_map()
+        robot_x_m, robot_y_m = robot_map_position if robot_map_position is not None else (
+            target_x_m,
+            target_y_m,
+        )
+        yaw = heading_between_points(robot_x_m, robot_y_m, target_x_m, target_y_m)
         ps.pose.orientation = _yaw_to_quat(yaw)
         self._pub_target.publish(ps)
 

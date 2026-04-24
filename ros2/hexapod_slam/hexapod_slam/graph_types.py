@@ -31,6 +31,12 @@ class EdgeState(Enum):
     BLOCKED = "BLOCKED"
 
 
+class CellSideState(Enum):
+    UNKNOWN = "UNKNOWN"
+    OPEN = "OPEN"
+    WALL = "WALL"
+
+
 @dataclass
 class MazeNode:
     id: int
@@ -60,11 +66,30 @@ class MazeEdge:
 
 
 @dataclass
+class MazeCell:
+    grid_x: int
+    grid_y: int
+    center_x_m: float
+    center_y_m: float
+    confidence: float = 0.0
+    observation_count: int = 0
+    visit_count: int = 0
+    last_seen_time: float = field(default_factory=time.time)
+    wall_confidence_by_side: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+    open_confidence_by_side: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+    associated_node_ids: List[int] = field(default_factory=list)
+
+
+@dataclass
 class GraphState:
     nodes: Dict[int, MazeNode] = field(default_factory=dict)
     edges: Dict[int, MazeEdge] = field(default_factory=dict)
+    cells: Dict[str, MazeCell] = field(default_factory=dict)
     frontier_edges: List[int] = field(default_factory=list)
     active_target_node_id: Optional[int] = None
+    cell_size_m: float = 0.0
+    cell_origin_x_m: float = 0.0
+    cell_origin_y_m: float = 0.0
     version: int = 0
     timestamp: float = field(default_factory=time.time)
 
@@ -73,6 +98,9 @@ class GraphState:
 
     def edge_count(self) -> int:
         return len(self.edges)
+
+    def cell_count(self) -> int:
+        return len(self.cells)
 
     def get_node_edges(self, node_id: int) -> List[MazeEdge]:
         """Return all edges connected to the given node."""

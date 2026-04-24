@@ -7,17 +7,13 @@ setup(
     name=package_name,
     version='0.0.0',
     packages=find_packages(exclude=['test']),
-    package_data={
-        package_name: [
-            'vendor/Libs/mpu6050/mpu6050/*.py',
-        ],
-    },
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
+        ('share/' + package_name + '/cascades', glob('cascades/*.xml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -32,6 +28,7 @@ setup(
             'bno055_publisher = hexapod_locomotion.bno055_publisher:main',
             'locomotion = hexapod_locomotion.locomotion:main',
             'crab_path_follower = hexapod_locomotion.crab_path_follower:main',
+            'face_detector = hexapod_locomotion.face_detector:main',
             'path_plan = hexapod_locomotion.path_plan:main',
             'servo_driver = hexapod_locomotion.servo_driver:main',
             'calibration = hexapod_locomotion.calibration:main',

@@ -2,7 +2,7 @@
 """Crab-motion path follower for the hexapod robot.
 
 Subscribes to a nav_msgs/Path published by the gap-following explorer and
-converts the 2-pose rolling path into a geometry_msgs/Twist command.
+converts the short rolling path into a geometry_msgs/Twist command.
 
 The explorer publishes goals in the odom frame, but locomotion interprets
 ``cmd_vel`` in the robot body frame.  On a real hexapod the body can yaw a
@@ -18,7 +18,10 @@ import math
 import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry, Path
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
+
+from .yaw_control import apply_angular_deadband
 
 
 def clamp(value: float, min_value: float, max_value: float) -> float:
@@ -100,6 +103,7 @@ class CrabPathFollower(Node):
         self.create_subscription(Path,     path_topic, self.path_callback, 10)
         self.create_subscription(Odometry, odom_topic, self.odom_callback, 10)
 
+        self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.create_timer(1.0 / rate_hz, self.control_loop)
 
         self.get_logger().info(
@@ -111,6 +115,35 @@ class CrabPathFollower(Node):
         self.get_logger().info(
             f'Subscribed to {path_topic} and {odom_topic}, publishing on {cmd_vel_topic}'
         )
+
+    def parameter_update_callback(self, parameters):
+        changed_fields = []
+
+        for parameter in parameters:
+            if parameter.name == 'yaw_correction_gain':
+                self.yaw_gain = max(0.0, float(parameter.value))
+                changed_fields.append(f'yaw_correction_gain={self.yaw_gain:.3f}')
+            elif parameter.name == 'yaw_deadband_deg':
+                yaw_deadband_deg = float(parameter.value)
+                if yaw_deadband_deg < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_deadband_deg must be non-negative.',
+                    )
+                self.yaw_deadband = math.radians(yaw_deadband_deg)
+                changed_fields.append(f'yaw_deadband_deg={yaw_deadband_deg:.2f}')
+            elif parameter.name == 'max_angular_speed_rad_s':
+                self.max_yaw_rate = max(0.0, float(parameter.value))
+                changed_fields.append(
+                    f'max_angular_speed_rad_s={self.max_yaw_rate:.3f}'
+                )
+
+        if changed_fields:
+            self.get_logger().info(
+                'Updated crab follower heading tuning: ' + ', '.join(changed_fields)
+            )
+
+        return SetParametersResult(successful=True)
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -153,8 +186,11 @@ class CrabPathFollower(Node):
             self.cmd_pub.publish(cmd)
             return
 
-        # Goal is the second pose in the 2-pose rolling path
-        goal_pose = self.latest_path.poses[1].pose
+        goal_pose = self.select_active_goal_pose()
+        if goal_pose is None:
+            self.heading_hold_yaw = None
+            self.cmd_pub.publish(cmd)
+            return
         goal = goal_pose.position
         dx   = goal.x - self.robot_x
         dy   = goal.y - self.robot_y
@@ -187,7 +223,8 @@ class CrabPathFollower(Node):
         )
 
         yaw_error = normalize_angle(self.heading_hold_yaw - self.robot_yaw)
-        if self.max_yaw_rate > 0.0 and abs(yaw_error) > self.yaw_deadband:
+        yaw_error = apply_angular_deadband(yaw_error, self.yaw_deadband)
+        if self.max_yaw_rate > 0.0 and self.yaw_gain > 0.0 and abs(yaw_error) > 1e-6:
             cmd.angular.z = clamp(
                 self.yaw_gain * yaw_error,
                 -self.max_yaw_rate,
@@ -195,6 +232,20 @@ class CrabPathFollower(Node):
             )
 
         self.cmd_pub.publish(cmd)
+
+    def select_active_goal_pose(self):
+        if self.latest_path is None or len(self.latest_path.poses) < 2:
+            return None
+
+        waypoint_reach_tolerance_m = max(0.03, 0.75 * self.tolerance)
+        selected_pose = self.latest_path.poses[-1].pose
+        for pose_stamped in self.latest_path.poses[1:]:
+            dx = pose_stamped.pose.position.x - self.robot_x
+            dy = pose_stamped.pose.position.y - self.robot_y
+            if math.hypot(dx, dy) > waypoint_reach_tolerance_m:
+                selected_pose = pose_stamped.pose
+                break
+        return selected_pose
 
 
 def main(args=None):

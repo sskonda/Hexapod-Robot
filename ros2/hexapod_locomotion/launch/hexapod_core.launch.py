@@ -11,11 +11,24 @@ def generate_launch_description():
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
+    yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_frame_id = LaunchConfiguration('odom_frame_id')
     base_frame_id = LaunchConfiguration('base_frame_id')
     publish_odom_tf = LaunchConfiguration('publish_odom_tf')
     imu_frame = LaunchConfiguration('imu_frame')
+    imu_publish_rate_hz = LaunchConfiguration('imu_publish_rate_hz')
+    imu_mag_topic = LaunchConfiguration('imu_mag_topic')
+    imu_uart_port = LaunchConfiguration('imu_uart_port')
+    imu_baud_rate = LaunchConfiguration('imu_baud_rate')
+    imu_mode = LaunchConfiguration('imu_mode')
+    imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
+    imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
+    imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
+    imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
+    imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
+    imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
+    imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -36,8 +49,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.0',
-            description='IMU-based yaw damping gain used by locomotion when no yaw is commanded.',
+            default_value='0.1',
+            description='IMU heading-hold gain used by locomotion when no yaw is commanded.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_deadband_deg',
+            default_value='5.0',
+            description='Yaw-error deadband used by locomotion heading hold.',
         ),
         DeclareLaunchArgument(
             'odom_topic',
@@ -63,6 +81,69 @@ def generate_launch_description():
             'imu_frame',
             default_value='imu_link',
             description='Frame id stamped onto IMU data and used for the base->imu static TF.',
+        ),
+        DeclareLaunchArgument(
+            'imu_publish_rate_hz',
+            default_value='50.0',
+            description='BNO055 publish rate in Hz.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mag_topic',
+            default_value='/imu/mag',
+            description='Magnetometer topic published by the BNO055 driver.',
+        ),
+        DeclareLaunchArgument(
+            'imu_uart_port',
+            default_value='/dev/ttyAMA5',
+            description='UART device used by the BNO055.',
+        ),
+        DeclareLaunchArgument(
+            'imu_baud_rate',
+            default_value='115200',
+            description='UART baud rate used by the BNO055.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mode',
+            default_value='AMG_MODE',
+            description='BNO055 operating mode. AMG_MODE keeps accel, gyro, and mag raw for explicit yaw correction.',
+        ),
+        DeclareLaunchArgument(
+            'imu_use_external_crystal',
+            default_value='false',
+            description=(
+                'Enable the BNO055 external crystal. The current robot wiring is '
+                'validated with the internal crystal on UART.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'imu_read_retry_count',
+            default_value='3',
+            description='How many times the BNO055 UART driver retries transient read overruns/timeouts.',
+        ),
+        DeclareLaunchArgument(
+            'imu_retry_backoff_sec',
+            default_value='0.01',
+            description='Base retry backoff for transient BNO055 UART read errors.',
+        ),
+        DeclareLaunchArgument(
+            'imu_yaw_filter_time_constant_sec',
+            default_value='0.5',
+            description='Complementary-filter time constant for gyro-smoothed magnetometer yaw.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_mag_calibration_for_yaw',
+            default_value='3',
+            description='Minimum BNO055 magnetometer calibration level required for magnetic yaw correction.',
+        ),
+        DeclareLaunchArgument(
+            'imu_startup_still_time_sec',
+            default_value='15.0',
+            description='Continuous still time required before IMU yaw heading hold becomes active.',
+        ),
+        DeclareLaunchArgument(
+            'imu_startup_motion_grace_sec',
+            default_value='0.5',
+            description='Continuous motion time that resets the IMU startup stillness timer.',
         ),
         DeclareLaunchArgument(
             'imu_x',
@@ -107,11 +188,24 @@ def generate_launch_description():
         ),
         Node(
             package='hexapod_locomotion',
-            executable='imu_publisher',
+            executable='bno055_publisher',
             name='imu_publisher',
             output='screen',
             parameters=[{
                 'frame_id': imu_frame,
+                'topic': '/imu/data_raw',
+                'mag_topic': imu_mag_topic,
+                'publish_rate_hz': imu_publish_rate_hz,
+                'uart_port': imu_uart_port,
+                'baud_rate': imu_baud_rate,
+                'mode': imu_mode,
+                'use_external_crystal': imu_use_external_crystal,
+                'read_retry_count': imu_read_retry_count,
+                'retry_backoff_sec': imu_retry_backoff_sec,
+                'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
+                'min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
+                'imu_startup_still_time_sec': imu_startup_still_time_sec,
+                'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
             }]
         ),
         Node(
@@ -123,6 +217,7 @@ def generate_launch_description():
                 str(config_dir / 'locomotion.yaml'),
                 {
                     'yaw_correction_gain': yaw_correction_gain,
+                    'yaw_deadband_deg': yaw_deadband_deg,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,
                     'base_frame_id': base_frame_id,

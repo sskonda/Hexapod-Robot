@@ -1,9 +1,8 @@
 ekf_filter_node:
   ros__parameters:
-    # The current hardware stack publishes IMU data at 10 Hz and raw locomotion
-    # odom at a modest rate on embedded hardware. Running the EKF much faster
-    # than the slowest real sensor just causes deadline misses without adding
-    # useful information.
+    # Raw locomotion odom and the BNO055 IMU are both relatively low-bandwidth
+    # compared to desktop-class robots, so the EKF does not need to run much
+    # faster than the real measurements it is fusing.
     frequency: 10.0
     sensor_timeout: 0.5
     two_d_mode: true
@@ -19,7 +18,7 @@ ekf_filter_node:
     odom0_differential: false
     odom0_relative: false
     odom0_config: [true,  true,  false,
-                   false, false, true,
+                   false, false, false,
                     true,  true,  false,
                    false, false, false,
                    false, false, false]
@@ -30,7 +29,7 @@ ekf_filter_node:
     imu0_relative: false
     imu0_remove_gravitational_acceleration: false
     imu0_config: [false, false, false,
-                  false, false, false,
+                  false, false, true,
                   false, false, false,
                   false, false, true,
                   false, false, false]

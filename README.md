@@ -3,13 +3,13 @@
 ROS 2 workspace for an 18-DOF hexapod robot with:
 
 - gait generation and servo output
-- MPU6050 IMU publishing
-- open-loop odometry and TF
+- BNO055 IMU publishing over UART
+- open-loop odometry and TF with IMU-assisted yaw hold
 - servo calibration tools
 - simple scripted motion tests
 - 2D lidar SLAM with an optional gap-following exploration loop
 
-This README reflects the code that is currently in the repository today, not an aspirational roadmap.
+This README reflects the current state of the `bno055` branch, not an aspirational roadmap.
 
 ## Repository Layout
 
@@ -19,22 +19,27 @@ This README reflects the code that is currently in the repository today, not an 
 
 ## What The Code Does Right Now
 
-- `hexapod_core.launch.py` starts the hardware-facing locomotion stack: `imu_publisher`, `locomotion`, and `servo_driver`.
+- `hexapod_core.launch.py` starts the hardware-facing locomotion stack: `bno055_publisher` (under the node name `imu_publisher`), `locomotion`, and `servo_driver`.
 - `path_plan.launch.py` includes the core stack and adds a `path_plan` node that publishes a simple linear or square `cmd_vel` test path.
+- `bno055_publisher` reads the BNO055 over UART, publishes `sensor_msgs/Imu` on `/imu/data_raw`, publishes `sensor_msgs/MagneticField` on `/imu/mag`, and computes a tilt-compensated orientation estimate with gyro-smoothed yaw correction from the magnetometer.
 - `slam.launch.py` starts `slam_toolbox` and, by default, also starts:
   - `gap_following_explorer`, which looks for open lidar gaps and publishes a short rolling `nav_msgs/Path`
   - `crab_path_follower`, which converts that path into `cmd_vel`
-- The locomotion node publishes `odom` and the `odom -> base_link` transform from commanded gait motion. This is open-loop odometry, not fused localization.
-- The exploration behavior is crab-motion based. The follower commands `linear.x` and `linear.y`, but keeps `angular.z = 0`, so the robot does not rotate while following the rolling path.
+- The locomotion node publishes `odom` and the `odom -> base_link` transform from commanded gait motion. Position is still open-loop, but yaw is anchored to IMU orientation when available instead of being purely integrated from commanded turn rate.
+- The locomotion node uses IMU roll/pitch for balance compensation when enabled and uses the filtered BNO055 yaw estimate from `/imu/data_raw` to hold a constant heading while translating without a yaw command.
+- The exploration behavior is still crab-motion based. The follower commands `linear.x` and `linear.y` to move sideways/forward in body coordinates and may add a bounded `angular.z` correction to hold heading, but it does not try to rotate the body to face the path direction.
 - The explorer stops when an obstacle gets too close, publishes a stop/decision point, waits briefly, and chooses a new heading. If it cannot find a traversable gap after repeated replans, it halts.
+- `slam.launch.py` can optionally start `robot_localization` to fuse raw odometry and IMU data, but that path is still optional and off by default.
 
 ## Hardware And Software Assumptions
 
 The current code assumes the following when run on the real robot:
 
 - ROS 2 Python workspace built with `colcon`
-- Linux or Raspberry Pi style access to I2C and GPIO
-- MPU6050 IMU at I2C address `0x68`
+- Linux or Raspberry Pi style access to UART, I2C, and GPIO
+- BNO055 IMU connected on UART `/dev/ttyAMA5`
+- `dtoverlay=uart5` enabled in the Raspberry Pi `config.txt`
+- `python3-serial` available on the robot for the BNO055 UART driver
 - two PCA9685 boards at I2C addresses `0x40` and `0x41`
 - optional servo power control on GPIO `4`
 - a 2D lidar publishing `sensor_msgs/LaserScan` on `scan` or a remapped equivalent
@@ -67,6 +72,9 @@ Notes:
 - `servo_dry_run:=true` is the safest first test and keeps the robot from moving.
 - The launch file defaults to `servo_dry_run:=false`, so do not omit that flag unless you want hardware output.
 - `apply_offsets:=true` by default, so saved calibration offsets are applied unless you disable them.
+- The default IMU bring-up uses `imu_uart_port:=/dev/ttyAMA5`, `imu_mode:=AMG_MODE`, `imu_publish_rate_hz:=50.0`, `imu_use_external_crystal:=false`, and `yaw_correction_gain:=0.6`.
+- The default BNO055 UART recovery settings are `imu_read_retry_count:=3`, `imu_retry_backoff_sec:=0.01`, and `imu_yaw_filter_time_constant_sec:=0.5`.
+- The core stack now publishes both `/imu/data_raw` and `/imu/mag`.
 
 ### 2. Servo Calibration
 
@@ -108,6 +116,20 @@ ros2 launch hexapod_slam slam.launch.py enable_explorer:=false
 
 This expects a live `scan` topic and a valid `odom` / `base_link` TF tree.
 
+If you want to enable the optional EKF in `slam.launch.py`, make sure the locomotion odometry topic matches the EKF input topic. One working combination is:
+
+Terminal 1:
+
+```bash
+ros2 launch hexapod_locomotion hexapod_core.launch.py odom_topic:=odom/raw
+```
+
+Terminal 2:
+
+```bash
+ros2 launch hexapod_slam slam.launch.py enable_robot_localization:=true raw_odom_topic:=odom/raw odom_topic:=odom
+```
+
 ### 5. SLAM With Autonomous Exploration
 
 This is the most important caveat in the current repo:
@@ -145,8 +167,9 @@ Current interfaces used by the main ROS 2 nodes:
 - `body_pose`: optional body roll/pitch/yaw offsets for `locomotion`
 - `body_shift`: optional body x/y/z shifts for `locomotion`
 - `servo_targets`: joint targets produced by `locomotion` and consumed by `servo_driver`
-- `imu/data_raw`: IMU output from `imu_publisher`
-- `odom`: open-loop odometry from `locomotion`
+- `imu/data_raw`: IMU output from the BNO055 publisher, including accel, gyro, and orientation with roll/pitch from tilt compensation plus gyro-smoothed magnetometer yaw
+- `imu/mag`: raw magnetometer output from the BNO055 publisher
+- `odom`: locomotion odometry by default, or filtered odometry if you enable `robot_localization` and wire topics accordingly
 - `scan`: lidar input for `slam_toolbox` and `gap_following_explorer`
 - `path`: rolling path from `gap_following_explorer` to `crab_path_follower`
 - `decision_point`: point published when the explorer stops to choose a new direction
@@ -154,9 +177,9 @@ Current interfaces used by the main ROS 2 nodes:
 
 ## Current Limitations
 
-- Odometry is generated from commanded gait motion, so SLAM quality will drift without better state estimation.
-- `slam.launch.py` is tightly coupled to crab-style exploration and does not command body yaw while following a path.
-- `hexapod_core.launch.py` assumes the IMU node can talk to real hardware unless you modify the stack for a non-hardware environment.
-- Hardware-specific nodes depend on Linux I2C/GPIO access and will not behave like a full robot bring-up on a desktop machine without those devices.
-
-Ryan Robinson was here 
+- X/Y odometry is still generated from commanded gait motion, so map quality can still drift even though yaw hold is better.
+- Magnetometer-based yaw correction depends on real calibration and on the BNO055 axes matching the robot's expected frame conventions.
+- `slam.launch.py` is still tightly coupled to crab-style exploration. It holds heading while translating, but it does not rotate the body to face the path direction.
+- `slam.launch.py` still does not launch the locomotion stack, lidar driver, or servo driver by itself.
+- Hardware-specific nodes depend on Linux UART/I2C/GPIO access and will not behave like a full robot bring-up on a desktop machine without those devices.
+efn

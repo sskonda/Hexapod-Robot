@@ -54,6 +54,97 @@ def generate_launch_description():
     explorer_clearance_window_deg = LaunchConfiguration('explorer_clearance_window_deg')
     explorer_min_gap_width_deg = LaunchConfiguration('explorer_min_gap_width_deg')
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
+    explorer_corner_mode_enabled = LaunchConfiguration('explorer_corner_mode_enabled')
+    explorer_corner_forward_blocked_distance_m = LaunchConfiguration(
+        'explorer_corner_forward_blocked_distance_m'
+    )
+    explorer_corner_side_open_distance_m = LaunchConfiguration(
+        'explorer_corner_side_open_distance_m'
+    )
+    explorer_corner_clearance_window_deg = LaunchConfiguration(
+        'explorer_corner_clearance_window_deg'
+    )
+    explorer_corner_min_turn_angle_deg = LaunchConfiguration(
+        'explorer_corner_min_turn_angle_deg'
+    )
+    explorer_corner_max_turn_angle_deg = LaunchConfiguration(
+        'explorer_corner_max_turn_angle_deg'
+    )
+    explorer_corner_preferred_turn_angle_deg = LaunchConfiguration(
+        'explorer_corner_preferred_turn_angle_deg'
+    )
+    explorer_corner_goal_distance_m = LaunchConfiguration('explorer_corner_goal_distance_m')
+    explorer_corner_outer_wall_bias_m = LaunchConfiguration(
+        'explorer_corner_outer_wall_bias_m'
+    )
+    explorer_corner_commit_time_sec = LaunchConfiguration('explorer_corner_commit_time_sec')
+    explorer_wall_follow_enabled = LaunchConfiguration('explorer_wall_follow_enabled')
+    explorer_wall_follow_trigger_replans = LaunchConfiguration(
+        'explorer_wall_follow_trigger_replans'
+    )
+    explorer_wall_follow_front_blocked_distance_m = LaunchConfiguration(
+        'explorer_wall_follow_front_blocked_distance_m'
+    )
+    explorer_wall_follow_wall_detect_distance_m = LaunchConfiguration(
+        'explorer_wall_follow_wall_detect_distance_m'
+    )
+    explorer_wall_follow_target_standoff_m = LaunchConfiguration(
+        'explorer_wall_follow_target_standoff_m'
+    )
+    explorer_wall_follow_search_min_angle_deg = LaunchConfiguration(
+        'explorer_wall_follow_search_min_angle_deg'
+    )
+    explorer_wall_follow_search_max_angle_deg = LaunchConfiguration(
+        'explorer_wall_follow_search_max_angle_deg'
+    )
+    explorer_wall_follow_wall_window_deg = LaunchConfiguration(
+        'explorer_wall_follow_wall_window_deg'
+    )
+    explorer_wall_follow_tangent_window_deg = LaunchConfiguration(
+        'explorer_wall_follow_tangent_window_deg'
+    )
+    explorer_wall_follow_goal_distance_m = LaunchConfiguration(
+        'explorer_wall_follow_goal_distance_m'
+    )
+    explorer_wall_follow_midpoint_distance_m = LaunchConfiguration(
+        'explorer_wall_follow_midpoint_distance_m'
+    )
+    explorer_wall_follow_goal_backoff_m = LaunchConfiguration(
+        'explorer_wall_follow_goal_backoff_m'
+    )
+    explorer_wall_follow_standoff_gain = LaunchConfiguration(
+        'explorer_wall_follow_standoff_gain'
+    )
+    explorer_wall_follow_forward_bias = LaunchConfiguration(
+        'explorer_wall_follow_forward_bias'
+    )
+    explorer_wall_follow_min_forward_component = LaunchConfiguration(
+        'explorer_wall_follow_min_forward_component'
+    )
+    explorer_wall_follow_max_correction_ratio = LaunchConfiguration(
+        'explorer_wall_follow_max_correction_ratio'
+    )
+    explorer_wall_follow_min_tangent_clearance_m = LaunchConfiguration(
+        'explorer_wall_follow_min_tangent_clearance_m'
+    )
+    explorer_wall_follow_max_follow_angle_deg = LaunchConfiguration(
+        'explorer_wall_follow_max_follow_angle_deg'
+    )
+    explorer_wall_follow_commit_time_sec = LaunchConfiguration(
+        'explorer_wall_follow_commit_time_sec'
+    )
+    explorer_wall_follow_cooldown_time_sec = LaunchConfiguration(
+        'explorer_wall_follow_cooldown_time_sec'
+    )
+    explorer_wall_follow_exit_forward_clearance_m = LaunchConfiguration(
+        'explorer_wall_follow_exit_forward_clearance_m'
+    )
+    explorer_wall_follow_exit_heading_max_deg = LaunchConfiguration(
+        'explorer_wall_follow_exit_heading_max_deg'
+    )
+    explorer_wall_follow_stuck_time_sec = LaunchConfiguration(
+        'explorer_wall_follow_stuck_time_sec'
+    )
     explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
     explorer_forward_bias_weight = LaunchConfiguration('explorer_forward_bias_weight')
     explorer_max_yaw_drift_deg = LaunchConfiguration('explorer_max_yaw_drift_deg')
@@ -244,20 +335,20 @@ def generate_launch_description():
         # Body-to-wall clearance when centred: 0.6096 - 0.4572 = 0.152 m (6 in)
         # Min traversable gap: 2 × (footprint + margin) = 2 × 0.5572 = 1.114 m
         #   -> 4 ft corridor = 1.2192 m  ✓  (~8 cm of angular margin each side)
-        # stop_distance = 0.72 m -> robot edge clears wall by 0.72 - 0.4572 = 0.26 m
+        # stop_distance = 0.60 m -> robot edge clears wall by 0.60 - 0.4572 = 0.14 m
         # -----------------------------------------------------------------------
         DeclareLaunchArgument(
             'explorer_stop_distance_m',
-            default_value='0.65',
+            default_value='0.60',
             description=(
                 'LiDAR clearance below which the robot stops and replans. '
-                'Tune this to the robot footprint and maze width; 0.65 m is a '
+                'Tune this to the robot footprint and maze width; 0.60 m is a '
                 'safer starting point for the current hexapod hardware.'
             ),
         ),
         DeclareLaunchArgument(
             'explorer_open_distance_m',
-            default_value='0.80',
+            default_value='0.72',
             description=(
                 'Preferred clearance for scoring open gaps. '
                 'Must exceed stop_distance.'
@@ -311,6 +402,171 @@ def generate_launch_description():
             'explorer_reverse_avoidance_deg',
             default_value='70.0',
             description='Penalty sector that discourages selecting the direction just travelled.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_mode_enabled',
+            default_value='true',
+            description='Enable corner-specific heading selection and target shaping.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_forward_blocked_distance_m',
+            default_value='0.72',
+            description='Front clearance below which the explorer considers explicit corner handling.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_side_open_distance_m',
+            default_value='0.82',
+            description='Side clearance required to treat left or right as the open corner direction.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_clearance_window_deg',
+            default_value='8.0',
+            description='Narrow LiDAR window used when scoring headings through corners.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_min_turn_angle_deg',
+            default_value='35.0',
+            description='Minimum turn angle considered for explicit corner handling.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_max_turn_angle_deg',
+            default_value='105.0',
+            description='Maximum turn angle considered for explicit corner handling.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_preferred_turn_angle_deg',
+            default_value='70.0',
+            description='Preferred corner turn angle used to score corner candidates.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_goal_distance_m',
+            default_value='0.28',
+            description='Short rolling-path look-ahead used during corner mode.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_outer_wall_bias_m',
+            default_value='0.10',
+            description='Lateral bias that pushes the corner target away from the inside wall.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_corner_commit_time_sec',
+            default_value='1.0',
+            description='How long corner-mode target shaping stays active after a corner heading is chosen.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_enabled',
+            default_value='true',
+            description='Enable explicit obstacle-bypass wall-follow behavior for convex local minima.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_trigger_replans',
+            default_value='2',
+            description='Consecutive low-progress replans before proactively preferring wall follow.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_front_blocked_distance_m',
+            default_value='0.78',
+            description='Front clearance below which wall-follow is considered a valid local-minimum escape.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_wall_detect_distance_m',
+            default_value='0.95',
+            description='Maximum distance at which a side obstacle boundary is considered followable.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_target_standoff_m',
+            default_value='0.54',
+            description='Desired wall clearance maintained during obstacle bypass.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_search_min_angle_deg',
+            default_value='25.0',
+            description='Minimum side-sector angle searched for a wall-follow boundary sample.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_search_max_angle_deg',
+            default_value='155.0',
+            description='Maximum side-sector angle searched for a wall-follow boundary sample.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_wall_window_deg',
+            default_value='8.0',
+            description='LiDAR window used when estimating the followed wall boundary.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_tangent_window_deg',
+            default_value='10.0',
+            description='LiDAR window used when checking tangent and follow headings.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_goal_distance_m',
+            default_value='0.34',
+            description='Rolling-path goal distance used while wall-follow is active.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_midpoint_distance_m',
+            default_value='0.18',
+            description='Intermediate waypoint distance used to shape wall-follow paths.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_goal_backoff_m',
+            default_value='0.08',
+            description='Distance kept behind the detected obstacle along the wall-follow heading.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_standoff_gain',
+            default_value='1.15',
+            description='Gain that pushes the wall-follow target away from or toward the boundary.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_forward_bias',
+            default_value='0.30',
+            description='Forward blend added to tangent motion so wall-follow keeps making progress.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_min_forward_component',
+            default_value='0.25',
+            description='Minimum forward component enforced on wall-follow motion vectors.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_max_correction_ratio',
+            default_value='0.85',
+            description='Maximum normalized standoff correction applied during wall-follow.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_min_tangent_clearance_m',
+            default_value='0.66',
+            description='Minimum tangent clearance required before a wall boundary is considered followable.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_max_follow_angle_deg',
+            default_value='80.0',
+            description='Maximum body-frame angle allowed for wall-follow translation.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_commit_time_sec',
+            default_value='1.5',
+            description='Minimum time to stay in wall-follow before considering an exit.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_cooldown_time_sec',
+            default_value='1.0',
+            description='Cooldown after leaving wall-follow to avoid immediate re-entry chatter.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_exit_forward_clearance_m',
+            default_value='1.00',
+            description='Front clearance required before leaving wall-follow for normal gap selection.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_exit_heading_max_deg',
+            default_value='22.0',
+            description='Maximum forward-heading error allowed when exiting wall-follow.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_follow_stuck_time_sec',
+            default_value='2.5',
+            description='Time allowed for wall-follow to make progress before it is treated as stuck.',
         ),
         DeclareLaunchArgument(
             'explorer_max_replan_attempts',
@@ -393,7 +649,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'safety_side_stop_distance_m',
-            default_value='0.38',
+            default_value='0.32',
             description=(
                 'Minimum allowed LiDAR clearance at the robot flanks before side-wall '
                 'safety blocks translation.'
@@ -401,7 +657,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'safety_side_slowdown_distance_m',
-            default_value='0.52',
+            default_value='0.46',
             description=(
                 'Side-wall clearance at which the lower-layer safety filter stops '
                 'slowing or nudging away from nearby walls.'
@@ -502,6 +758,39 @@ def generate_launch_description():
                 'clearance_window_deg': explorer_clearance_window_deg,
                 'min_gap_width_deg': explorer_min_gap_width_deg,
                 'reverse_avoidance_deg': explorer_reverse_avoidance_deg,
+                'corner_mode_enabled': explorer_corner_mode_enabled,
+                'corner_forward_blocked_distance_m': explorer_corner_forward_blocked_distance_m,
+                'corner_side_open_distance_m': explorer_corner_side_open_distance_m,
+                'corner_clearance_window_deg': explorer_corner_clearance_window_deg,
+                'corner_min_turn_angle_deg': explorer_corner_min_turn_angle_deg,
+                'corner_max_turn_angle_deg': explorer_corner_max_turn_angle_deg,
+                'corner_preferred_turn_angle_deg': explorer_corner_preferred_turn_angle_deg,
+                'corner_goal_distance_m': explorer_corner_goal_distance_m,
+                'corner_outer_wall_bias_m': explorer_corner_outer_wall_bias_m,
+                'corner_commit_time_sec': explorer_corner_commit_time_sec,
+                'wall_follow_enabled': explorer_wall_follow_enabled,
+                'wall_follow_trigger_replans': explorer_wall_follow_trigger_replans,
+                'wall_follow_front_blocked_distance_m': explorer_wall_follow_front_blocked_distance_m,
+                'wall_follow_wall_detect_distance_m': explorer_wall_follow_wall_detect_distance_m,
+                'wall_follow_target_standoff_m': explorer_wall_follow_target_standoff_m,
+                'wall_follow_search_min_angle_deg': explorer_wall_follow_search_min_angle_deg,
+                'wall_follow_search_max_angle_deg': explorer_wall_follow_search_max_angle_deg,
+                'wall_follow_wall_window_deg': explorer_wall_follow_wall_window_deg,
+                'wall_follow_tangent_window_deg': explorer_wall_follow_tangent_window_deg,
+                'wall_follow_goal_distance_m': explorer_wall_follow_goal_distance_m,
+                'wall_follow_midpoint_distance_m': explorer_wall_follow_midpoint_distance_m,
+                'wall_follow_goal_backoff_m': explorer_wall_follow_goal_backoff_m,
+                'wall_follow_standoff_gain': explorer_wall_follow_standoff_gain,
+                'wall_follow_forward_bias': explorer_wall_follow_forward_bias,
+                'wall_follow_min_forward_component': explorer_wall_follow_min_forward_component,
+                'wall_follow_max_correction_ratio': explorer_wall_follow_max_correction_ratio,
+                'wall_follow_min_tangent_clearance_m': explorer_wall_follow_min_tangent_clearance_m,
+                'wall_follow_max_follow_angle_deg': explorer_wall_follow_max_follow_angle_deg,
+                'wall_follow_commit_time_sec': explorer_wall_follow_commit_time_sec,
+                'wall_follow_cooldown_time_sec': explorer_wall_follow_cooldown_time_sec,
+                'wall_follow_exit_forward_clearance_m': explorer_wall_follow_exit_forward_clearance_m,
+                'wall_follow_exit_heading_max_deg': explorer_wall_follow_exit_heading_max_deg,
+                'wall_follow_stuck_time_sec': explorer_wall_follow_stuck_time_sec,
                 'max_replan_attempts': explorer_max_replan_attempts,
                 'forward_bias_weight': explorer_forward_bias_weight,
                 'max_yaw_drift_deg': explorer_max_yaw_drift_deg,

@@ -7,7 +7,7 @@ import time
 from typing import Any, Dict
 
 from .graph_types import (
-    EdgeState, GraphState, MazeEdge, MazeNode, NodeType, VisitState,
+    EdgeState, GraphState, MazeCell, MazeEdge, MazeNode, NodeType, VisitState,
 )
 
 
@@ -45,6 +45,22 @@ def _edge_to_dict(edge: MazeEdge) -> Dict[str, Any]:
     }
 
 
+def _cell_to_dict(cell: MazeCell) -> Dict[str, Any]:
+    return {
+        "grid_x": cell.grid_x,
+        "grid_y": cell.grid_y,
+        "center_x_m": cell.center_x_m,
+        "center_y_m": cell.center_y_m,
+        "confidence": cell.confidence,
+        "observation_count": cell.observation_count,
+        "visit_count": cell.visit_count,
+        "last_seen_time": cell.last_seen_time,
+        "wall_confidence_by_side": list(cell.wall_confidence_by_side),
+        "open_confidence_by_side": list(cell.open_confidence_by_side),
+        "associated_node_ids": list(cell.associated_node_ids),
+    }
+
+
 def graph_to_dict(graph: GraphState) -> Dict[str, Any]:
     """Serialise GraphState to a plain-Python dict."""
     return {
@@ -52,8 +68,12 @@ def graph_to_dict(graph: GraphState) -> Dict[str, Any]:
         "timestamp": graph.timestamp,
         "active_target_node_id": graph.active_target_node_id,
         "frontier_edges": list(graph.frontier_edges),
+        "cell_size_m": graph.cell_size_m,
+        "cell_origin_x_m": graph.cell_origin_x_m,
+        "cell_origin_y_m": graph.cell_origin_y_m,
         "nodes": {str(nid): _node_to_dict(n) for nid, n in graph.nodes.items()},
         "edges": {str(eid): _edge_to_dict(e) for eid, e in graph.edges.items()},
+        "cells": {key: _cell_to_dict(cell) for key, cell in graph.cells.items()},
     }
 
 
@@ -91,15 +111,36 @@ def _edge_from_dict(d: Dict[str, Any]) -> MazeEdge:
     )
 
 
+def _cell_from_dict(d: Dict[str, Any]) -> MazeCell:
+    return MazeCell(
+        grid_x=int(d["grid_x"]),
+        grid_y=int(d["grid_y"]),
+        center_x_m=float(d["center_x_m"]),
+        center_y_m=float(d["center_y_m"]),
+        confidence=float(d.get("confidence", 0.0)),
+        observation_count=int(d.get("observation_count", 0)),
+        visit_count=int(d.get("visit_count", 0)),
+        last_seen_time=float(d.get("last_seen_time", time.time())),
+        wall_confidence_by_side=list(d.get("wall_confidence_by_side", [0.0, 0.0, 0.0, 0.0])),
+        open_confidence_by_side=list(d.get("open_confidence_by_side", [0.0, 0.0, 0.0, 0.0])),
+        associated_node_ids=list(d.get("associated_node_ids", [])),
+    )
+
+
 def dict_to_graph(data: Dict[str, Any]) -> GraphState:
     """Reconstruct a GraphState from a plain-Python dict."""
     nodes = {int(k): _node_from_dict(v) for k, v in data.get("nodes", {}).items()}
     edges = {int(k): _edge_from_dict(v) for k, v in data.get("edges", {}).items()}
+    cells = {str(k): _cell_from_dict(v) for k, v in data.get("cells", {}).items()}
     return GraphState(
         nodes=nodes,
         edges=edges,
+        cells=cells,
         frontier_edges=list(data.get("frontier_edges", [])),
         active_target_node_id=data.get("active_target_node_id"),
+        cell_size_m=float(data.get("cell_size_m", 0.0)),
+        cell_origin_x_m=float(data.get("cell_origin_x_m", 0.0)),
+        cell_origin_y_m=float(data.get("cell_origin_y_m", 0.0)),
         version=int(data.get("version", 0)),
         timestamp=float(data.get("timestamp", time.time())),
     )

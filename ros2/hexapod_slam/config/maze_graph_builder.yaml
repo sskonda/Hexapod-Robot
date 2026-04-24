@@ -16,5 +16,25 @@ maze_graph_builder:
     probe_distance_m: 0.50
     candidate_grid_spacing_m: 0.20
     min_corridor_width_m: 0.20
-    graph_save_path: "/tmp/maze_graph.json"
+    graph_save_path: "~/.ros/maze_graph.json"
     graph_autosave_period_sec: 30.0
+    cell_memory_enabled: true
+    cell_size_m: 1.2192
+    cell_origin_x_m: 0.0
+    cell_origin_y_m: 0.0
+    cell_center_probe_radius_m: 0.18
+    cell_center_probe_step_m: 0.05
+    cell_min_center_free_fraction: 0.55
+    cell_min_center_known_fraction: 0.35
+    cell_side_sample_spacing_m: 0.05
+    cell_side_band_half_width_m: 0.06
+    cell_side_tangential_margin_m: 0.12
+    cell_min_side_known_fraction: 0.35
+    cell_wall_presence_threshold: 0.55
+    cell_open_presence_threshold: 0.55
+    cell_observation_gain: 0.20
+    cell_wall_gain: 0.18
+    cell_open_gain: 0.12
+    cell_side_decay: 0.03
+    cell_node_association_radius_m: 0.35
+    cell_visit_radius_m: 0.30
