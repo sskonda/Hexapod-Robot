@@ -1,0 +1,359 @@
+Magnetometer Rotation Data
+The following is magnetometer data with the lidar on. I rotated the bot 180 degrees and scanned the magnetometer value to see if the field is being biased. 
+
+Commit: f3e0ce15701e1b36466e5c6ec2e2680070093c4c
+
+snail@snail:~$ ros2 topic list
+/body_pose
+/body_shift
+/cmd_vel
+/imu/data_raw
+/imu/mag
+/imu/yaw_diagnostics
+/locomotion/heading_diagnostics
+/odom
+/parameter_events
+/rosout
+/servo_targets
+/tf
+/tf_static
+snail@snail:~$ ros2 topic echo /imu/yaw_diagnostics --once
+header:
+  stamp:
+    sec: 1777055923
+    nanosec: 57787726
+  frame_id: ''
+status:
+- level: "\x01"
+  name: hexapod_locomotion/bno055_yaw
+  message: gyro_only:low_calibration
+  hardware_id: /dev/ttyAMA5
+  values:
+  - key: yaw_source
+    value: gyro_only
+  - key: yaw_reason
+    value: low_calibration
+  - key: yaw_absolute
+    value: 'false'
+  - key: yaw_trusted
+    value: 'false'
+  - key: orientation_published
+    value: 'true'
+  - key: startup_ready
+    value: 'true'
+  - key: yaw_covariance_rad2
+    value: '25.000000'
+  - key: gyro_bias_rad_s
+    value: '0.000000'
+  - key: mag_norm_uT
+    value: '130.611'
+  - key: mag_reference_uT
+    value: nan
+  - key: mag_norm_error_ratio
+    value: '0.000000'
+  - key: mag_innovation_deg
+    value: '0.000'
+  - key: accel_heading_error_m_s2
+    value: '0.3241'
+  - key: calib_sys
+    value: '0'
+  - key: calib_gyro
+    value: '0'
+  - key: calib_accel
+    value: '0'
+  - key: calib_mag
+    value: '0'
+---
+snail@snail:~$ ros2 topic echo /imu/mag --once
+header:
+  stamp:
+    sec: 1777055932
+    nanosec: 114753386
+  frame_id: imu_link
+magnetic_field:
+  x: 7.43125e-05
+  y: 0.00010525
+  z: -2.36875e-05
+magnetic_field_covariance:
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+---
+snail@snail:~$ ros2 topic echo /imu/yaw_diagnostics --once
+header:
+  stamp:
+    sec: 1777055943
+    nanosec: 637723638
+  frame_id: ''
+status:
+- level: "\x01"
+  name: hexapod_locomotion/bno055_yaw
+  message: gyro_only:low_calibration
+  hardware_id: /dev/ttyAMA5
+  values:
+  - key: yaw_source
+    value: gyro_only
+  - key: yaw_reason
+    value: low_calibration
+  - key: yaw_absolute
+    value: 'false'
+  - key: yaw_trusted
+    value: 'false'
+  - key: orientation_published
+    value: 'true'
+  - key: startup_ready
+    value: 'true'
+  - key: yaw_covariance_rad2
+    value: '25.000000'
+  - key: gyro_bias_rad_s
+    value: '0.000000'
+  - key: mag_norm_uT
+    value: '139.066'
+  - key: mag_reference_uT
+    value: nan
+  - key: mag_norm_error_ratio
+    value: '0.000000'
+  - key: mag_innovation_deg
+    value: '0.000'
+  - key: accel_heading_error_m_s2
+    value: '0.3669'
+  - key: calib_sys
+    value: '0'
+  - key: calib_gyro
+    value: '0'
+  - key: calib_accel
+    value: '0'
+  - key: calib_mag
+    value: '0'
+---
+snail@snail:~$ ros2 topic echo /imu/mag --once
+header:
+  stamp:
+    sec: 1777055948
+    nanosec: 414772479
+  frame_id: imu_link
+magnetic_field:
+  x: 6.99375e-05
+  y: 0.00012049999999999999
+  z: -2.21875e-05
+magnetic_field_covariance:
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+---
+snail@snail:~$ ros2 topic echo /imu/yaw_diagnostics --once
+header:
+  stamp:
+    sec: 1777055961
+    nanosec: 977772489
+  frame_id: ''
+status:
+- level: "\x01"
+  name: hexapod_locomotion/bno055_yaw
+  message: gyro_only:low_calibration
+  hardware_id: /dev/ttyAMA5
+  values:
+  - key: yaw_source
+    value: gyro_only
+  - key: yaw_reason
+    value: low_calibration
+  - key: yaw_absolute
+    value: 'false'
+  - key: yaw_trusted
+    value: 'false'
+  - key: orientation_published
+    value: 'true'
+  - key: startup_ready
+    value: 'true'
+  - key: yaw_covariance_rad2
+    value: '25.000000'
+  - key: gyro_bias_rad_s
+    value: '0.000000'
+  - key: mag_norm_uT
+    value: '137.245'
+  - key: mag_reference_uT
+    value: nan
+  - key: mag_norm_error_ratio
+    value: '0.000000'
+  - key: mag_innovation_deg
+    value: '0.000'
+  - key: accel_heading_error_m_s2
+    value: '0.3027'
+  - key: calib_sys
+    value: '0'
+  - key: calib_gyro
+    value: '0'
+  - key: calib_accel
+    value: '0'
+  - key: calib_mag
+    value: '0'
+---
+snail@snail:~$ ros2 topic echo /imu/mag --once
+header:
+  stamp:
+    sec: 1777055967
+    nanosec: 355132905
+  frame_id: imu_link
+magnetic_field:
+  x: 6.3375e-05
+  y: 0.000117625
+  z: -2.25625e-05
+magnetic_field_covariance:
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+---
+snail@snail:~$ ros2 topic echo /imu/yaw_diagnostics --once
+header:
+  stamp:
+    sec: 1777055976
+    nanosec: 857665525
+  frame_id: ''
+status:
+- level: "\x01"
+  name: hexapod_locomotion/bno055_yaw
+  message: gyro_only:low_calibration
+  hardware_id: /dev/ttyAMA5
+  values:
+  - key: yaw_source
+    value: gyro_only
+  - key: yaw_reason
+    value: low_calibration
+  - key: yaw_absolute
+    value: 'false'
+  - key: yaw_trusted
+    value: 'false'
+  - key: orientation_published
+    value: 'true'
+  - key: startup_ready
+    value: 'true'
+  - key: yaw_covariance_rad2
+    value: '25.000000'
+  - key: gyro_bias_rad_s
+    value: '0.000000'
+  - key: mag_norm_uT
+    value: '130.656'
+  - key: mag_reference_uT
+    value: nan
+  - key: mag_norm_error_ratio
+    value: '0.000000'
+  - key: mag_innovation_deg
+    value: '0.000'
+  - key: accel_heading_error_m_s2
+    value: '0.3099'
+  - key: calib_sys
+    value: '0'
+  - key: calib_gyro
+    value: '0'
+  - key: calib_accel
+    value: '0'
+  - key: calib_mag
+    value: '0'
+---
+snail@snail:~$ ros2 topic echo /imu/mag --once
+header:
+  stamp:
+    sec: 1777055981
+    nanosec: 494804026
+  frame_id: imu_link
+magnetic_field:
+  x: 5.4999999999999995e-05
+  y: 0.0001179375
+  z: -2.3312499999999997e-05
+magnetic_field_covariance:
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+---
+snail@snail:~$ ros2 topic echo /imu/yaw_diagnostics --once
+header:
+  stamp:
+    sec: 1777055991
+    nanosec: 657740201
+  frame_id: ''
+status:
+- level: "\x01"
+  name: hexapod_locomotion/bno055_yaw
+  message: gyro_only:low_calibration
+  hardware_id: /dev/ttyAMA5
+  values:
+  - key: yaw_source
+    value: gyro_only
+  - key: yaw_reason
+    value: low_calibration
+  - key: yaw_absolute
+    value: 'false'
+  - key: yaw_trusted
+    value: 'false'
+  - key: orientation_published
+    value: 'true'
+  - key: startup_ready
+    value: 'true'
+  - key: yaw_covariance_rad2
+    value: '25.000000'
+  - key: gyro_bias_rad_s
+    value: '0.000000'
+  - key: mag_norm_uT
+    value: '124.562'
+  - key: mag_reference_uT
+    value: nan
+  - key: mag_norm_error_ratio
+    value: '0.000000'
+  - key: mag_innovation_deg
+    value: '0.000'
+  - key: accel_heading_error_m_s2
+    value: '0.3052'
+  - key: calib_sys
+    value: '0'
+  - key: calib_gyro
+    value: '0'
+  - key: calib_accel
+    value: '0'
+  - key: calib_mag
+    value: '0'
+---
+snail@snail:~$ ros2 topic echo /imu/mag --once
+header:
+  stamp:
+    sec: 1777055996
+    nanosec: 454889305
+  frame_id: imu_link
+magnetic_field:
+  x: 4.84375e-05
+  y: 0.00010518749999999999
+  z: -2.48125e-05
+magnetic_field_covariance:
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+- 0.0
+- 0.0
+- 0.0
+- 1.0e-06
+---
