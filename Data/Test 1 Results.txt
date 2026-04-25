@@ -1,0 +1,4 @@
+From Lidar On_Off and Rotation Data:
+Field magnitude 124-140 uT is very high. Maybe senior design room or robot is magnetically noisy
+During the “180 degree” rotation, the horizontal magnetic heading from raw x/y only changes about 10.5 deg:
+roughly 54.8 deg -> 65.3 deg. The magnetometer vector should rotate much more than that.

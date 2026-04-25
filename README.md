@@ -21,7 +21,7 @@ This README reflects the current state of the `bno055` branch, not an aspiration
 
 - `hexapod_core.launch.py` starts the hardware-facing locomotion stack: `bno055_publisher` (under the node name `imu_publisher`), `locomotion`, and `servo_driver`.
 - `path_plan.launch.py` includes the core stack and adds a `path_plan` node that publishes a simple linear or square `cmd_vel` test path.
-- `bno055_publisher` reads the BNO055 over UART, publishes `sensor_msgs/Imu` on `/imu/data_raw`, publishes `sensor_msgs/MagneticField` on `/imu/mag`, and computes a tilt-compensated orientation estimate with gyro-smoothed yaw correction from the magnetometer.
+- `bno055_publisher` reads the BNO055 over UART, publishes `sensor_msgs/Imu` on `/imu/data_raw`, publishes `sensor_msgs/MagneticField` on `/imu/mag`, and uses the BNO055 fused NDOF quaternion for orientation by default.
 - `slam.launch.py` starts `slam_toolbox` and, by default, also starts:
   - `gap_following_explorer`, which looks for open lidar gaps and publishes a short rolling `nav_msgs/Path`
   - `crab_path_follower`, which converts that path into `cmd_vel`
@@ -72,8 +72,8 @@ Notes:
 - `servo_dry_run:=true` is the safest first test and keeps the robot from moving.
 - The launch file defaults to `servo_dry_run:=false`, so do not omit that flag unless you want hardware output.
 - `apply_offsets:=true` by default, so saved calibration offsets are applied unless you disable them.
-- The default IMU bring-up uses `imu_uart_port:=/dev/ttyAMA5`, `imu_mode:=AMG_MODE`, `imu_publish_rate_hz:=50.0`, `imu_use_external_crystal:=false`, and `yaw_correction_gain:=0.6`.
-- The default BNO055 UART recovery settings are `imu_read_retry_count:=3`, `imu_retry_backoff_sec:=0.01`, and `imu_yaw_filter_time_constant_sec:=0.5`.
+- The default IMU bring-up uses `imu_uart_port:=/dev/ttyAMA5`, `imu_mode:=NDOF_MODE`, `imu_publish_rate_hz:=50.0`, `imu_use_external_crystal:=false`, and `yaw_correction_gain:=0.6`.
+- The default BNO055 UART recovery settings are `imu_read_retry_count:=3` and `imu_retry_backoff_sec:=0.01`; the local yaw filter settings are now only fallback knobs for non-fusion BNO055 modes.
 - The core stack now publishes both `/imu/data_raw` and `/imu/mag`.
 
 ### 2. Servo Calibration
@@ -167,7 +167,7 @@ Current interfaces used by the main ROS 2 nodes:
 - `body_pose`: optional body roll/pitch/yaw offsets for `locomotion`
 - `body_shift`: optional body x/y/z shifts for `locomotion`
 - `servo_targets`: joint targets produced by `locomotion` and consumed by `servo_driver`
-- `imu/data_raw`: IMU output from the BNO055 publisher, including accel, gyro, and orientation with roll/pitch from tilt compensation plus gyro-smoothed magnetometer yaw
+- `imu/data_raw`: IMU output from the BNO055 publisher, including accel, gyro, and the BNO055 fused orientation quaternion
 - `imu/mag`: raw magnetometer output from the BNO055 publisher
 - `odom`: locomotion odometry by default, or filtered odometry if you enable `robot_localization` and wire topics accordingly
 - `scan`: lidar input for `slam_toolbox` and `gap_following_explorer`
@@ -178,7 +178,7 @@ Current interfaces used by the main ROS 2 nodes:
 ## Current Limitations
 
 - X/Y odometry is still generated from commanded gait motion, so map quality can still drift even though yaw hold is better.
-- Magnetometer-based yaw correction depends on real calibration and on the BNO055 axes matching the robot's expected frame conventions.
+- Trusted yaw depends on full BNO055 calibration (`sys=3`, `gyro=3`, `accel=3`, `mag=3`) and on the BNO055 axes matching the robot's expected frame conventions.
 - `slam.launch.py` is still tightly coupled to crab-style exploration. It holds heading while translating, but it does not rotate the body to face the path direction.
 - `slam.launch.py` still does not launch the locomotion stack, lidar driver, or servo driver by itself.
 - Hardware-specific nodes depend on Linux UART/I2C/GPIO access and will not behave like a full robot bring-up on a desktop machine without those devices.

@@ -4,13 +4,12 @@
 
 This node publishes:
   - ``sensor_msgs/msg/Imu`` on ``/imu/data_raw`` with accel, gyro, and a
-    tilt-compensated orientation estimate whose yaw is fused from gyro +
-    magnetometer
+    BNO055 fused orientation estimate when running in a fusion mode
   - ``sensor_msgs/msg/MagneticField`` on ``/imu/mag`` with the raw
     magnetometer measurement
 
 The goal is to preserve the MPU6050-era ROS interface while upgrading heading
-hold to use the BNO055 magnetometer explicitly for yaw drift correction.
+hold to use the BNO055 absolute fused heading.
 """
 
 import math
@@ -30,6 +29,7 @@ from .yaw_control import (
     StartupStillnessGate,
     normalize_angle,
     quaternion_from_euler,
+    quaternion_normalize,
     resolve_parameter_value,
     vector_norm,
 )
@@ -46,6 +46,32 @@ def vector_is_valid(values, expected_length):
         and len(values) == expected_length
         and all(value is not None for value in values)
     )
+
+
+def quaternion_is_valid(quaternion):
+    return (
+        vector_is_valid(quaternion, 4)
+        and all(math.isfinite(float(value)) for value in quaternion)
+        and vector_norm(quaternion) > 1e-6
+    )
+
+
+def calibration_is_fully_calibrated(calibration):
+    return (
+        calibration is not None
+        and len(calibration) == 4
+        and all(int(value) >= 3 for value in calibration)
+    )
+
+
+def mode_uses_fused_orientation(mode_name):
+    return mode_name in {
+        'IMUPLUS_MODE',
+        'COMPASS_MODE',
+        'M4G_MODE',
+        'NDOF_FMC_OFF_MODE',
+        'NDOF_MODE',
+    }
 
 
 def set_diagonal_covariance(covariance, diagonal_value):
@@ -108,6 +134,7 @@ class BNO055UART:
     ACCEL_DATA_X_LSB_REGISTER = 0x08
     MAG_DATA_X_LSB_REGISTER = 0x0E
     GYRO_DATA_X_LSB_REGISTER = 0x14
+    QUATERNION_DATA_W_LSB_REGISTER = 0x20
     RAW_IMU_BLOCK_LENGTH = 18
     CALIB_STAT_REGISTER = 0x35
     UNIT_SEL_REGISTER = 0x3B
@@ -133,6 +160,11 @@ class BNO055UART:
         'M4G_MODE': 0x0A,
         'NDOF_FMC_OFF_MODE': 0x0B,
         'NDOF_MODE': 0x0C,
+    }
+    MODE_ALIASES = {
+        'NDOF': 'NDOF_MODE',
+        'DNOF': 'NDOF_MODE',
+        'DNOF_MODE': 'NDOF_MODE',
     }
 
     RESPONSE_CODES = {
@@ -190,6 +222,7 @@ class BNO055UART:
             self.serial.close()
 
     def configure(self, operation_mode, use_external_crystal):
+        operation_mode = self.normalize_operation_mode(operation_mode)
         mode_value = self.MODE_VALUES.get(operation_mode)
         if mode_value is None:
             supported = ', '.join(sorted(self.MODE_VALUES))
@@ -213,6 +246,11 @@ class BNO055UART:
 
         self.write_u8(self.OPR_MODE_REGISTER, mode_value)
         time.sleep(0.03)
+
+    @classmethod
+    def normalize_operation_mode(cls, operation_mode):
+        mode_name = str(operation_mode).strip().upper()
+        return cls.MODE_ALIASES.get(mode_name, mode_name)
 
     def read_u8(self, register):
         return self.read_registers(register, 1)[0]
@@ -326,6 +364,20 @@ class BNO055UART:
         raw_values = self._read_vector(self.MAG_DATA_X_LSB_REGISTER)
         return tuple((value / 16.0) * 1e-6 for value in raw_values)
 
+    def read_fused_quaternion(self):
+        """Read the BNO055 fusion quaternion as ROS x/y/z/w values."""
+        raw_w, raw_x, raw_y, raw_z = struct.unpack(
+            '<hhhh',
+            self.read_registers(self.QUATERNION_DATA_W_LSB_REGISTER, 8),
+        )
+        scale = 1.0 / (1 << 14)
+        return (
+            raw_x * scale,
+            raw_y * scale,
+            raw_z * scale,
+            raw_w * scale,
+        )
+
     def read_calibration_status(self):
         value = self.read_u8(self.CALIB_STAT_REGISTER)
         return (
@@ -357,7 +409,7 @@ class BNO055Publisher(Node):
         self.declare_parameter('publish_rate_hz', 50.0)
         self.declare_parameter('uart_port', '/dev/ttyAMA5')
         self.declare_parameter('baud_rate', 115200)
-        self.declare_parameter('mode', 'AMG_MODE')
+        self.declare_parameter('mode', 'NDOF_MODE')
         self.declare_parameter('use_external_crystal', True)
         self.declare_parameter('read_retry_count', 3)
         self.declare_parameter('retry_backoff_sec', 0.01)
@@ -416,7 +468,10 @@ class BNO055Publisher(Node):
         self.publish_rate_hz = max(1.0, float(self.get_parameter('publish_rate_hz').value))
         self.uart_port = str(self.get_parameter('uart_port').value)
         self.baud_rate = int(self.get_parameter('baud_rate').value)
-        self.mode_name = str(self.get_parameter('mode').value).strip()
+        requested_mode_name = str(self.get_parameter('mode').value).strip()
+        self.mode_name = BNO055UART.normalize_operation_mode(requested_mode_name)
+        self.requested_mode_name = requested_mode_name
+        self.use_fused_orientation = mode_uses_fused_orientation(self.mode_name)
         self.use_external_crystal = bool(self.get_parameter('use_external_crystal').value)
         self.read_retry_count = max(0, int(self.get_parameter('read_retry_count').value))
         self.retry_backoff_sec = max(0.0, float(self.get_parameter('retry_backoff_sec').value))
@@ -550,6 +605,19 @@ class BNO055Publisher(Node):
             f'{self.diagnostic_topic} '
             f'from {self.uart_port} @ {self.baud_rate} baud, mode {self.mode_name}'
         )
+        if self.mode_name != self.requested_mode_name.strip().upper():
+            self.get_logger().warn(
+                f'Interpreting BNO055 mode "{self.requested_mode_name}" as "{self.mode_name}".'
+            )
+        if self.use_fused_orientation:
+            self.get_logger().info(
+                'Using the BNO055 fused orientation quaternion for /imu/data_raw orientation.'
+            )
+        else:
+            self.get_logger().warn(
+                f'BNO055 mode {self.mode_name} does not provide fused orientation. '
+                'Falling back to local accel/gyro/magnetometer yaw fusion.'
+            )
         self.get_logger().info(
             'Initial calibration status '
             f'(sys={calibration[0]}, gyro={calibration[1]}, accel={calibration[2]}, mag={calibration[3]})'
@@ -564,7 +632,12 @@ class BNO055Publisher(Node):
                 'IMU startup settle enabled: keep the robot still for '
                 f'{self.startup_still_time_sec:.1f} s before yaw heading hold activates.'
             )
-        if self.min_mag_calibration_for_yaw > 0:
+        if self.use_fused_orientation:
+            self.get_logger().info(
+                'Fused yaw trust requires full BNO055 calibration '
+                '(sys=3, gyro=3, accel=3, mag=3).'
+            )
+        elif self.min_mag_calibration_for_yaw > 0:
             self.get_logger().info(
                 'Magnetometer yaw correction requires mag calibration >= '
                 f'{self.min_mag_calibration_for_yaw}; below that, yaw will be gyro-only.'
@@ -709,6 +782,9 @@ class BNO055Publisher(Node):
     def publish_measurements(self):
         try:
             accel, magnetic_field, gyro = self.sensor.read_imu_measurements()
+            fused_quaternion = None
+            if self.use_fused_orientation:
+                fused_quaternion = self.sensor.read_fused_quaternion()
         except Exception as exc:
             self._warn_throttled(f'BNO055 read failed: {exc}')
             return
@@ -727,7 +803,6 @@ class BNO055Publisher(Node):
         accumulated_still_time_sec = self.startup_still_gate.accumulated_still_time_sec
         startup_ready = self.startup_still_gate.update(dt, accel, gyro)
         calibration = self._read_calibration_status_cached(measurement_time)
-        roll_pitch = roll_pitch_from_accel(accel)
         measured_yaw_rad = None
         if vector_is_valid(magnetic_field, 3):
             self.last_mag_norm_t = vector_norm(magnetic_field)
@@ -758,19 +833,14 @@ class BNO055Publisher(Node):
             self.linear_acceleration_covariance,
         )
 
-        filtered_yaw_rad = self.yaw_filter.predict(
-            gyro[2],
-            dt,
-            fallback_yaw_rad=measured_yaw_rad,
-        )
-        yaw_source = 'gyro_only'
-        yaw_reason = 'mag_unavailable'
+        fully_calibrated = calibration_is_fully_calibrated(calibration)
+        yaw_source = 'fused_ndof' if self.mode_name == 'NDOF_MODE' else 'fused_bno055'
+        yaw_reason = 'fully_calibrated' if fully_calibrated else 'calibration_incomplete'
         yaw_is_absolute = False
         yaw_trusted = False
         yaw_covariance = self.relative_yaw_covariance
 
         if not startup_ready:
-            yaw_source = 'gyro_only'
             yaw_reason = 'startup_settle'
             if accumulated_still_time_sec > 0.0 and not self.startup_still_gate.is_still:
                 self._warn_throttled(
@@ -778,62 +848,114 @@ class BNO055Publisher(Node):
                     'Hold the robot still to restart the settle timer.'
                 )
             self._log_startup_status(measurement_time, accel, gyro)
-        elif measured_yaw_rad is None:
-            yaw_reason = 'mag_unavailable'
-        else:
-            if not self.startup_settle_logged:
-                self.get_logger().info(
-                    'IMU startup settle complete; yaw heading hold may activate once yaw is trusted. '
-                    f'Calibration status (sys={calibration[0]}, gyro={calibration[1]}, '
-                    f'accel={calibration[2]}, mag={calibration[3]}).'
-                )
-                self.startup_settle_logged = True
+        elif fully_calibrated:
+            yaw_is_absolute = True
+            yaw_trusted = True
+            yaw_covariance = self.absolute_yaw_covariance
 
-            mag_accepted, yaw_reason, mag_innovation_rad = self._mag_yaw_is_acceptable(
-                accel,
-                magnetic_field,
-                calibration,
-                measured_yaw_rad,
+        if startup_ready and not self.startup_settle_logged:
+            self.get_logger().info(
+                'IMU startup settle complete; yaw heading hold may activate once yaw is trusted. '
+                f'Calibration status (sys={calibration[0]}, gyro={calibration[1]}, '
+                f'accel={calibration[2]}, mag={calibration[3]}).'
+            )
+            self.startup_settle_logged = True
+
+        self.last_orientation_published = False
+        if self.use_fused_orientation:
+            if not quaternion_is_valid(fused_quaternion):
+                imu_msg.orientation_covariance[0] = -1.0
+                yaw_source = 'unavailable'
+                yaw_reason = 'fused_quaternion_invalid'
+                yaw_is_absolute = False
+                yaw_trusted = False
+                yaw_covariance = self.relative_yaw_covariance
+                self._warn_throttled('BNO055 fused quaternion is unavailable or invalid.')
+            else:
+                orientation_quaternion = quaternion_normalize(fused_quaternion)
+                imu_msg.orientation.x = float(orientation_quaternion[0])
+                imu_msg.orientation.y = float(orientation_quaternion[1])
+                imu_msg.orientation.z = float(orientation_quaternion[2])
+                imu_msg.orientation.w = float(orientation_quaternion[3])
+                self._set_orientation_covariance(
+                    imu_msg.orientation_covariance,
+                    self.orientation_covariance,
+                    yaw_covariance,
+                )
+                self.last_orientation_published = True
+        else:
+            filtered_yaw_rad = self.yaw_filter.predict(
                 gyro[2],
                 dt,
+                fallback_yaw_rad=measured_yaw_rad,
             )
-            self.last_mag_innovation_rad = mag_innovation_rad
-            if mag_accepted:
-                filtered_yaw_rad = self.yaw_filter.update(
+            yaw_source = 'gyro_only'
+            yaw_reason = 'startup_settle' if not startup_ready else 'mag_unavailable'
+            yaw_is_absolute = False
+            yaw_trusted = False
+            yaw_covariance = self.relative_yaw_covariance
+
+            if not startup_ready:
+                pass
+            elif measured_yaw_rad is None:
+                yaw_reason = 'mag_unavailable'
+            else:
+                mag_accepted, yaw_reason, mag_innovation_rad = self._mag_yaw_is_acceptable(
+                    accel,
+                    magnetic_field,
+                    calibration,
                     measured_yaw_rad,
                     gyro[2],
                     dt,
                 )
-                self._update_reference_mag_norm(self.last_mag_norm_t)
-                yaw_source = 'absolute_mag'
-                yaw_reason = 'accepted'
-                yaw_is_absolute = True
-                yaw_trusted = True
-                yaw_covariance = self.absolute_yaw_covariance
+                self.last_mag_innovation_rad = mag_innovation_rad
+                if mag_accepted:
+                    filtered_yaw_rad = self.yaw_filter.update(
+                        measured_yaw_rad,
+                        gyro[2],
+                        dt,
+                    )
+                    self._update_reference_mag_norm(self.last_mag_norm_t)
+                    yaw_source = 'absolute_mag'
+                    yaw_reason = 'accepted'
+                    yaw_is_absolute = True
+                    yaw_trusted = True
+                    yaw_covariance = self.absolute_yaw_covariance
 
-        self.last_orientation_published = False
-        if roll_pitch is None:
-            imu_msg.orientation_covariance[0] = -1.0
-            yaw_source = 'unavailable'
-            yaw_reason = 'accel_invalid'
-            self._warn_throttled('BNO055 acceleration data is invalid for roll/pitch estimation.')
-        else:
-            roll_rad, pitch_rad = roll_pitch
-            orientation_quaternion = quaternion_from_euler(
-                roll_rad,
-                pitch_rad,
-                filtered_yaw_rad,
-            )
-            imu_msg.orientation.x = float(orientation_quaternion[0])
-            imu_msg.orientation.y = float(orientation_quaternion[1])
-            imu_msg.orientation.z = float(orientation_quaternion[2])
-            imu_msg.orientation.w = float(orientation_quaternion[3])
-            self._set_orientation_covariance(
-                imu_msg.orientation_covariance,
-                self.orientation_covariance,
-                yaw_covariance,
-            )
-            self.last_orientation_published = True
+            roll_pitch = roll_pitch_from_accel(accel)
+            if roll_pitch is None:
+                imu_msg.orientation_covariance[0] = -1.0
+                yaw_source = 'unavailable'
+                yaw_reason = 'accel_invalid'
+                self._warn_throttled('BNO055 acceleration data is invalid for roll/pitch estimation.')
+            else:
+                roll_rad, pitch_rad = roll_pitch
+                orientation_quaternion = quaternion_from_euler(
+                    roll_rad,
+                    pitch_rad,
+                    filtered_yaw_rad,
+                )
+                imu_msg.orientation.x = float(orientation_quaternion[0])
+                imu_msg.orientation.y = float(orientation_quaternion[1])
+                imu_msg.orientation.z = float(orientation_quaternion[2])
+                imu_msg.orientation.w = float(orientation_quaternion[3])
+                self._set_orientation_covariance(
+                    imu_msg.orientation_covariance,
+                    self.orientation_covariance,
+                    yaw_covariance,
+                )
+                self.last_orientation_published = True
+
+        if self.use_fused_orientation and not fully_calibrated:
+            yaw_is_absolute = False
+            yaw_trusted = False
+            yaw_covariance = self.relative_yaw_covariance
+            if self.last_orientation_published:
+                self._set_orientation_covariance(
+                    imu_msg.orientation_covariance,
+                    self.orientation_covariance,
+                    yaw_covariance,
+                )
 
         self.imu_publisher.publish(imu_msg)
 
@@ -955,30 +1077,34 @@ class BNO055Publisher(Node):
 
         self.last_diag_publish_monotonic = measurement_time
 
+        fully_calibrated = calibration_is_fully_calibrated(calibration)
+
         diag = DiagnosticArray()
         diag.header.stamp = stamp
 
         status = DiagnosticStatus()
         status.name = 'hexapod_locomotion/bno055_yaw'
         status.hardware_id = self.uart_port
-        if self.last_orientation_published and self.last_yaw_trusted:
+        if self.last_orientation_published and self.last_yaw_trusted and fully_calibrated:
             status.level = DiagnosticStatus.OK
         elif self.last_orientation_published:
             status.level = DiagnosticStatus.WARN
         else:
             status.level = DiagnosticStatus.ERROR if startup_ready else DiagnosticStatus.WARN
         status.message = (
-            'absolute yaw trusted'
-            if self.last_yaw_trusted
+            'absolute yaw trusted and fully calibrated'
+            if self.last_yaw_trusted and fully_calibrated
             else f'{self.last_yaw_source}:{self.last_yaw_reason}'
         )
         status.values = [
+            KeyValue(key='operation_mode', value=self.mode_name),
             KeyValue(key='yaw_source', value=self.last_yaw_source),
             KeyValue(key='yaw_reason', value=self.last_yaw_reason),
             KeyValue(key='yaw_absolute', value=str(self.last_yaw_is_absolute).lower()),
             KeyValue(key='yaw_trusted', value=str(self.last_yaw_trusted).lower()),
             KeyValue(key='orientation_published', value=str(self.last_orientation_published).lower()),
             KeyValue(key='startup_ready', value=str(startup_ready).lower()),
+            KeyValue(key='fully_calibrated', value=str(fully_calibrated).lower()),
             KeyValue(
                 key='yaw_covariance_rad2',
                 value=f'{self.last_yaw_covariance:.6f}',
@@ -1029,12 +1155,32 @@ class BNO055Publisher(Node):
             return
 
         self.last_yaw_mode_key = mode_key
+        if yaw_source in ('fused_ndof', 'fused_bno055'):
+            if yaw_reason == 'fully_calibrated':
+                self.get_logger().info(
+                    'Yaw source -> BNO055 fused orientation '
+                    f'(mode={self.mode_name}, calibration full).'
+                )
+            else:
+                if calibration is None:
+                    calibration = self.last_calibration_status
+                self.get_logger().warn(
+                    'Yaw source -> BNO055 fused orientation is not trusted '
+                    f'({yaw_reason}, calib=sys:{calibration[0]} gyro:{calibration[1]} '
+                    f'accel:{calibration[2]} mag:{calibration[3]}).'
+                )
+            return
+
         if yaw_source == 'absolute_mag':
             self.get_logger().info(
                 'Yaw source -> magnetometer-corrected absolute heading '
                 f'(mag calib={self.last_calibration_status[3]}, '
                 f'innovation={math.degrees(innovation_rad):.1f} deg).'
             )
+            return
+
+        if yaw_source == 'unavailable':
+            self.get_logger().warn(f'Yaw source unavailable ({yaw_reason}).')
             return
 
         if calibration is None:
@@ -1066,6 +1212,7 @@ class BNO055Publisher(Node):
             f'calib=(sys={calibration[0]}, gyro={calibration[1]}, '
             f'accel={calibration[2]}, mag={calibration[3]}).'
         )
+
     def _warn_throttled(self, text):
         if text == self.last_warning_text:
             return

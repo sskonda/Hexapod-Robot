@@ -143,8 +143,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'imu_mode',
-            default_value='AMG_MODE',
-            description='BNO055 operating mode. AMG_MODE keeps accel, gyro, and mag raw for explicit yaw correction.',
+            default_value='NDOF_MODE',
+            description='BNO055 operating mode. NDOF_MODE publishes the BNO055 fused orientation quaternion.',
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',
@@ -167,27 +167,27 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'imu_yaw_filter_time_constant_sec',
             default_value='0.5',
-            description='Complementary-filter time constant for gyro-smoothed magnetometer yaw.',
+            description='Legacy fallback time constant used only when the BNO055 is not in a fusion mode.',
         ),
         DeclareLaunchArgument(
             'imu_min_mag_calibration_for_yaw',
             default_value='3',
-            description='Minimum BNO055 magnetometer calibration level required for magnetic yaw correction.',
+            description='Legacy fallback mag calibration gate used only when the BNO055 is not in a fusion mode.',
         ),
         DeclareLaunchArgument(
             'imu_accel_heading_tolerance_m_s2',
             default_value='1.0',
-            description='Acceleration-magnitude gate for trusting magnetometer yaw updates.',
+            description='Legacy fallback acceleration-magnitude gate used only when the BNO055 is not in a fusion mode.',
         ),
         DeclareLaunchArgument(
             'imu_mag_norm_tolerance_ratio',
             default_value='0.25',
-            description='Relative magnetic-field-magnitude gate for trusting magnetometer yaw updates.',
+            description='Legacy fallback magnetic-field-magnitude gate used only when the BNO055 is not in a fusion mode.',
         ),
         DeclareLaunchArgument(
             'imu_mag_yaw_jump_reject_deg',
             default_value='25.0',
-            description='Reject magnetometer yaw corrections whose innovation exceeds this threshold.',
+            description='Legacy fallback mag-yaw innovation gate used only when the BNO055 is not in a fusion mode.',
         ),
         DeclareLaunchArgument(
             'imu_startup_still_time_sec',

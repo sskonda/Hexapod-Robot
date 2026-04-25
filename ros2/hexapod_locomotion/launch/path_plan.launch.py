@@ -23,6 +23,7 @@ def generate_launch_description():
     yaw_rate_fault_time_sec = LaunchConfiguration('yaw_rate_fault_time_sec')
     heading_valid_timeout_sec = LaunchConfiguration('heading_valid_timeout_sec')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
+    imu_mode = LaunchConfiguration('imu_mode')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
@@ -99,6 +100,11 @@ def generate_launch_description():
             description='Pass through to hexapod_core.launch.py for the BNO055 UART bring-up.',
         ),
         DeclareLaunchArgument(
+            'imu_mode',
+            default_value='NDOF_MODE',
+            description='BNO055 operating mode passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
             'imu_read_retry_count',
             default_value='3',
             description='Pass through to hexapod_core.launch.py for transient BNO055 UART read retries.',
@@ -111,27 +117,27 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'imu_yaw_filter_time_constant_sec',
             default_value='0.5',
-            description='Pass through to hexapod_core.launch.py for the BNO055 yaw filter.',
+            description='Pass through to hexapod_core.launch.py for the legacy non-fusion yaw filter.',
         ),
         DeclareLaunchArgument(
             'imu_min_mag_calibration_for_yaw',
             default_value='3',
-            description='Pass through to hexapod_core.launch.py for magnetic yaw correction gating.',
+            description='Pass through to hexapod_core.launch.py for legacy non-fusion magnetic yaw gating.',
         ),
         DeclareLaunchArgument(
             'imu_accel_heading_tolerance_m_s2',
             default_value='1.0',
-            description='Pass through to hexapod_core.launch.py for acceleration-based mag gating.',
+            description='Pass through to hexapod_core.launch.py for legacy non-fusion acceleration mag gating.',
         ),
         DeclareLaunchArgument(
             'imu_mag_norm_tolerance_ratio',
             default_value='0.25',
-            description='Pass through to hexapod_core.launch.py for mag-field-magnitude gating.',
+            description='Pass through to hexapod_core.launch.py for legacy non-fusion mag-field-magnitude gating.',
         ),
         DeclareLaunchArgument(
             'imu_mag_yaw_jump_reject_deg',
             default_value='25.0',
-            description='Pass through to hexapod_core.launch.py for mag-yaw innovation gating.',
+            description='Pass through to hexapod_core.launch.py for legacy non-fusion mag-yaw innovation gating.',
         ),
         DeclareLaunchArgument(
             'imu_startup_still_time_sec',
@@ -201,6 +207,7 @@ def generate_launch_description():
                 'yaw_rate_fault_threshold_rad_s': yaw_rate_fault_threshold_rad_s,
                 'yaw_rate_fault_time_sec': yaw_rate_fault_time_sec,
                 'heading_valid_timeout_sec': heading_valid_timeout_sec,
+                'imu_mode': imu_mode,
                 'imu_use_external_crystal': imu_use_external_crystal,
                 'imu_read_retry_count': imu_read_retry_count,
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,
