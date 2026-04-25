@@ -178,7 +178,7 @@ Current interfaces used by the main ROS 2 nodes:
 ## Current Limitations
 
 - X/Y odometry is still generated from commanded gait motion, so map quality can still drift even though yaw hold is better.
-- Trusted yaw depends on full BNO055 calibration (`sys=3`, `gyro=3`, `accel=3`, `mag=3`) and on the BNO055 axes matching the robot's expected frame conventions.
+- Trusted yaw depends on healthy BNO055 yaw calibration (`gyro=3`, `mag>=2`, `sys>=2`, `accel>=2`) and on the BNO055 axes matching the robot's expected frame conventions.
 - `slam.launch.py` is still tightly coupled to crab-style exploration. It holds heading while translating, but it does not rotate the body to face the path direction.
 - `slam.launch.py` still does not launch the locomotion stack, lidar driver, or servo driver by itself.
 - Hardware-specific nodes depend on Linux UART/I2C/GPIO access and will not behave like a full robot bring-up on a desktop machine without those devices.

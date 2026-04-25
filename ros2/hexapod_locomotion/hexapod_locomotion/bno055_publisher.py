@@ -64,6 +64,21 @@ def calibration_is_fully_calibrated(calibration):
     )
 
 
+def yaw_calibration_is_healthy(calibration):
+    if calibration is None or len(calibration) != 4:
+        return False
+
+    sys_calib, gyro_calib, accel_calib, mag_calib = (
+        int(value) for value in calibration
+    )
+    return (
+        gyro_calib == 3
+        and mag_calib >= 2
+        and sys_calib >= 2
+        and accel_calib >= 2
+    )
+
+
 def mode_uses_fused_orientation(mode_name):
     return mode_name in {
         'IMUPLUS_MODE',
@@ -634,8 +649,8 @@ class BNO055Publisher(Node):
             )
         if self.use_fused_orientation:
             self.get_logger().info(
-                'Fused yaw trust requires full BNO055 calibration '
-                '(sys=3, gyro=3, accel=3, mag=3).'
+                'Fused yaw trust requires healthy BNO055 yaw calibration '
+                '(gyro=3, mag>=2, sys>=2, accel>=2).'
             )
         elif self.min_mag_calibration_for_yaw > 0:
             self.get_logger().info(
@@ -834,8 +849,9 @@ class BNO055Publisher(Node):
         )
 
         fully_calibrated = calibration_is_fully_calibrated(calibration)
+        yaw_healthy = yaw_calibration_is_healthy(calibration)
         yaw_source = 'fused_ndof' if self.mode_name == 'NDOF_MODE' else 'fused_bno055'
-        yaw_reason = 'fully_calibrated' if fully_calibrated else 'calibration_incomplete'
+        yaw_reason = 'calibration_healthy' if yaw_healthy else 'calibration_unhealthy'
         yaw_is_absolute = False
         yaw_trusted = False
         yaw_covariance = self.relative_yaw_covariance
@@ -848,7 +864,7 @@ class BNO055Publisher(Node):
                     'Hold the robot still to restart the settle timer.'
                 )
             self._log_startup_status(measurement_time, accel, gyro)
-        elif fully_calibrated:
+        elif yaw_healthy:
             yaw_is_absolute = True
             yaw_trusted = True
             yaw_covariance = self.absolute_yaw_covariance
@@ -946,7 +962,7 @@ class BNO055Publisher(Node):
                 )
                 self.last_orientation_published = True
 
-        if self.use_fused_orientation and not fully_calibrated:
+        if self.use_fused_orientation and not yaw_healthy:
             yaw_is_absolute = False
             yaw_trusted = False
             yaw_covariance = self.relative_yaw_covariance
@@ -1078,6 +1094,7 @@ class BNO055Publisher(Node):
         self.last_diag_publish_monotonic = measurement_time
 
         fully_calibrated = calibration_is_fully_calibrated(calibration)
+        yaw_healthy = yaw_calibration_is_healthy(calibration)
 
         diag = DiagnosticArray()
         diag.header.stamp = stamp
@@ -1085,15 +1102,15 @@ class BNO055Publisher(Node):
         status = DiagnosticStatus()
         status.name = 'hexapod_locomotion/bno055_yaw'
         status.hardware_id = self.uart_port
-        if self.last_orientation_published and self.last_yaw_trusted and fully_calibrated:
+        if self.last_orientation_published and self.last_yaw_trusted and yaw_healthy:
             status.level = DiagnosticStatus.OK
         elif self.last_orientation_published:
             status.level = DiagnosticStatus.WARN
         else:
             status.level = DiagnosticStatus.ERROR if startup_ready else DiagnosticStatus.WARN
         status.message = (
-            'absolute yaw trusted and fully calibrated'
-            if self.last_yaw_trusted and fully_calibrated
+            'absolute yaw trusted'
+            if self.last_yaw_trusted and yaw_healthy
             else f'{self.last_yaw_source}:{self.last_yaw_reason}'
         )
         status.values = [
@@ -1104,6 +1121,7 @@ class BNO055Publisher(Node):
             KeyValue(key='yaw_trusted', value=str(self.last_yaw_trusted).lower()),
             KeyValue(key='orientation_published', value=str(self.last_orientation_published).lower()),
             KeyValue(key='startup_ready', value=str(startup_ready).lower()),
+            KeyValue(key='yaw_healthy', value=str(yaw_healthy).lower()),
             KeyValue(key='fully_calibrated', value=str(fully_calibrated).lower()),
             KeyValue(
                 key='yaw_covariance_rad2',
@@ -1156,10 +1174,10 @@ class BNO055Publisher(Node):
 
         self.last_yaw_mode_key = mode_key
         if yaw_source in ('fused_ndof', 'fused_bno055'):
-            if yaw_reason == 'fully_calibrated':
+            if yaw_reason == 'calibration_healthy':
                 self.get_logger().info(
                     'Yaw source -> BNO055 fused orientation '
-                    f'(mode={self.mode_name}, calibration full).'
+                    f'(mode={self.mode_name}, yaw calibration healthy).'
                 )
             else:
                 if calibration is None:
