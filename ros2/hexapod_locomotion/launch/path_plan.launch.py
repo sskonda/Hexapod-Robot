@@ -166,7 +166,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'startup_delay_sec',
-            default_value='20.0',
+            default_value='3.0', # Assume the robot is calibrated before we run the launch file. 
             description='Delay before the predefined path starts. Keep this longer than the IMU startup settle time.',
         ),
         DeclareLaunchArgument(
