@@ -153,10 +153,17 @@ def generate_launch_description():
     crab_follower_speed_mps = LaunchConfiguration('crab_follower_speed_mps')
     crab_follower_goal_tolerance_m = LaunchConfiguration('crab_follower_goal_tolerance_m')
     crab_follower_yaw_correction_gain = LaunchConfiguration('crab_follower_yaw_correction_gain')
+    crab_follower_yaw_ki = LaunchConfiguration('crab_follower_yaw_ki')
+    crab_follower_yaw_integrator_limit = LaunchConfiguration(
+        'crab_follower_yaw_integrator_limit'
+    )
     crab_follower_max_angular_speed_rad_s = LaunchConfiguration(
         'crab_follower_max_angular_speed_rad_s'
     )
     crab_follower_yaw_deadband_deg = LaunchConfiguration('crab_follower_yaw_deadband_deg')
+    crab_follower_yaw_hold_target_mode = LaunchConfiguration(
+        'crab_follower_yaw_hold_target_mode'
+    )
     cmd_vel_yaw_offset_rad = LaunchConfiguration('cmd_vel_yaw_offset_rad')
     safety_stop_distance_m = LaunchConfiguration('safety_stop_distance_m')
     safety_slowdown_distance_m = LaunchConfiguration('safety_slowdown_distance_m')
@@ -615,6 +622,16 @@ def generate_launch_description():
             description='Proportional gain used to hold body yaw against drift while translating.',
         ),
         DeclareLaunchArgument(
+            'crab_follower_yaw_ki',
+            default_value='0.0',
+            description='Integral gain used by the crab follower yaw hold controller.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_yaw_integrator_limit',
+            default_value='1.2',
+            description='Integrator state limit for the crab follower yaw hold controller.',
+        ),
+        DeclareLaunchArgument(
             'crab_follower_max_angular_speed_rad_s',
             default_value='0.12',
             description='Maximum yaw-rate correction that the follower may command.',
@@ -623,6 +640,11 @@ def generate_launch_description():
             'crab_follower_yaw_deadband_deg',
             default_value='5.0',
             description='Yaw-error deadband that suppresses needless oscillation.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_yaw_hold_target_mode',
+            default_value='path_heading',
+            description='Use "initial" to hold startup yaw or "path_heading" to hold the active path vector heading.',
         ),
         DeclareLaunchArgument(
             'cmd_vel_yaw_offset_rad',
@@ -813,8 +835,11 @@ def generate_launch_description():
                 'path_timeout_sec': 1.0,
                 'cmd_vel_rate_hz': 20.0,
                 'yaw_correction_gain': crab_follower_yaw_correction_gain,
+                'yaw_ki': crab_follower_yaw_ki,
+                'yaw_integrator_limit': crab_follower_yaw_integrator_limit,
                 'max_angular_speed_rad_s': crab_follower_max_angular_speed_rad_s,
                 'yaw_deadband_deg': crab_follower_yaw_deadband_deg,
+                'yaw_hold_target_mode': crab_follower_yaw_hold_target_mode,
                 'cmd_vel_yaw_offset_rad': cmd_vel_yaw_offset_rad,
             }],
         ),

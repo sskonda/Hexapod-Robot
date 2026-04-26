@@ -26,8 +26,8 @@ This README reflects the current state of the `bno055` branch, not an aspiration
   - `gap_following_explorer`, which looks for open lidar gaps and publishes a short rolling `nav_msgs/Path`
   - `crab_path_follower`, which converts that path into `cmd_vel`
 - The locomotion node publishes `odom` and the `odom -> base_link` transform from commanded gait motion. Position is still open-loop, but yaw is anchored to IMU orientation when available instead of being purely integrated from commanded turn rate.
-- The locomotion node uses IMU roll/pitch for balance compensation when enabled and uses the filtered BNO055 yaw estimate from `/imu/data_raw` to hold a constant heading while translating without a yaw command.
-- The exploration behavior is still crab-motion based. The follower commands `linear.x` and `linear.y` to move sideways/forward in body coordinates and may add a bounded `angular.z` correction to hold heading, but it does not try to rotate the body to face the path direction.
+- The locomotion node uses IMU roll/pitch for balance compensation when enabled and uses the filtered BNO055 yaw estimate from `/imu/data_raw` with the shared PI yaw-hold controller to hold a constant heading while translating without a yaw command.
+- The exploration follower commands `linear.x` and `linear.y` in body coordinates and uses the same bounded PI yaw-hold controller. `slam.launch.py` defaults to `crab_follower_yaw_hold_target_mode:=path_heading` so the active SLAM path vector becomes the yaw target; use `initial` to preserve pure crab-style body yaw.
 - The explorer stops when an obstacle gets too close, publishes a stop/decision point, waits briefly, and chooses a new heading. If it cannot find a traversable gap after repeated replans, it halts.
 - `slam.launch.py` can optionally start `robot_localization` to fuse raw odometry and IMU data, but that path is still optional and off by default.
 
@@ -179,7 +179,7 @@ Current interfaces used by the main ROS 2 nodes:
 
 - X/Y odometry is still generated from commanded gait motion, so map quality can still drift even though yaw hold is better.
 - Trusted yaw depends on healthy BNO055 yaw calibration (`gyro=3`, `mag>=2`, `sys>=2`, `accel>=2`) and on the BNO055 axes matching the robot's expected frame conventions.
-- `slam.launch.py` is still tightly coupled to crab-style exploration. It holds heading while translating, but it does not rotate the body to face the path direction.
+- `slam.launch.py` is still tightly coupled to the gap-following exploration/follower path. Use `crab_follower_yaw_hold_target_mode:=initial` if you want the robot to crab without rotating toward the path direction.
 - `slam.launch.py` still does not launch the locomotion stack, lidar driver, or servo driver by itself.
 - Hardware-specific nodes depend on Linux UART/I2C/GPIO access and will not behave like a full robot bring-up on a desktop machine without those devices.
 efn

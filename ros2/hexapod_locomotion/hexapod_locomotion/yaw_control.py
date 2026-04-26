@@ -3,6 +3,7 @@
 """Shared helpers for yaw control, IMU frame alignment, and startup settling."""
 
 import math
+from dataclasses import dataclass
 
 
 STANDARD_GRAVITY_M_S2 = 9.80665
@@ -25,6 +26,20 @@ def apply_angular_deadband(error_rad: float, deadband_rad: float) -> float:
         return 0.0
 
     return math.copysign(abs(error_rad) - deadband_rad, error_rad)
+
+
+def heading_from_vector(
+    x_value: float,
+    y_value: float,
+    fallback_yaw_rad: float | None = None,
+    min_norm: float = 1e-9,
+) -> float | None:
+    """Return a yaw angle for a 2D heading vector, or a fallback if too small."""
+    x_value = float(x_value)
+    y_value = float(y_value)
+    if math.hypot(x_value, y_value) < max(0.0, float(min_norm)):
+        return fallback_yaw_rad
+    return math.atan2(y_value, x_value)
 
 
 def vector_norm(values) -> float:
@@ -211,6 +226,168 @@ def resolve_parameter_value(
         return legacy_value, False
 
     return preferred_value, False
+
+
+@dataclass(frozen=True)
+class YawHoldOutput:
+    yaw_rate_rad_s: float
+    target_yaw_rad: float | None
+    yaw_error_rad: float
+    deadbanded_error_rad: float
+    proportional_term_rad_s: float
+    integral_term_rad_s: float
+    active: bool
+    saturated: bool
+    reason: str
+
+
+class YawHoldController:
+    """PI yaw hold with angular deadband, saturation, and anti-windup."""
+
+    def __init__(
+        self,
+        kp: float,
+        ki: float = 0.0,
+        deadband_rad: float = 0.0,
+        integrator_limit: float = 0.0,
+        correction_limit_rad_s: float = math.inf,
+    ):
+        self.kp = max(0.0, float(kp))
+        self.ki = max(0.0, float(ki))
+        self.deadband_rad = max(0.0, float(deadband_rad))
+        self.integrator_limit = max(0.0, float(integrator_limit))
+        self.correction_limit_rad_s = max(0.0, float(correction_limit_rad_s))
+        self.target_yaw_rad: float | None = None
+        self.integral_state = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return self.kp > 0.0 or self.ki > 0.0
+
+    def configure(
+        self,
+        kp: float | None = None,
+        ki: float | None = None,
+        deadband_rad: float | None = None,
+        integrator_limit: float | None = None,
+        correction_limit_rad_s: float | None = None,
+    ) -> None:
+        if kp is not None:
+            self.kp = max(0.0, float(kp))
+        if ki is not None:
+            self.ki = max(0.0, float(ki))
+        if deadband_rad is not None:
+            self.deadband_rad = max(0.0, float(deadband_rad))
+        if integrator_limit is not None:
+            self.integrator_limit = max(0.0, float(integrator_limit))
+            self.integral_state = clamp(
+                self.integral_state,
+                -self.integrator_limit,
+                self.integrator_limit,
+            )
+        if correction_limit_rad_s is not None:
+            self.correction_limit_rad_s = max(0.0, float(correction_limit_rad_s))
+
+    def reset(self, target_yaw_rad: float | None = None) -> None:
+        self.target_yaw_rad = (
+            None if target_yaw_rad is None else normalize_angle(float(target_yaw_rad))
+        )
+        self.integral_state = 0.0
+
+    def output_for_reason(self, reason: str) -> YawHoldOutput:
+        return YawHoldOutput(
+            yaw_rate_rad_s=0.0,
+            target_yaw_rad=self.target_yaw_rad,
+            yaw_error_rad=0.0,
+            deadbanded_error_rad=0.0,
+            proportional_term_rad_s=0.0,
+            integral_term_rad_s=0.0,
+            active=False,
+            saturated=False,
+            reason=reason,
+        )
+
+    def update(
+        self,
+        current_yaw_rad: float,
+        dt_sec: float,
+        target_yaw_rad: float | None = None,
+        correction_limit_rad_s: float | None = None,
+        latch_target_if_unset: bool = True,
+        reset_integral_on_target_change: bool = True,
+    ) -> YawHoldOutput:
+        if not self.enabled:
+            self.reset()
+            return self.output_for_reason('disabled')
+
+        if target_yaw_rad is not None:
+            normalized_target = normalize_angle(float(target_yaw_rad))
+            target_changed = (
+                self.target_yaw_rad is None
+                or abs(normalize_angle(normalized_target - self.target_yaw_rad)) > 1e-9
+            )
+            self.target_yaw_rad = normalized_target
+            if target_changed and reset_integral_on_target_change:
+                self.integral_state = 0.0
+        elif self.target_yaw_rad is None:
+            if not latch_target_if_unset:
+                return self.output_for_reason('no_target')
+            self.target_yaw_rad = normalize_angle(float(current_yaw_rad))
+            self.integral_state = 0.0
+
+        current_yaw_rad = normalize_angle(float(current_yaw_rad))
+        dt_sec = max(0.0, float(dt_sec))
+        correction_limit = self.correction_limit_rad_s
+        if correction_limit_rad_s is not None:
+            correction_limit = max(0.0, float(correction_limit_rad_s))
+
+        yaw_error = normalize_angle(self.target_yaw_rad - current_yaw_rad)
+        deadbanded_error = apply_angular_deadband(yaw_error, self.deadband_rad)
+        proportional_term = self.kp * deadbanded_error
+        integral_candidate = clamp(
+            self.integral_state + deadbanded_error * dt_sec,
+            -self.integrator_limit,
+            self.integrator_limit,
+        )
+        unsaturated_output = proportional_term + self.ki * integral_candidate
+        saturated_output = clamp(
+            unsaturated_output,
+            -correction_limit,
+            correction_limit,
+        )
+        saturated = not math.isclose(
+            unsaturated_output,
+            saturated_output,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        )
+
+        if self.ki > 0.0:
+            if (
+                not saturated
+                or (unsaturated_output > correction_limit and deadbanded_error < 0.0)
+                or (unsaturated_output < -correction_limit and deadbanded_error > 0.0)
+            ):
+                self.integral_state = integral_candidate
+
+        integral_term = self.ki * self.integral_state
+        yaw_rate = clamp(
+            proportional_term + integral_term,
+            -correction_limit,
+            correction_limit,
+        )
+
+        return YawHoldOutput(
+            yaw_rate_rad_s=yaw_rate,
+            target_yaw_rad=self.target_yaw_rad,
+            yaw_error_rad=yaw_error,
+            deadbanded_error_rad=deadbanded_error,
+            proportional_term_rad_s=proportional_term,
+            integral_term_rad_s=integral_term,
+            active=True,
+            saturated=saturated,
+            reason='tracking',
+        )
 
 
 class StartupStillnessGate:

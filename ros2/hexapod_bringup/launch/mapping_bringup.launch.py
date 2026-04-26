@@ -91,10 +91,17 @@ def generate_launch_description():
     crab_follower_speed_mps = LaunchConfiguration('crab_follower_speed_mps')
     crab_follower_goal_tolerance_m = LaunchConfiguration('crab_follower_goal_tolerance_m')
     crab_follower_yaw_correction_gain = LaunchConfiguration('crab_follower_yaw_correction_gain')
+    crab_follower_yaw_ki = LaunchConfiguration('crab_follower_yaw_ki')
+    crab_follower_yaw_integrator_limit = LaunchConfiguration(
+        'crab_follower_yaw_integrator_limit'
+    )
     crab_follower_max_angular_speed_rad_s = LaunchConfiguration(
         'crab_follower_max_angular_speed_rad_s'
     )
     crab_follower_yaw_deadband_deg = LaunchConfiguration('crab_follower_yaw_deadband_deg')
+    crab_follower_yaw_hold_target_mode = LaunchConfiguration(
+        'crab_follower_yaw_hold_target_mode'
+    )
     cmd_vel_yaw_offset_rad = LaunchConfiguration('cmd_vel_yaw_offset_rad')
     enable_robot_localization = LaunchConfiguration('enable_robot_localization')
     robot_localization_params_file = LaunchConfiguration('robot_localization_params_file')
@@ -438,6 +445,16 @@ def generate_launch_description():
             description='Proportional yaw correction gain used by the crab path follower.',
         ),
         DeclareLaunchArgument(
+            'crab_follower_yaw_ki',
+            default_value='0.0',
+            description='Integral yaw correction gain used by the crab path follower.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_yaw_integrator_limit',
+            default_value='1.2',
+            description='Integrator state limit for the crab path follower yaw hold.',
+        ),
+        DeclareLaunchArgument(
             'crab_follower_max_angular_speed_rad_s',
             default_value='0.12',
             description='Maximum yaw-rate correction commanded by the crab path follower.',
@@ -446,6 +463,11 @@ def generate_launch_description():
             'crab_follower_yaw_deadband_deg',
             default_value='5.0',
             description='Yaw-error deadband for the crab path follower.',
+        ),
+        DeclareLaunchArgument(
+            'crab_follower_yaw_hold_target_mode',
+            default_value='path_heading',
+            description='Use "initial" or "path_heading" for crab follower yaw hold target selection.',
         ),
         DeclareLaunchArgument(
             'cmd_vel_yaw_offset_rad',
@@ -546,8 +568,11 @@ def generate_launch_description():
                 'crab_follower_speed_mps': crab_follower_speed_mps,
                 'crab_follower_goal_tolerance_m': crab_follower_goal_tolerance_m,
                 'crab_follower_yaw_correction_gain': crab_follower_yaw_correction_gain,
+                'crab_follower_yaw_ki': crab_follower_yaw_ki,
+                'crab_follower_yaw_integrator_limit': crab_follower_yaw_integrator_limit,
                 'crab_follower_max_angular_speed_rad_s': crab_follower_max_angular_speed_rad_s,
                 'crab_follower_yaw_deadband_deg': crab_follower_yaw_deadband_deg,
+                'crab_follower_yaw_hold_target_mode': crab_follower_yaw_hold_target_mode,
                 'cmd_vel_yaw_offset_rad': cmd_vel_yaw_offset_rad,
                 'safety_stop_distance_m': safety_stop_distance_m,
                 'safety_slowdown_distance_m': safety_slowdown_distance_m,

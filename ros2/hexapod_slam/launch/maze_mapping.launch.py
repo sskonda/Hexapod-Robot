@@ -81,6 +81,21 @@ def generate_launch_description():
         default_value="0.10",
         description="Distance at which the crab follower considers a graph waypoint reached.",
     )
+    crab_follower_yaw_ki_arg = DeclareLaunchArgument(
+        "crab_follower_yaw_ki",
+        default_value="0.0",
+        description="Integral gain used by the crab follower yaw hold controller.",
+    )
+    crab_follower_yaw_integrator_limit_arg = DeclareLaunchArgument(
+        "crab_follower_yaw_integrator_limit",
+        default_value="1.2",
+        description="Integrator state limit for the crab follower yaw hold controller.",
+    )
+    crab_follower_yaw_hold_target_mode_arg = DeclareLaunchArgument(
+        "crab_follower_yaw_hold_target_mode",
+        default_value="path_heading",
+        description="Use initial yaw hold or path_heading vector yaw hold.",
+    )
 
     use_slam = LaunchConfiguration("use_slam")
     use_locomotion = LaunchConfiguration("use_locomotion")
@@ -93,6 +108,13 @@ def generate_launch_description():
     cmd_vel_yaw_offset_rad = LaunchConfiguration("cmd_vel_yaw_offset_rad")
     crab_follower_speed_mps = LaunchConfiguration("crab_follower_speed_mps")
     crab_follower_goal_tolerance_m = LaunchConfiguration("crab_follower_goal_tolerance_m")
+    crab_follower_yaw_ki = LaunchConfiguration("crab_follower_yaw_ki")
+    crab_follower_yaw_integrator_limit = LaunchConfiguration(
+        "crab_follower_yaw_integrator_limit"
+    )
+    crab_follower_yaw_hold_target_mode = LaunchConfiguration(
+        "crab_follower_yaw_hold_target_mode"
+    )
 
     # -----------------------------------------------------------------------
     # Config paths
@@ -177,8 +199,11 @@ def generate_launch_description():
             "path_timeout_sec": 1.0,
             "cmd_vel_rate_hz": 20.0,
             "yaw_correction_gain": 0.6,
+            "yaw_ki": crab_follower_yaw_ki,
+            "yaw_integrator_limit": crab_follower_yaw_integrator_limit,
             "max_angular_speed_rad_s": 0.12,
             "yaw_deadband_deg": 5.0,
+            "yaw_hold_target_mode": crab_follower_yaw_hold_target_mode,
             "cmd_vel_yaw_offset_rad": cmd_vel_yaw_offset_rad,
         }],
         output="screen",
@@ -246,6 +271,9 @@ def generate_launch_description():
         cmd_vel_yaw_offset_arg,
         crab_follower_speed_arg,
         crab_follower_goal_tolerance_arg,
+        crab_follower_yaw_ki_arg,
+        crab_follower_yaw_integrator_limit_arg,
+        crab_follower_yaw_hold_target_mode_arg,
         slam_launch,
         builder_node,
         planner_node,

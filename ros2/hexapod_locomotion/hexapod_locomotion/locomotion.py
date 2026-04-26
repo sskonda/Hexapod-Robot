@@ -17,7 +17,7 @@ from tf2_ros import TransformBroadcaster
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
 from .kalman_filter import AngleKalmanFilter
 from .yaw_control import (
-    apply_angular_deadband,
+    YawHoldController,
     clamp,
     heading_is_trusted,
     normalize_angle,
@@ -197,6 +197,13 @@ class LocomotionNode(Node):
         self.base_frame_id = str(self.get_parameter('base_frame_id').value)
         self.publish_odom_tf = bool(self.get_parameter('publish_odom_tf').value)
         self._update_imu_mount_transform()
+        self.yaw_hold_controller = YawHoldController(
+            kp=self.yaw_kp,
+            ki=self.yaw_ki,
+            deadband_rad=self.yaw_deadband_rad,
+            integrator_limit=self.yaw_integrator_limit,
+            correction_limit_rad_s=self.heading_hold_max_correction_rad_s(),
+        )
 
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
@@ -222,8 +229,6 @@ class LocomotionNode(Node):
         self.last_imu_stamp = None
         self.last_imu_update_monotonic = None
         self.last_heading_update_monotonic = None
-        self.heading_hold_target_rad = None
-        self.heading_integral_state = 0.0
         self.last_invalid_warn_time = 0.0
         self.last_heading_reason = 'idle'
         self.last_heading_error_rad = 0.0
@@ -325,6 +330,7 @@ class LocomotionNode(Node):
                         reason=f'{parameter.name} must be non-negative.',
                     )
                 self.yaw_kp = value
+                self.yaw_hold_controller.configure(kp=self.yaw_kp)
                 changed_fields.append(f'{parameter.name}={self.yaw_kp:.3f}')
             elif parameter.name == 'yaw_ki':
                 value = float(parameter.value)
@@ -334,6 +340,7 @@ class LocomotionNode(Node):
                         reason='yaw_ki must be non-negative.',
                     )
                 self.yaw_ki = value
+                self.yaw_hold_controller.configure(ki=self.yaw_ki)
                 changed_fields.append(f'yaw_ki={self.yaw_ki:.3f}')
             elif parameter.name == 'yaw_deadband_deg':
                 yaw_deadband_deg = float(parameter.value)
@@ -343,6 +350,7 @@ class LocomotionNode(Node):
                         reason='yaw_deadband_deg must be non-negative.',
                     )
                 self.yaw_deadband_rad = math.radians(yaw_deadband_deg)
+                self.yaw_hold_controller.configure(deadband_rad=self.yaw_deadband_rad)
                 changed_fields.append(f'yaw_deadband_deg={yaw_deadband_deg:.2f}')
             elif parameter.name == 'yaw_integrator_limit':
                 value = float(parameter.value)
@@ -352,10 +360,8 @@ class LocomotionNode(Node):
                         reason='yaw_integrator_limit must be non-negative.',
                     )
                 self.yaw_integrator_limit = value
-                self.heading_integral_state = clamp(
-                    self.heading_integral_state,
-                    -self.yaw_integrator_limit,
-                    self.yaw_integrator_limit,
+                self.yaw_hold_controller.configure(
+                    integrator_limit=self.yaw_integrator_limit,
                 )
                 changed_fields.append(f'yaw_integrator_limit={self.yaw_integrator_limit:.3f}')
             elif parameter.name == 'yaw_rate_fault_threshold_rad_s':
@@ -611,8 +617,7 @@ class LocomotionNode(Node):
             self.tf_broadcaster.sendTransform(tf_msg)
 
     def _reset_heading_hold_state(self, reason):
-        self.heading_hold_target_rad = None
-        self.heading_integral_state = 0.0
+        self.yaw_hold_controller.reset()
         self.last_heading_error_rad = 0.0
         self.last_heading_output_rad_s = 0.0
         self.last_heading_p_term = 0.0
@@ -694,54 +699,19 @@ class LocomotionNode(Node):
             self._warn_missing_yaw_estimate()
             return linear_x, linear_y, 0.0
 
-        if self.heading_hold_target_rad is None:
-            self.heading_hold_target_rad = self.imu_yaw_rad
-            self.heading_integral_state = 0.0
-
-        raw_yaw_error = normalize_angle(self.heading_hold_target_rad - self.imu_yaw_rad)
-        deadbanded_yaw_error = apply_angular_deadband(raw_yaw_error, self.yaw_deadband_rad)
-
-        proportional_term = self.yaw_kp * deadbanded_yaw_error
-        integral_candidate = clamp(
-            self.heading_integral_state + deadbanded_yaw_error * (1.0 / self.control_rate_hz),
-            -self.yaw_integrator_limit,
-            self.yaw_integrator_limit,
+        correction = self.yaw_hold_controller.update(
+            current_yaw_rad=self.imu_yaw_rad,
+            dt_sec=1.0 / self.control_rate_hz,
+            correction_limit_rad_s=self.heading_hold_max_correction_rad_s(),
         )
-        correction_limit = self.heading_hold_max_correction_rad_s()
-        unsaturated_correction = proportional_term + self.yaw_ki * integral_candidate
-        saturated_correction = clamp(
-            unsaturated_correction,
-            -correction_limit,
-            correction_limit,
-        )
-
-        if self.yaw_ki > 0.0:
-            correction_is_saturated = not math.isclose(
-                unsaturated_correction,
-                saturated_correction,
-                rel_tol=0.0,
-                abs_tol=1e-9,
-            )
-            if (
-                not correction_is_saturated
-                or (unsaturated_correction > correction_limit and deadbanded_yaw_error < 0.0)
-                or (unsaturated_correction < -correction_limit and deadbanded_yaw_error > 0.0)
-            ):
-                self.heading_integral_state = integral_candidate
-
-        integral_term = self.yaw_ki * self.heading_integral_state
-        yaw_rate = clamp(
-            proportional_term + integral_term,
-            -correction_limit,
-            correction_limit,
-        )
+        yaw_rate = correction.yaw_rate_rad_s
 
         self.last_heading_allowed = True
-        self.last_heading_reason = 'tracking'
-        self.last_heading_error_rad = raw_yaw_error
-        self.last_heading_p_term = proportional_term
-        self.last_heading_i_term = integral_term
-        self.last_heading_output_rad_s = yaw_rate
+        self.last_heading_reason = correction.reason
+        self.last_heading_error_rad = correction.yaw_error_rad
+        self.last_heading_p_term = correction.proportional_term_rad_s
+        self.last_heading_i_term = correction.integral_term_rad_s
+        self.last_heading_output_rad_s = correction.yaw_rate_rad_s
 
         return linear_x, linear_y, yaw_rate
 
@@ -804,8 +774,8 @@ class LocomotionNode(Node):
             KeyValue(
                 key='heading_target_deg',
                 value='nan'
-                if self.heading_hold_target_rad is None
-                else f'{math.degrees(self.heading_hold_target_rad):.3f}',
+                if self.yaw_hold_controller.target_yaw_rad is None
+                else f'{math.degrees(self.yaw_hold_controller.target_yaw_rad):.3f}',
             ),
             KeyValue(
                 key='heading_error_deg',
@@ -825,7 +795,7 @@ class LocomotionNode(Node):
             ),
             KeyValue(
                 key='heading_integral_state',
-                value=f'{self.heading_integral_state:.5f}',
+                value=f'{self.yaw_hold_controller.integral_state:.5f}',
             ),
             KeyValue(key='cmd_yaw_rate_rad_s', value=f'{self.cmd_yaw_rate_rad_s:.5f}'),
             KeyValue(
