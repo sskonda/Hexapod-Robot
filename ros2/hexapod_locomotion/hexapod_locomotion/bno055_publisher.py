@@ -383,6 +383,7 @@ class BNO055Publisher(Node):
         self.declare_parameter('imu_startup_gyro_still_tolerance_rad_s', 0.12)
         self.declare_parameter('imu_startup_motion_grace_sec', 0.5)
         self.declare_parameter('imu_startup_status_log_interval_sec', 2.0)
+        self.declare_parameter('init_retry_period_sec', 1.0)
         self.declare_parameter('allow_mag_baseline_trust_without_calibration', True)
         self.declare_parameter('idle_baseline_mag_axis_tolerance_ut', 2.0)
         self.declare_parameter('idle_baseline_min_still_samples', 25)
@@ -446,6 +447,10 @@ class BNO055Publisher(Node):
             0.5,
             float(self.get_parameter('imu_startup_status_log_interval_sec').value),
         )
+        self.init_retry_period_sec = max(
+            0.2,
+            float(self.get_parameter('init_retry_period_sec').value),
+        )
         self.allow_mag_baseline_trust_without_calibration = bool(
             self.get_parameter('allow_mag_baseline_trust_without_calibration').value
         )
@@ -467,34 +472,10 @@ class BNO055Publisher(Node):
             self.get_parameter('publish_orientation_during_startup').value
         )
         self.last_warning_text = ''
-        self.last_measurement_monotonic = None
-        self.last_startup_status_log_monotonic = 0.0
-        self.last_calibration_read_monotonic = 0.0
-        self.last_calibration_status = (0, 0, 0, 0)
-        self.last_yaw_source = None
-        self.startup_yaw_reference_rad = None
-        self.startup_yaw_reference_locked = not self.zero_yaw_to_startup_heading
-        self.startup_orientation_publish_logged = False
-        self.startup_mag_baseline_t = None
-        self.startup_mag_baseline_sample_count = 0
-        self.startup_mag_baseline_locked = False
-        self.startup_mag_baseline_good = False
-        self.startup_still_gate = StartupStillnessGate(
-            required_still_time_sec=self.startup_still_time_sec,
-            accel_tolerance_m_s2=self.startup_accel_still_tolerance_m_s2,
-            gyro_tolerance_rad_s=self.startup_gyro_still_tolerance_rad_s,
-            motion_grace_sec=self.startup_motion_grace_sec,
-        )
-        self.startup_settle_logged = self.startup_still_gate.ready
-
-        self.sensor = BNO055UART(
-            port=self.uart_port,
-            baud_rate=self.baud_rate,
-            operation_mode=self.mode_name,
-            use_external_crystal=self.use_external_crystal,
-            read_retry_count=self.read_retry_count,
-            retry_backoff_sec=self.retry_backoff_sec,
-        )
+        self.sensor = None
+        self.sensor_connected_once = False
+        self.last_init_attempt_monotonic = 0.0
+        self._reset_runtime_state()
         self.yaw_filter = YawComplementaryFilter(
             time_constant_sec=self.yaw_filter_time_constant_sec,
         )
@@ -502,16 +483,6 @@ class BNO055Publisher(Node):
         self.mag_publisher = self.create_publisher(MagneticField, self.mag_topic, 10)
         self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self.publish_measurements)
-
-        calibration = self._read_calibration_status_cached(time.monotonic(), force=True)
-        self.get_logger().info(
-            f'BNO055 publisher started on {self.topic} and {self.mag_topic} '
-            f'from {self.uart_port} @ {self.baud_rate} baud, mode {self.mode_name}'
-        )
-        self.get_logger().info(
-            'Initial calibration status '
-            f'(sys={calibration[0]}, gyro={calibration[1]}, accel={calibration[2]}, mag={calibration[3]})'
-        )
         if yaw_param_conflict:
             self.get_logger().warn(
                 'Both imu_yaw_filter_time_constant_sec and yaw_filter_time_constant_sec were set. '
@@ -543,6 +514,7 @@ class BNO055Publisher(Node):
                 'Publishing startup-relative orientation before the settle timer completes '
                 'so locomotion can react to heading drift immediately.'
             )
+        self._attempt_initialize_sensor(force=True)
 
     def parameter_update_callback(self, parameters):
         changed_fields = []
@@ -619,12 +591,90 @@ class BNO055Publisher(Node):
             self.sensor.close()
         return super().destroy_node()
 
+    def _reset_runtime_state(self):
+        self.last_measurement_monotonic = None
+        self.last_startup_status_log_monotonic = 0.0
+        self.last_calibration_read_monotonic = 0.0
+        self.last_calibration_status = (0, 0, 0, 0)
+        self.last_yaw_source = None
+        self.startup_yaw_reference_rad = None
+        self.startup_yaw_reference_locked = not self.zero_yaw_to_startup_heading
+        self.startup_orientation_publish_logged = False
+        self.startup_mag_baseline_t = None
+        self.startup_mag_baseline_sample_count = 0
+        self.startup_mag_baseline_locked = False
+        self.startup_mag_baseline_good = False
+        self.startup_still_gate = StartupStillnessGate(
+            required_still_time_sec=self.startup_still_time_sec,
+            accel_tolerance_m_s2=self.startup_accel_still_tolerance_m_s2,
+            gyro_tolerance_rad_s=self.startup_gyro_still_tolerance_rad_s,
+            motion_grace_sec=self.startup_motion_grace_sec,
+        )
+        self.startup_settle_logged = self.startup_still_gate.ready
+
+    def _attempt_initialize_sensor(self, force=False):
+        now = time.monotonic()
+        if (
+            not force
+            and now - self.last_init_attempt_monotonic < self.init_retry_period_sec
+        ):
+            return False
+        self.last_init_attempt_monotonic = now
+
+        if self.sensor is not None:
+            self.sensor.close()
+            self.sensor = None
+
+        try:
+            self.sensor = BNO055UART(
+                port=self.uart_port,
+                baud_rate=self.baud_rate,
+                operation_mode=self.mode_name,
+                use_external_crystal=self.use_external_crystal,
+                read_retry_count=self.read_retry_count,
+                retry_backoff_sec=self.retry_backoff_sec,
+            )
+        except Exception as exc:
+            self.sensor = None
+            self._warn_throttled(
+                f'BNO055 initialization failed on {self.uart_port}: {exc}. '
+                f'Retrying in {self.init_retry_period_sec:.1f} s.'
+            )
+            return False
+
+        self.last_warning_text = ''
+        self._reset_runtime_state()
+        calibration = self._read_calibration_status_cached(time.monotonic(), force=True)
+        if self.sensor_connected_once:
+            self.get_logger().info(
+                f'BNO055 connection recovered on {self.uart_port}; resuming IMU publishing in '
+                f'mode {self.mode_name}.'
+            )
+        else:
+            self.sensor_connected_once = True
+            self.get_logger().info(
+                f'BNO055 publisher started on {self.topic} and {self.mag_topic} '
+                f'from {self.uart_port} @ {self.baud_rate} baud, mode {self.mode_name}'
+            )
+        self.get_logger().info(
+            'Initial calibration status '
+            f'(sys={calibration[0]}, gyro={calibration[1]}, accel={calibration[2]}, mag={calibration[3]})'
+        )
+        return True
+
     def publish_measurements(self):
+        if self.sensor is None and not self._attempt_initialize_sensor():
+            return
         try:
             accel, magnetic_field, gyro = self.sensor.read_imu_measurements()
             orientation = orientation_from_accel_and_mag(accel, magnetic_field)
         except Exception as exc:
-            self._warn_throttled(f'BNO055 read failed: {exc}')
+            if self.sensor is not None:
+                self.sensor.close()
+                self.sensor = None
+            self._warn_throttled(
+                f'BNO055 read failed: {exc}. Reinitializing sensor connection.'
+            )
             return
 
         if not vector_is_valid(accel, 3) or not vector_is_valid(gyro, 3):

@@ -45,6 +45,10 @@ def generate_launch_description():
     enable_mpu6050_yaw_fallback = LaunchConfiguration('enable_mpu6050_yaw_fallback')
     mpu6050_imu_topic = LaunchConfiguration('mpu6050_imu_topic')
     mpu6050_publish_rate_hz = LaunchConfiguration('mpu6050_publish_rate_hz')
+    mpu6050_i2c_address = LaunchConfiguration('mpu6050_i2c_address')
+    mpu6050_i2c_bus = LaunchConfiguration('mpu6050_i2c_bus')
+    mpu6050_init_retry_period_sec = LaunchConfiguration('mpu6050_init_retry_period_sec')
+    bno055_init_retry_period_sec = LaunchConfiguration('bno055_init_retry_period_sec')
     imu_yaw_fallback_timeout_sec = LaunchConfiguration('imu_yaw_fallback_timeout_sec')
     imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
     imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
@@ -195,6 +199,11 @@ def generate_launch_description():
             description='Minimum still startup samples required before the low-calibration magnetometer baseline fallback may be accepted.',
         ),
         DeclareLaunchArgument(
+            'bno055_init_retry_period_sec',
+            default_value='1.0',
+            description='How often the BNO055 node retries sensor bring-up after a UART/protocol failure.',
+        ),
+        DeclareLaunchArgument(
             'enable_mpu6050_yaw_fallback',
             default_value='true',
             description='Launch the MPU6050 fallback IMU and let locomotion use its integrated gyro yaw after a timeout when BNO055 yaw stays invalid.',
@@ -208,6 +217,21 @@ def generate_launch_description():
             'mpu6050_publish_rate_hz',
             default_value='50.0',
             description='Publish rate for the MPU6050 fallback IMU node.',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_i2c_address',
+            default_value='104',
+            description='I2C address for the MPU6050 fallback IMU node (104=0x68, 105=0x69).',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_i2c_bus',
+            default_value='1',
+            description='I2C bus number for the MPU6050 fallback IMU node.',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_init_retry_period_sec',
+            default_value='1.0',
+            description='How often the MPU6050 node retries sensor bring-up after an I2C failure.',
         ),
         DeclareLaunchArgument(
             'imu_yaw_fallback_timeout_sec',
@@ -288,6 +312,7 @@ def generate_launch_description():
                 'allow_mag_baseline_trust_without_calibration': imu_allow_mag_baseline_trust_without_calibration,
                 'idle_baseline_mag_axis_tolerance_ut': imu_idle_baseline_mag_axis_tolerance_ut,
                 'idle_baseline_min_still_samples': imu_idle_baseline_min_still_samples,
+                'init_retry_period_sec': bno055_init_retry_period_sec,
                 'zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
                 'publish_orientation_during_startup': imu_publish_orientation_during_startup,
             }]
@@ -302,6 +327,9 @@ def generate_launch_description():
                 'frame_id': imu_frame,
                 'topic': mpu6050_imu_topic,
                 'publish_rate_hz': mpu6050_publish_rate_hz,
+                'i2c_address': mpu6050_i2c_address,
+                'i2c_bus': mpu6050_i2c_bus,
+                'init_retry_period_sec': mpu6050_init_retry_period_sec,
             }]
         ),
         Node(

@@ -5,6 +5,7 @@
 import math
 import os
 import sys
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -26,6 +27,7 @@ class MPU6050Publisher(Node):
         self.declare_parameter('publish_rate_hz', 50.0)
         self.declare_parameter('i2c_address', 0x68)
         self.declare_parameter('i2c_bus', 1)
+        self.declare_parameter('init_retry_period_sec', 1.0)
         self.declare_parameter('angular_velocity_covariance', 0.02)
         self.declare_parameter('linear_acceleration_covariance', 0.04)
 
@@ -34,6 +36,10 @@ class MPU6050Publisher(Node):
         self.publish_rate_hz = max(1.0, float(self.get_parameter('publish_rate_hz').value))
         self.i2c_address = int(self.get_parameter('i2c_address').value)
         self.i2c_bus = int(self.get_parameter('i2c_bus').value)
+        self.init_retry_period_sec = max(
+            0.2,
+            float(self.get_parameter('init_retry_period_sec').value),
+        )
         self.angular_velocity_covariance = float(
             self.get_parameter('angular_velocity_covariance').value
         )
@@ -47,18 +53,54 @@ class MPU6050Publisher(Node):
 
         from mpu6050.mpu6050 import mpu6050
 
-        self.sensor = mpu6050(self.i2c_address, bus=self.i2c_bus)
+        self.sensor_class = mpu6050
+        self.sensor = None
+        self.last_init_attempt_monotonic = 0.0
+        self.last_warning_text = ''
         self.publisher_ = self.create_publisher(Imu, self.topic, 10)
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self.publish_imu)
+        self._attempt_initialize_sensor(force=True)
 
+    def _attempt_initialize_sensor(self, force=False):
+        now = time.monotonic()
+        if (
+            not force
+            and now - self.last_init_attempt_monotonic < self.init_retry_period_sec
+        ):
+            return False
+        self.last_init_attempt_monotonic = now
+
+        try:
+            self.sensor = self.sensor_class(self.i2c_address, bus=self.i2c_bus)
+        except Exception as exc:
+            self.sensor = None
+            self._warn_throttled(
+                'MPU6050 fallback IMU initialization failed '
+                f'(addr=0x{self.i2c_address:02X}, bus={self.i2c_bus}): {exc}. '
+                f'Retrying in {self.init_retry_period_sec:.1f} s.'
+            )
+            return False
+
+        self.last_warning_text = ''
         self.get_logger().info(
             f'MPU6050 fallback publisher started on {self.topic} with frame {self.frame_id} '
             f'(addr=0x{self.i2c_address:02X}, bus={self.i2c_bus})'
         )
+        return True
 
     def publish_imu(self):
-        accel = self.sensor.get_accel_data()
-        gyro = self.sensor.get_gyro_data()
+        if self.sensor is None and not self._attempt_initialize_sensor():
+            return
+
+        try:
+            accel = self.sensor.get_accel_data()
+            gyro = self.sensor.get_gyro_data()
+        except Exception as exc:
+            self.sensor = None
+            self._warn_throttled(
+                f'MPU6050 fallback IMU read failed: {exc}. Reinitializing sensor.'
+            )
+            return
 
         msg = Imu()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -85,6 +127,12 @@ class MPU6050Publisher(Node):
         )
 
         self.publisher_.publish(msg)
+
+    def _warn_throttled(self, text):
+        if text == self.last_warning_text:
+            return
+        self.last_warning_text = text
+        self.get_logger().warn(text)
 
 
 def main(args=None):

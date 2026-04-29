@@ -38,6 +38,10 @@ def generate_launch_description():
     enable_mpu6050_yaw_fallback = LaunchConfiguration('enable_mpu6050_yaw_fallback')
     mpu6050_imu_topic = LaunchConfiguration('mpu6050_imu_topic')
     mpu6050_publish_rate_hz = LaunchConfiguration('mpu6050_publish_rate_hz')
+    mpu6050_i2c_address = LaunchConfiguration('mpu6050_i2c_address')
+    mpu6050_i2c_bus = LaunchConfiguration('mpu6050_i2c_bus')
+    mpu6050_init_retry_period_sec = LaunchConfiguration('mpu6050_init_retry_period_sec')
+    bno055_init_retry_period_sec = LaunchConfiguration('bno055_init_retry_period_sec')
     imu_yaw_fallback_timeout_sec = LaunchConfiguration('imu_yaw_fallback_timeout_sec')
     imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
     imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
@@ -138,6 +142,11 @@ def generate_launch_description():
             description='Pass through to hexapod_core.launch.py for the startup magnetic baseline sample count.',
         ),
         DeclareLaunchArgument(
+            'bno055_init_retry_period_sec',
+            default_value='1.0',
+            description='Pass through to hexapod_core.launch.py for BNO055 bring-up retries after UART/protocol failures.',
+        ),
+        DeclareLaunchArgument(
             'enable_mpu6050_yaw_fallback',
             default_value='true',
             description='Pass through to hexapod_core.launch.py to launch the MPU6050 yaw fallback path.',
@@ -151,6 +160,21 @@ def generate_launch_description():
             'mpu6050_publish_rate_hz',
             default_value='50.0',
             description='Pass through to hexapod_core.launch.py for the MPU6050 fallback IMU publish rate.',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_i2c_address',
+            default_value='104',
+            description='Pass through to hexapod_core.launch.py for the MPU6050 I2C address (104=0x68, 105=0x69).',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_i2c_bus',
+            default_value='1',
+            description='Pass through to hexapod_core.launch.py for the MPU6050 I2C bus number.',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_init_retry_period_sec',
+            default_value='1.0',
+            description='Pass through to hexapod_core.launch.py for MPU6050 bring-up retries after I2C failures.',
         ),
         DeclareLaunchArgument(
             'imu_yaw_fallback_timeout_sec',
@@ -232,9 +256,13 @@ def generate_launch_description():
                 'imu_allow_mag_baseline_trust_without_calibration': imu_allow_mag_baseline_trust_without_calibration,
                 'imu_idle_baseline_mag_axis_tolerance_ut': imu_idle_baseline_mag_axis_tolerance_ut,
                 'imu_idle_baseline_min_still_samples': imu_idle_baseline_min_still_samples,
+                'bno055_init_retry_period_sec': bno055_init_retry_period_sec,
                 'enable_mpu6050_yaw_fallback': enable_mpu6050_yaw_fallback,
                 'mpu6050_imu_topic': mpu6050_imu_topic,
                 'mpu6050_publish_rate_hz': mpu6050_publish_rate_hz,
+                'mpu6050_i2c_address': mpu6050_i2c_address,
+                'mpu6050_i2c_bus': mpu6050_i2c_bus,
+                'mpu6050_init_retry_period_sec': mpu6050_init_retry_period_sec,
                 'imu_yaw_fallback_timeout_sec': imu_yaw_fallback_timeout_sec,
                 'imu_zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
                 'imu_publish_orientation_during_startup': imu_publish_orientation_during_startup,
