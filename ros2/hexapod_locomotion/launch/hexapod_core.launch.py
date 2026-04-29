@@ -32,6 +32,15 @@ def generate_launch_description():
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
+    imu_allow_mag_baseline_trust_without_calibration = LaunchConfiguration(
+        'imu_allow_mag_baseline_trust_without_calibration'
+    )
+    imu_idle_baseline_mag_axis_tolerance_ut = LaunchConfiguration(
+        'imu_idle_baseline_mag_axis_tolerance_ut'
+    )
+    imu_idle_baseline_min_still_samples = LaunchConfiguration(
+        'imu_idle_baseline_min_still_samples'
+    )
     imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
     imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
     imu_x = LaunchConfiguration('imu_x')
@@ -166,6 +175,21 @@ def generate_launch_description():
             description='Continuous motion time that resets the IMU startup stillness timer.',
         ),
         DeclareLaunchArgument(
+            'imu_allow_mag_baseline_trust_without_calibration',
+            default_value='true',
+            description='Allow stable startup magnetic baseline checks to enable yaw correction even when BNO055 mag calibration stays low.',
+        ),
+        DeclareLaunchArgument(
+            'imu_idle_baseline_mag_axis_tolerance_ut',
+            default_value='2.0',
+            description='Per-axis startup magnetometer tolerance in microtesla used by the low-calibration yaw fallback.',
+        ),
+        DeclareLaunchArgument(
+            'imu_idle_baseline_min_still_samples',
+            default_value='25',
+            description='Minimum still startup samples required before the low-calibration magnetometer baseline fallback may be accepted.',
+        ),
+        DeclareLaunchArgument(
             'imu_zero_yaw_to_startup_heading',
             default_value='true',
             description='Zero IMU yaw to the startup heading so locomotion sees relative rotation from launch.',
@@ -236,6 +260,9 @@ def generate_launch_description():
                 'min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
+                'allow_mag_baseline_trust_without_calibration': imu_allow_mag_baseline_trust_without_calibration,
+                'idle_baseline_mag_axis_tolerance_ut': imu_idle_baseline_mag_axis_tolerance_ut,
+                'idle_baseline_min_still_samples': imu_idle_baseline_min_still_samples,
                 'zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
                 'publish_orientation_during_startup': imu_publish_orientation_during_startup,
             }]

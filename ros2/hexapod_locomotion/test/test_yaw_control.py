@@ -9,6 +9,8 @@ from hexapod_locomotion.yaw_control import (
     relative_yaw_from_reference,
     resolve_parameter_value,
     update_startup_yaw_reference,
+    update_vector_running_average,
+    vector_components_within_tolerance,
 )
 
 
@@ -116,3 +118,26 @@ def test_relative_yaw_from_reference_wraps_to_shortest_difference():
     )
 
     assert relative_yaw == pytest.approx(math.radians(20.0))
+
+
+def test_update_vector_running_average_tracks_per_axis_mean():
+    average, count = update_vector_running_average(None, (1.0, 2.0, 3.0), 0)
+    assert average == pytest.approx((1.0, 2.0, 3.0))
+    assert count == 1
+
+    average, count = update_vector_running_average(average, (3.0, 4.0, 5.0), count)
+    assert average == pytest.approx((2.0, 3.0, 4.0))
+    assert count == 2
+
+
+def test_vector_components_within_tolerance_requires_every_axis_to_match():
+    assert vector_components_within_tolerance(
+        (10.0, -5.0, 2.5),
+        (11.9, -3.1, 0.6),
+        2.0,
+    )
+    assert not vector_components_within_tolerance(
+        (10.0, -5.0, 2.5),
+        (12.1, -5.0, 2.5),
+        2.0,
+    )

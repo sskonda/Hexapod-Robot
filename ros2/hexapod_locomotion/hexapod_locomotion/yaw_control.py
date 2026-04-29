@@ -47,6 +47,39 @@ def vector_norm(values) -> float:
     return math.sqrt(sum(float(value) * float(value) for value in values))
 
 
+def update_vector_running_average(current_average, sample_values, sample_count):
+    """Update a per-axis running average and return ``(average, count)``."""
+    if sample_values is None:
+        return current_average, int(sample_count)
+
+    if current_average is None or int(sample_count) <= 0:
+        return tuple(float(value) for value in sample_values), 1
+
+    next_count = int(sample_count) + 1
+    next_average = tuple(
+        current_average[index]
+        + (float(sample_values[index]) - current_average[index]) / next_count
+        for index in range(len(sample_values))
+    )
+    return next_average, next_count
+
+
+def vector_components_within_tolerance(reference_values, sample_values, tolerance):
+    """Return true when every axis stays within the absolute tolerance."""
+    if (
+        reference_values is None
+        or sample_values is None
+        or len(reference_values) != len(sample_values)
+    ):
+        return False
+
+    tolerance = max(0.0, float(tolerance))
+    return all(
+        abs(float(sample_values[index]) - float(reference_values[index])) <= tolerance
+        for index in range(len(reference_values))
+    )
+
+
 def imu_is_still(
     accel_m_s2,
     gyro_rad_s,

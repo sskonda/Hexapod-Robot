@@ -26,6 +26,15 @@ def generate_launch_description():
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
+    imu_allow_mag_baseline_trust_without_calibration = LaunchConfiguration(
+        'imu_allow_mag_baseline_trust_without_calibration'
+    )
+    imu_idle_baseline_mag_axis_tolerance_ut = LaunchConfiguration(
+        'imu_idle_baseline_mag_axis_tolerance_ut'
+    )
+    imu_idle_baseline_min_still_samples = LaunchConfiguration(
+        'imu_idle_baseline_min_still_samples'
+    )
     imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
     imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
     wait_for_imu_yaw = LaunchConfiguration('wait_for_imu_yaw')
@@ -110,6 +119,21 @@ def generate_launch_description():
             description='Pass through to hexapod_core.launch.py for startup stillness motion grace.',
         ),
         DeclareLaunchArgument(
+            'imu_allow_mag_baseline_trust_without_calibration',
+            default_value='true',
+            description='Pass through to hexapod_core.launch.py for startup magnetic baseline yaw fallback.',
+        ),
+        DeclareLaunchArgument(
+            'imu_idle_baseline_mag_axis_tolerance_ut',
+            default_value='2.0',
+            description='Pass through to hexapod_core.launch.py for the startup magnetic baseline tolerance in microtesla.',
+        ),
+        DeclareLaunchArgument(
+            'imu_idle_baseline_min_still_samples',
+            default_value='25',
+            description='Pass through to hexapod_core.launch.py for the startup magnetic baseline sample count.',
+        ),
+        DeclareLaunchArgument(
             'imu_zero_yaw_to_startup_heading',
             default_value='true',
             description='Pass through to hexapod_core.launch.py to zero IMU yaw to the startup heading.',
@@ -181,6 +205,9 @@ def generate_launch_description():
                 'imu_min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
+                'imu_allow_mag_baseline_trust_without_calibration': imu_allow_mag_baseline_trust_without_calibration,
+                'imu_idle_baseline_mag_axis_tolerance_ut': imu_idle_baseline_mag_axis_tolerance_ut,
+                'imu_idle_baseline_min_still_samples': imu_idle_baseline_min_still_samples,
                 'imu_zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
                 'imu_publish_orientation_during_startup': imu_publish_orientation_during_startup,
             }.items(),

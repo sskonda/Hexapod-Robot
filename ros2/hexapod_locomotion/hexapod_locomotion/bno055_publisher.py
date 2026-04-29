@@ -30,6 +30,8 @@ from .yaw_control import (
     relative_yaw_from_reference,
     resolve_parameter_value,
     update_startup_yaw_reference,
+    update_vector_running_average,
+    vector_components_within_tolerance,
     vector_norm,
 )
 
@@ -347,6 +349,7 @@ class BNO055UART:
 
 class BNO055Publisher(Node):
     DEFAULT_YAW_FILTER_TIME_CONSTANT_SEC = 0.5
+    MICROTESLA_TO_TESLA = 1e-6
 
     def __init__(self):
         super().__init__('bno055_publisher')
@@ -380,6 +383,9 @@ class BNO055Publisher(Node):
         self.declare_parameter('imu_startup_gyro_still_tolerance_rad_s', 0.12)
         self.declare_parameter('imu_startup_motion_grace_sec', 0.5)
         self.declare_parameter('imu_startup_status_log_interval_sec', 2.0)
+        self.declare_parameter('allow_mag_baseline_trust_without_calibration', True)
+        self.declare_parameter('idle_baseline_mag_axis_tolerance_ut', 2.0)
+        self.declare_parameter('idle_baseline_min_still_samples', 25)
         self.declare_parameter('zero_yaw_to_startup_heading', True)
         self.declare_parameter('publish_orientation_during_startup', True)
 
@@ -440,6 +446,20 @@ class BNO055Publisher(Node):
             0.5,
             float(self.get_parameter('imu_startup_status_log_interval_sec').value),
         )
+        self.allow_mag_baseline_trust_without_calibration = bool(
+            self.get_parameter('allow_mag_baseline_trust_without_calibration').value
+        )
+        self.idle_baseline_mag_axis_tolerance_ut = max(
+            0.0,
+            float(self.get_parameter('idle_baseline_mag_axis_tolerance_ut').value),
+        )
+        self.idle_baseline_mag_axis_tolerance_t = (
+            self.idle_baseline_mag_axis_tolerance_ut * self.MICROTESLA_TO_TESLA
+        )
+        self.idle_baseline_min_still_samples = max(
+            1,
+            int(self.get_parameter('idle_baseline_min_still_samples').value),
+        )
         self.zero_yaw_to_startup_heading = bool(
             self.get_parameter('zero_yaw_to_startup_heading').value
         )
@@ -455,6 +475,10 @@ class BNO055Publisher(Node):
         self.startup_yaw_reference_rad = None
         self.startup_yaw_reference_locked = not self.zero_yaw_to_startup_heading
         self.startup_orientation_publish_logged = False
+        self.startup_mag_baseline_t = None
+        self.startup_mag_baseline_sample_count = 0
+        self.startup_mag_baseline_locked = False
+        self.startup_mag_baseline_good = False
         self.startup_still_gate = StartupStillnessGate(
             required_still_time_sec=self.startup_still_time_sec,
             accel_tolerance_m_s2=self.startup_accel_still_tolerance_m_s2,
@@ -503,6 +527,12 @@ class BNO055Publisher(Node):
                 'Magnetometer yaw correction requires mag calibration >= '
                 f'{self.min_mag_calibration_for_yaw}; below that, yaw will be gyro-only.'
             )
+        if self.allow_mag_baseline_trust_without_calibration:
+            self.get_logger().info(
+                'If BNO055 mag calibration stays low, a stable startup magnetometer baseline '
+                f'within +/-{self.idle_baseline_mag_axis_tolerance_ut:.1f} uT per axis '
+                'will still enable yaw correction.'
+            )
         if self.zero_yaw_to_startup_heading:
             self.get_logger().info(
                 'IMU yaw will be zeroed to the startup heading so heading hold tracks '
@@ -544,6 +574,38 @@ class BNO055Publisher(Node):
                 changed_fields.append(
                     f'min_mag_calibration_for_yaw={self.min_mag_calibration_for_yaw}'
                 )
+            elif parameter.name == 'allow_mag_baseline_trust_without_calibration':
+                self.allow_mag_baseline_trust_without_calibration = bool(parameter.value)
+                changed_fields.append(
+                    'allow_mag_baseline_trust_without_calibration='
+                    f'{self.allow_mag_baseline_trust_without_calibration}'
+                )
+            elif parameter.name == 'idle_baseline_mag_axis_tolerance_ut':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='idle_baseline_mag_axis_tolerance_ut must be non-negative.',
+                    )
+                self.idle_baseline_mag_axis_tolerance_ut = value
+                self.idle_baseline_mag_axis_tolerance_t = (
+                    self.idle_baseline_mag_axis_tolerance_ut * self.MICROTESLA_TO_TESLA
+                )
+                changed_fields.append(
+                    'idle_baseline_mag_axis_tolerance_ut='
+                    f'{self.idle_baseline_mag_axis_tolerance_ut:.3f}'
+                )
+            elif parameter.name == 'idle_baseline_min_still_samples':
+                value = int(parameter.value)
+                if value < 1:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='idle_baseline_min_still_samples must be at least 1.',
+                    )
+                self.idle_baseline_min_still_samples = value
+                changed_fields.append(
+                    f'idle_baseline_min_still_samples={self.idle_baseline_min_still_samples}'
+                )
 
         if changed_fields:
             self.get_logger().info(
@@ -579,6 +641,8 @@ class BNO055Publisher(Node):
         accumulated_still_time_sec = self.startup_still_gate.accumulated_still_time_sec
         startup_ready = self.startup_still_gate.update(dt, accel, gyro)
         calibration = self._read_calibration_status_cached(measurement_time)
+        if vector_is_valid(magnetic_field, 3) and self.startup_still_gate.is_still:
+            self._update_startup_mag_baseline(magnetic_field)
 
         stamp = self.get_clock().now().to_msg()
 
@@ -611,6 +675,7 @@ class BNO055Publisher(Node):
         if orientation is None:
             imu_msg.orientation_covariance[0] = -1.0
         else:
+            self._lock_startup_mag_baseline_if_ready(startup_ready, magnetic_field)
             if startup_ready and not self.startup_settle_logged:
                 self.get_logger().info(
                     'IMU startup settle complete; startup yaw reference is now locked. '
@@ -619,13 +684,14 @@ class BNO055Publisher(Node):
                 )
                 self.startup_settle_logged = True
             roll_rad, pitch_rad, measured_yaw_rad = orientation
-            if calibration[3] >= self.min_mag_calibration_for_yaw:
+            yaw_source = self._resolve_yaw_source(calibration)
+            if yaw_source in ('mag', 'mag_idle_baseline'):
                 filtered_yaw_rad = self.yaw_filter.update(
                     measured_yaw_rad,
                     gyro[2],
                     dt,
                 )
-                self._log_yaw_source_once('mag')
+                self._log_yaw_source_once(yaw_source, calibration)
             else:
                 filtered_yaw_rad = self.yaw_filter.predict(
                     gyro[2],
@@ -700,6 +766,70 @@ class BNO055Publisher(Node):
 
         return self.last_calibration_status
 
+    def _update_startup_mag_baseline(self, magnetic_field):
+        if (
+            not self.allow_mag_baseline_trust_without_calibration
+            or self.startup_mag_baseline_locked
+        ):
+            return
+
+        self.startup_mag_baseline_t, self.startup_mag_baseline_sample_count = (
+            update_vector_running_average(
+                self.startup_mag_baseline_t,
+                magnetic_field,
+                self.startup_mag_baseline_sample_count,
+            )
+        )
+
+    def _lock_startup_mag_baseline_if_ready(self, startup_ready, magnetic_field):
+        if (
+            not startup_ready
+            or self.startup_mag_baseline_locked
+            or not self.allow_mag_baseline_trust_without_calibration
+        ):
+            return
+
+        self.startup_mag_baseline_locked = True
+        self.startup_mag_baseline_good = self._startup_mag_baseline_is_good(magnetic_field)
+
+        if self.startup_mag_baseline_good:
+            baseline_ut = tuple(
+                value / self.MICROTESLA_TO_TESLA for value in self.startup_mag_baseline_t
+            )
+            self.get_logger().info(
+                'Startup magnetometer baseline accepted for yaw correction fallback '
+                f'after {self.startup_mag_baseline_sample_count} still samples: '
+                f'baseline_uT=({baseline_ut[0]:.2f}, {baseline_ut[1]:.2f}, {baseline_ut[2]:.2f}), '
+                f'tolerance=+/-{self.idle_baseline_mag_axis_tolerance_ut:.1f} uT.'
+            )
+        else:
+            self.get_logger().warn(
+                'Startup magnetometer baseline was not stable enough to override low '
+                'BNO055 mag calibration. Gyro-only yaw fallback will remain in use until '
+                'the sensor reports healthier calibration.'
+            )
+
+    def _startup_mag_baseline_is_good(self, magnetic_field):
+        return (
+            self.startup_mag_baseline_t is not None
+            and self.startup_mag_baseline_sample_count >= self.idle_baseline_min_still_samples
+            and vector_is_valid(magnetic_field, 3)
+            and vector_components_within_tolerance(
+                self.startup_mag_baseline_t,
+                magnetic_field,
+                self.idle_baseline_mag_axis_tolerance_t,
+            )
+        )
+
+    def _resolve_yaw_source(self, calibration):
+        if calibration[3] >= self.min_mag_calibration_for_yaw:
+            return 'mag'
+
+        if self.startup_mag_baseline_good:
+            return 'mag_idle_baseline'
+
+        return 'gyro_only'
+
     def _log_yaw_source_once(self, yaw_source, calibration=None):
         if yaw_source == self.last_yaw_source:
             return
@@ -708,6 +838,14 @@ class BNO055Publisher(Node):
         if yaw_source == 'mag':
             self.get_logger().info(
                 'Using magnetometer-corrected yaw because mag calibration is high enough.'
+            )
+            return
+
+        if yaw_source == 'mag_idle_baseline':
+            self.get_logger().info(
+                'Using magnetometer-corrected yaw because the startup idle magnetic field '
+                'matched the learned baseline closely enough, even though the BNO055 '
+                'mag calibration stayed low.'
             )
             return
 
