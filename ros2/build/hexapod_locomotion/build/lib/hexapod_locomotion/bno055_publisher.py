@@ -9,8 +9,8 @@ This node publishes:
   - ``sensor_msgs/msg/MagneticField`` on ``/imu/mag`` with the raw
     magnetometer measurement
 
-The goal is to preserve the MPU6050-era ROS interface while upgrading heading
-hold to use the BNO055 magnetometer explicitly for yaw drift correction.
+The goal is to preserve the existing ROS IMU topic interface while using the
+BNO055 magnetometer explicitly for yaw drift correction.
 """
 
 import math

@@ -7,8 +7,6 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
-from .imu_fallback import should_use_mpu6050_yaw_fallback
-
 
 @dataclass(frozen=True)
 class MotionSegment:
@@ -32,9 +30,6 @@ class PathPlanNode(Node):
         self.declare_parameter('square_side_m', 0.5)
         self.declare_parameter('wait_for_imu_yaw', False)
         self.declare_parameter('imu_topic', '/imu/data_raw')
-        self.declare_parameter('enable_mpu6050_yaw_fallback', True)
-        self.declare_parameter('mpu6050_imu_topic', '/imu/mpu6050')
-        self.declare_parameter('imu_yaw_fallback_timeout_sec', 5.0)
 
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
         self.publish_rate_hz = max(1.0, float(self.get_parameter('publish_rate_hz').value))
@@ -46,18 +41,9 @@ class PathPlanNode(Node):
         self.square_side_m = max(0.001, float(self.get_parameter('square_side_m').value))
         self.wait_for_imu_yaw = bool(self.get_parameter('wait_for_imu_yaw').value)
         self.imu_topic = str(self.get_parameter('imu_topic').value)
-        self.enable_mpu6050_yaw_fallback = bool(
-            self.get_parameter('enable_mpu6050_yaw_fallback').value
-        )
-        self.mpu6050_imu_topic = str(self.get_parameter('mpu6050_imu_topic').value)
-        self.imu_yaw_fallback_timeout_sec = max(
-            0.0,
-            float(self.get_parameter('imu_yaw_fallback_timeout_sec').value),
-        )
 
         self.publisher = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.imu_subscription = None
-        self.mpu6050_imu_subscription = None
         if self.wait_for_imu_yaw:
             self.imu_subscription = self.create_subscription(
                 Imu,
@@ -65,20 +51,11 @@ class PathPlanNode(Node):
                 self.imu_callback,
                 10,
             )
-            if self.enable_mpu6050_yaw_fallback:
-                self.mpu6050_imu_subscription = self.create_subscription(
-                    Imu,
-                    self.mpu6050_imu_topic,
-                    self.mpu6050_imu_callback,
-                    10,
-                )
         self.segments = self.build_segments()
         self.current_segment_index = -1
         self.segment_started_at = self.get_clock().now()
         self.last_wait_log_time = self.segment_started_at
         self.imu_yaw_ready = not self.wait_for_imu_yaw
-        self.mpu6050_fallback_available = False
-        self.started_with_mpu6050_fallback = False
         self.started = False
         self.finished = False
 
@@ -102,12 +79,6 @@ class PathPlanNode(Node):
             self.get_logger().info(
                 f'Waiting for valid IMU yaw on {self.imu_topic} before starting motion.'
             )
-            if self.enable_mpu6050_yaw_fallback:
-                self.get_logger().info(
-                    'If BNO055 yaw is still invalid after '
-                    f'{self.imu_yaw_fallback_timeout_sec:.1f} s, path_plan will start '
-                    f'using the MPU6050 fallback topic {self.mpu6050_imu_topic}.'
-                )
 
     def imu_callback(self, msg: Imu):
         orientation_covariance = msg.orientation_covariance
@@ -120,9 +91,6 @@ class PathPlanNode(Node):
                 msg.orientation.w,
             ))
         )
-
-    def mpu6050_imu_callback(self, _msg: Imu):
-        self.mpu6050_fallback_available = True
 
     def build_segments(self):
         if self.path_type == 'square':
@@ -212,22 +180,6 @@ class PathPlanNode(Node):
                 return
 
             if not self.imu_yaw_ready:
-                elapsed_wait_sec = self.elapsed_since(self.segment_started_at)
-                if should_use_mpu6050_yaw_fallback(
-                    primary_yaw_valid=self.imu_yaw_ready,
-                    fallback_enabled=self.enable_mpu6050_yaw_fallback,
-                    fallback_available=self.mpu6050_fallback_available,
-                    elapsed_sec=elapsed_wait_sec,
-                    timeout_sec=self.imu_yaw_fallback_timeout_sec,
-                ):
-                    self.started = True
-                    self.started_with_mpu6050_fallback = True
-                    self.get_logger().warn(
-                        'BNO055 yaw is still invalid, so path_plan is starting motion with '
-                        'the MPU6050 yaw fallback.'
-                    )
-                    self.start_next_segment()
-                    return
                 if self.elapsed_since(self.last_wait_log_time) >= 2.0:
                     self.last_wait_log_time = self.get_clock().now()
                     self.get_logger().info(
