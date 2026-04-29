@@ -10,8 +10,11 @@ def generate_launch_description():
     config_dir = Path(get_package_share_directory('hexapod_locomotion')) / 'config'
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
+    yaw_kp = LaunchConfiguration('yaw_kp')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
+    yaw_ki = LaunchConfiguration('yaw_ki')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
+    yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_frame_id = LaunchConfiguration('odom_frame_id')
     base_frame_id = LaunchConfiguration('base_frame_id')
@@ -48,14 +51,29 @@ def generate_launch_description():
             description='Apply saved calibration offsets in servo_driver.',
         ),
         DeclareLaunchArgument(
+            'yaw_kp',
+            default_value='0.45',
+            description='Heading-hold proportional gain used by locomotion when no yaw is commanded.',
+        ),
+        DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.1',
-            description='IMU heading-hold gain used by locomotion when no yaw is commanded.',
+            default_value='0.0',
+            description='Legacy alias for yaw_kp. Leave at 0.0 unless an older script sets it.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_ki',
+            default_value='0.12',
+            description='Heading-hold integral gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
             'yaw_deadband_deg',
-            default_value='5.0',
+            default_value='2.5',
             description='Yaw-error deadband used by locomotion heading hold.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_integrator_limit',
+            default_value='1.2',
+            description='Absolute limit for the locomotion heading-hold integrator state.',
         ),
         DeclareLaunchArgument(
             'odom_topic',
@@ -216,8 +234,11 @@ def generate_launch_description():
             parameters=[
                 str(config_dir / 'locomotion.yaml'),
                 {
+                    'yaw_kp': yaw_kp,
                     'yaw_correction_gain': yaw_correction_gain,
+                    'yaw_ki': yaw_ki,
                     'yaw_deadband_deg': yaw_deadband_deg,
+                    'yaw_integrator_limit': yaw_integrator_limit,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,
                     'base_frame_id': base_frame_id,

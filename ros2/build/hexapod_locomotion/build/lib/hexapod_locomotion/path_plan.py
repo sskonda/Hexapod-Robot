@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from sensor_msgs.msg import Imu
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,8 @@ class PathPlanNode(Node):
         self.declare_parameter('linear_speed_mps', 0.05)
         self.declare_parameter('path_type', 'linear')
         self.declare_parameter('square_side_m', 0.5)
+        self.declare_parameter('wait_for_imu_yaw', False)
+        self.declare_parameter('imu_topic', '/imu/data_raw')
 
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
         self.publish_rate_hz = max(1.0, float(self.get_parameter('publish_rate_hz').value))
@@ -36,11 +39,23 @@ class PathPlanNode(Node):
         self.linear_speed_mps = max(0.001, abs(float(self.get_parameter('linear_speed_mps').value)))
         self.path_type = str(self.get_parameter('path_type').value).strip().lower()
         self.square_side_m = max(0.001, float(self.get_parameter('square_side_m').value))
+        self.wait_for_imu_yaw = bool(self.get_parameter('wait_for_imu_yaw').value)
+        self.imu_topic = str(self.get_parameter('imu_topic').value)
 
         self.publisher = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.imu_subscription = None
+        if self.wait_for_imu_yaw:
+            self.imu_subscription = self.create_subscription(
+                Imu,
+                self.imu_topic,
+                self.imu_callback,
+                10,
+            )
         self.segments = self.build_segments()
         self.current_segment_index = -1
         self.segment_started_at = self.get_clock().now()
+        self.last_wait_log_time = self.segment_started_at
+        self.imu_yaw_ready = not self.wait_for_imu_yaw
         self.started = False
         self.finished = False
 
@@ -60,6 +75,22 @@ class PathPlanNode(Node):
 
         if not self.segments:
             self.get_logger().warn('No motion segments configured. The node will publish stop and exit.')
+        if self.wait_for_imu_yaw:
+            self.get_logger().info(
+                f'Waiting for valid IMU yaw on {self.imu_topic} before starting motion.'
+            )
+
+    def imu_callback(self, msg: Imu):
+        orientation_covariance = msg.orientation_covariance
+        self.imu_yaw_ready = (
+            orientation_covariance[0] >= 0.0
+            and any(abs(value) > 1e-6 for value in (
+                msg.orientation.x,
+                msg.orientation.y,
+                msg.orientation.z,
+                msg.orientation.w,
+            ))
+        )
 
     def build_segments(self):
         if self.path_type == 'square':
@@ -137,7 +168,7 @@ class PathPlanNode(Node):
         self.publish_stop()
         self.get_logger().info('Path plan complete. Published stop command.')
         self.timer.cancel()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
     def control_loop(self):
         if self.finished:
@@ -146,6 +177,15 @@ class PathPlanNode(Node):
         if not self.started:
             self.publish_stop()
             if self.elapsed_since(self.segment_started_at) < self.startup_delay_sec:
+                return
+
+            if not self.imu_yaw_ready:
+                if self.elapsed_since(self.last_wait_log_time) >= 2.0:
+                    self.last_wait_log_time = self.get_clock().now()
+                    self.get_logger().info(
+                        'Startup delay elapsed, but IMU yaw is not valid yet. '
+                        'Holding position until yaw heading hold is ready.'
+                    )
                 return
 
             self.started = True
@@ -175,10 +215,8 @@ def main(args=None):
     finally:
         if rclpy.ok():
             node.publish_stop()
-            node.destroy_node()
-            rclpy.shutdown()
-        else:
-            node.destroy_node()
+        node.destroy_node()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

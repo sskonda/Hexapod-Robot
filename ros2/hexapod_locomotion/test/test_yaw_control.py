@@ -62,3 +62,25 @@ def test_resolve_parameter_value_prefers_new_name_and_reports_conflict():
 
     assert resolved == pytest.approx(0.8)
     assert conflict
+
+
+def test_resolve_parameter_value_respects_legacy_default_value():
+    resolved, conflict = resolve_parameter_value(
+        0.45,
+        0.0,
+        0.45,
+        legacy_default_value=0.0,
+    )
+
+    assert resolved == pytest.approx(0.45)
+    assert not conflict
+
+    resolved, conflict = resolve_parameter_value(
+        0.45,
+        0.2,
+        0.45,
+        legacy_default_value=0.0,
+    )
+
+    assert resolved == pytest.approx(0.2)
+    assert not conflict

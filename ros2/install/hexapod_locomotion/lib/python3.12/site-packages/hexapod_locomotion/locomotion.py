@@ -2,15 +2,20 @@
 
 import copy
 import math
+import time
 from dataclasses import dataclass
 
 import rclpy
-from geometry_msgs.msg import Twist, Vector3
+from geometry_msgs.msg import TransformStamped, Twist, Vector3
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, JointState
+from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
+from .kalman_filter import AngleKalmanFilter
+from .yaw_control import apply_angular_deadband, resolve_parameter_value
 
 
 BASE_FOOTPOINTS = [
@@ -24,7 +29,7 @@ BASE_FOOTPOINTS = [
 
 LEG_MOUNT_ANGLES_DEG = [54.0, 0.0, -54.0, -126.0, 180.0, 126.0]
 LEG_X_OFFSETS_MM = [94.0, 85.0, 94.0, 94.0, 85.0, 94.0]
-LEG_Z_OFFSET_MM = 14.0
+LEG_Z_OFFSET_MM = 50.0
 WAVE_SEQUENCE = [5, 2, 1, 0, 3, 4]
 
 
@@ -50,6 +55,16 @@ def map_value(value, from_low, from_high, to_low, to_high):
     return (to_high - to_low) * (value - from_low) / (from_high - from_low) + to_low
 
 
+def normalize_angle(angle_rad):
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+
+def quaternion_to_yaw(x_value, y_value, z_value, w_value):
+    siny_cosp = 2.0 * (w_value * z_value + x_value * y_value)
+    cosy_cosp = 1.0 - 2.0 * (y_value * y_value + z_value * z_value)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
 def matrix_multiply(a, b):
     return [
         [
@@ -68,11 +83,17 @@ def matrix_vector_multiply(matrix, vector):
 
 
 class LocomotionNode(Node):
+    DEFAULT_YAW_KP = 0.45
+    DEFAULT_LEGACY_YAW_CORRECTION_GAIN = 0.0
+    DEFAULT_YAW_KI = 0.12
+    DEFAULT_YAW_DEADBAND_DEG = 2.5
+    DEFAULT_YAW_INTEGRATOR_LIMIT = 1.2
+
     def __init__(self):
         super().__init__('locomotion')
 
         self.declare_parameter('use_imu', True)
-        self.declare_parameter('balance_gain', 0.0)
+        self.declare_parameter('balance_gain', 0.1)
         self.declare_parameter('gait', 'tripod')
         self.declare_parameter('control_rate_hz', 50.0)
         self.declare_parameter('command_timeout_sec', 0.5)
@@ -90,7 +111,18 @@ class LocomotionNode(Node):
         self.declare_parameter('max_roll_deg', 15.0)
         self.declare_parameter('max_pitch_deg', 15.0)
         self.declare_parameter('max_yaw_deg', 15.0)
-
+        self.declare_parameter('yaw_kp', self.DEFAULT_YAW_KP)
+        self.declare_parameter(
+            'yaw_correction_gain',
+            self.DEFAULT_LEGACY_YAW_CORRECTION_GAIN,
+        )
+        self.declare_parameter('yaw_ki', self.DEFAULT_YAW_KI)
+        self.declare_parameter('yaw_deadband_deg', self.DEFAULT_YAW_DEADBAND_DEG)
+        self.declare_parameter('yaw_integrator_limit', self.DEFAULT_YAW_INTEGRATOR_LIMIT)
+        self.declare_parameter('odom_topic', 'odom')
+        self.declare_parameter('odom_frame_id', 'odom')
+        self.declare_parameter('base_frame_id', 'base_link')
+        self.declare_parameter('publish_odom_tf', True)
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
         self.gait = str(self.get_parameter('gait').value).strip().lower()
@@ -110,6 +142,24 @@ class LocomotionNode(Node):
         self.max_roll_deg = max(0.0, float(self.get_parameter('max_roll_deg').value))
         self.max_pitch_deg = max(0.0, float(self.get_parameter('max_pitch_deg').value))
         self.max_yaw_deg = max(0.0, float(self.get_parameter('max_yaw_deg').value))
+        self.yaw_kp, yaw_kp_conflict = resolve_parameter_value(
+            float(self.get_parameter('yaw_kp').value),
+            float(self.get_parameter('yaw_correction_gain').value),
+            self.DEFAULT_YAW_KP,
+            legacy_default_value=self.DEFAULT_LEGACY_YAW_CORRECTION_GAIN,
+        )
+        self.yaw_ki = max(0.0, float(self.get_parameter('yaw_ki').value))
+        self.yaw_deadband_rad = math.radians(
+            max(0.0, float(self.get_parameter('yaw_deadband_deg').value))
+        )
+        self.yaw_integrator_limit = max(
+            0.0,
+            float(self.get_parameter('yaw_integrator_limit').value),
+        )
+        self.odom_topic = str(self.get_parameter('odom_topic').value)
+        self.odom_frame_id = str(self.get_parameter('odom_frame_id').value)
+        self.base_frame_id = str(self.get_parameter('base_frame_id').value)
+        self.publish_odom_tf = bool(self.get_parameter('publish_odom_tf').value)
 
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
@@ -125,6 +175,14 @@ class LocomotionNode(Node):
 
         self.imu_roll_deg = 0.0
         self.imu_pitch_deg = 0.0
+        self.imu_yaw_rate_rps = 0.0
+        self.imu_yaw_rad = 0.0
+        self.imu_yaw_valid = False
+        self.roll_filter = AngleKalmanFilter()
+        self.pitch_filter = AngleKalmanFilter()
+        self.last_imu_stamp = None
+        self.heading_hold_target_rad = None
+        self.heading_integral_state = 0.0
         self.last_invalid_warn_time = 0.0
         self.gait_state = None
 
@@ -133,7 +191,8 @@ class LocomotionNode(Node):
         self.odom_theta_rad = 0.0
 
         self.target_publisher = self.create_publisher(JointState, 'servo_targets', 10)
-        self.odom_publisher = self.create_publisher(Odometry, 'odom', 10)
+        self.odom_publisher = self.create_publisher(Odometry, self.odom_topic, 10)
+        self.tf_broadcaster = TransformBroadcaster(self)
 
         self.cmd_vel_subscription = self.create_subscription(
             Twist,
@@ -163,14 +222,83 @@ class LocomotionNode(Node):
                 10,
             )
 
+        self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self.control_loop)
 
         self.get_logger().info('Locomotion controller ready')
         self.get_logger().info('Topics: /cmd_vel, /body_pose, /body_shift, /servo_targets')
         self.get_logger().info(
-            'cmd_vel uses m/s and rad/s. body_pose uses roll/pitch/yaw in degrees. '
-            'body_shift uses x/y/z in mm.'
+            f'cmd_vel uses m/s and rad/s. body_pose uses roll/pitch/yaw in degrees. '
+            f'body_shift uses x/y/z in mm. Publishing odom on /{self.odom_topic} '
+            f'with TF {"enabled" if self.publish_odom_tf else "disabled"}.'
         )
+        self.get_logger().info(
+            f'Heading hold PI gains kp={self.yaw_kp:.3f}, ki={self.yaw_ki:.3f}, '
+            f'deadband={math.degrees(self.yaw_deadband_rad):.1f} deg, '
+            f'integrator_limit={self.yaw_integrator_limit:.2f}.'
+        )
+        if yaw_kp_conflict:
+            self.get_logger().warn(
+                'Both yaw_kp and legacy yaw_correction_gain were set. Using yaw_kp.'
+            )
+
+    def parameter_update_callback(self, parameters):
+        changed_fields = []
+
+        for parameter in parameters:
+            if parameter.name in ('yaw_kp', 'yaw_correction_gain'):
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason=f'{parameter.name} must be non-negative.',
+                    )
+                self.yaw_kp = value
+                changed_fields.append(f'{parameter.name}={self.yaw_kp:.3f}')
+            elif parameter.name == 'yaw_ki':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_ki must be non-negative.',
+                    )
+                self.yaw_ki = value
+                changed_fields.append(f'yaw_ki={self.yaw_ki:.3f}')
+            elif parameter.name == 'yaw_deadband_deg':
+                yaw_deadband_deg = float(parameter.value)
+                if yaw_deadband_deg < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_deadband_deg must be non-negative.',
+                    )
+                self.yaw_deadband_rad = math.radians(yaw_deadband_deg)
+                changed_fields.append(
+                    f'yaw_deadband_deg={yaw_deadband_deg:.2f}'
+                )
+            elif parameter.name == 'yaw_integrator_limit':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_integrator_limit must be non-negative.',
+                    )
+                self.yaw_integrator_limit = value
+                self.heading_integral_state = clamp(
+                    self.heading_integral_state,
+                    -self.yaw_integrator_limit,
+                    self.yaw_integrator_limit,
+                )
+                changed_fields.append(
+                    f'yaw_integrator_limit={self.yaw_integrator_limit:.3f}'
+                )
+
+        if changed_fields:
+            self.get_logger().info(
+                'Updated locomotion heading-hold tuning: '
+                + ', '.join(changed_fields)
+            )
+
+        return SetParametersResult(successful=True)
 
     def cmd_vel_callback(self, msg: Twist):
         self.cmd_linear_x_mps = clamp(msg.linear.x, -self.max_linear_speed_mps, self.max_linear_speed_mps)
@@ -193,8 +321,46 @@ class LocomotionNode(Node):
         ay = msg.linear_acceleration.y
         az = msg.linear_acceleration.z
 
-        self.imu_roll_deg = math.degrees(math.atan2(ay, az))
-        self.imu_pitch_deg = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
+        accel_roll = math.degrees(math.atan2(ay, az))
+        accel_pitch = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
+
+        gyro_roll_rate = math.degrees(msg.angular_velocity.x)
+        gyro_pitch_rate = math.degrees(msg.angular_velocity.y)
+
+        if self.last_imu_stamp is None:
+            dt = 0.02  # fallback used only for the first sample before timestamps are available
+        else:
+            dt = (
+                msg.header.stamp.sec - self.last_imu_stamp.sec
+                + (msg.header.stamp.nanosec - self.last_imu_stamp.nanosec) * 1e-9
+            )
+            dt = max(1e-4, min(dt, 1.0))  # clamp to a sane range
+        self.last_imu_stamp = msg.header.stamp
+
+        self.imu_roll_deg = self.roll_filter.update(accel_roll, gyro_roll_rate, dt)
+        self.imu_pitch_deg = self.pitch_filter.update(accel_pitch, gyro_pitch_rate, dt)
+        self.imu_yaw_rate_rps = msg.angular_velocity.z
+
+        orientation_covariance = msg.orientation_covariance
+        orientation_available = (
+            orientation_covariance[0] >= 0.0
+            and any(abs(value) > 1e-6 for value in (
+                msg.orientation.x,
+                msg.orientation.y,
+                msg.orientation.z,
+                msg.orientation.w,
+            ))
+        )
+        if orientation_available:
+            self.imu_yaw_rad = quaternion_to_yaw(
+                msg.orientation.x,
+                msg.orientation.y,
+                msg.orientation.z,
+                msg.orientation.w,
+            )
+            self.imu_yaw_valid = True
+        else:
+            self.imu_yaw_valid = False
 
     def control_loop(self):
         stance_points = self.calculate_stance_points()
@@ -225,34 +391,146 @@ class LocomotionNode(Node):
         else:
             vx = vy = vtheta = 0.0
 
+        heading_rate = vtheta
+        if self.use_imu:
+            heading_rate = self.imu_yaw_rate_rps
+            if self.imu_yaw_valid:
+                self.odom_theta_rad = self.imu_yaw_rad
+            else:
+                self.odom_theta_rad = normalize_angle(self.odom_theta_rad + heading_rate * dt)
+        else:
+            self.odom_theta_rad = normalize_angle(self.odom_theta_rad + heading_rate * dt)
+
         # Rotate body-frame velocity into world frame and integrate position
         cos_h = math.cos(self.odom_theta_rad)
         sin_h = math.sin(self.odom_theta_rad)
         self.odom_x_m += (vx * cos_h - vy * sin_h) * dt
         self.odom_y_m += (vx * sin_h + vy * cos_h) * dt
-        self.odom_theta_rad += vtheta * dt
 
         msg = Odometry()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'odom'
-        msg.child_frame_id = 'base_link'
+        msg.header.frame_id = self.odom_frame_id
+        msg.child_frame_id = self.base_frame_id
         msg.pose.pose.position.x = self.odom_x_m
         msg.pose.pose.position.y = self.odom_y_m
         # Quaternion from yaw only: x=0, y=0, z=sin(θ/2), w=cos(θ/2)
         msg.pose.pose.orientation.z = math.sin(self.odom_theta_rad / 2.0)
         msg.pose.pose.orientation.w = math.cos(self.odom_theta_rad / 2.0)
+        # Conservative covariances prevent downstream filters from treating the
+        # gait-integrated odometry as perfect ground truth.
+        msg.pose.covariance[0] = 0.04
+        msg.pose.covariance[7] = 0.04
+        msg.pose.covariance[14] = 1e6
+        msg.pose.covariance[21] = 1e6
+        msg.pose.covariance[28] = 1e6
+        msg.pose.covariance[35] = 0.09
         # Twist in body frame
         msg.twist.twist.linear.x = vx
         msg.twist.twist.linear.y = vy
-        msg.twist.twist.angular.z = vtheta
+        msg.twist.twist.angular.z = heading_rate
+        msg.twist.covariance[0] = 0.02
+        msg.twist.covariance[7] = 0.02
+        msg.twist.covariance[14] = 1e6
+        msg.twist.covariance[21] = 1e6
+        msg.twist.covariance[28] = 1e6
+        msg.twist.covariance[35] = 0.04
         self.odom_publisher.publish(msg)
+
+        if self.publish_odom_tf:
+            tf_msg = TransformStamped()
+            tf_msg.header.stamp = msg.header.stamp
+            tf_msg.header.frame_id = self.odom_frame_id
+            tf_msg.child_frame_id = self.base_frame_id
+            tf_msg.transform.translation.x = self.odom_x_m
+            tf_msg.transform.translation.y = self.odom_y_m
+            tf_msg.transform.translation.z = 0.0
+            tf_msg.transform.rotation.x = 0.0
+            tf_msg.transform.rotation.y = 0.0
+            tf_msg.transform.rotation.z = math.sin(self.odom_theta_rad / 2.0)
+            tf_msg.transform.rotation.w = math.cos(self.odom_theta_rad / 2.0)
+            self.tf_broadcaster.sendTransform(tf_msg)
 
     def active_motion_command(self):
         age_sec = (self.get_clock().now() - self.last_motion_cmd_time).nanoseconds / 1e9
         if age_sec > self.command_timeout_sec:
+            self._reset_heading_hold_state()
             return 0.0, 0.0, 0.0
 
-        return self.cmd_linear_x_mps, self.cmd_linear_y_mps, self.cmd_yaw_rate_rad_s
+        linear_x = self.cmd_linear_x_mps
+        linear_y = self.cmd_linear_y_mps
+        yaw_rate = self.cmd_yaw_rate_rad_s
+        translating = abs(linear_x) > 1e-6 or abs(linear_y) > 1e-6
+
+        if not translating:
+            self._reset_heading_hold_state()
+        elif abs(yaw_rate) >= 1e-6:
+            self._reset_heading_hold_state()
+        elif self.use_imu and (self.yaw_kp != 0.0 or self.yaw_ki != 0.0):
+            correction = 0.0
+            if self.imu_yaw_valid:
+                if self.heading_hold_target_rad is None:
+                    self.heading_hold_target_rad = self.imu_yaw_rad
+                    self.heading_integral_state = 0.0
+                yaw_error = normalize_angle(self.heading_hold_target_rad - self.imu_yaw_rad)
+                deadbanded_yaw_error = apply_angular_deadband(
+                    yaw_error,
+                    self.yaw_deadband_rad,
+                )
+                proportional_term = self.yaw_kp * deadbanded_yaw_error
+                integral_candidate = clamp(
+                    self.heading_integral_state + deadbanded_yaw_error * (1.0 / self.control_rate_hz),
+                    -self.yaw_integrator_limit,
+                    self.yaw_integrator_limit,
+                )
+                correction_limit = self.max_yaw_rate_rad_s * 0.3
+                unsaturated_correction = proportional_term + self.yaw_ki * integral_candidate
+                correction = clamp(
+                    unsaturated_correction,
+                    -correction_limit,
+                    correction_limit,
+                )
+
+                if self.yaw_ki > 0.0:
+                    correction_is_saturated = not math.isclose(
+                        unsaturated_correction,
+                        correction,
+                        rel_tol=0.0,
+                        abs_tol=1e-9,
+                    )
+                    if (
+                        not correction_is_saturated
+                        or (unsaturated_correction > correction_limit and deadbanded_yaw_error < 0.0)
+                        or (unsaturated_correction < -correction_limit and deadbanded_yaw_error > 0.0)
+                    ):
+                        self.heading_integral_state = integral_candidate
+            else:
+                self._reset_heading_hold_state()
+                self._warn_missing_yaw_estimate()
+
+            yaw_rate = clamp(
+                correction,
+                -self.max_yaw_rate_rad_s * 0.3,
+                self.max_yaw_rate_rad_s * 0.3,
+            )
+        else:
+            self._reset_heading_hold_state()
+
+        return linear_x, linear_y, yaw_rate
+
+    def _reset_heading_hold_state(self):
+        self.heading_hold_target_rad = None
+        self.heading_integral_state = 0.0
+
+    def _warn_missing_yaw_estimate(self):
+        now = time.monotonic()
+        if now - self.last_invalid_warn_time < 2.0:
+            return
+
+        self.last_invalid_warn_time = now
+        self.get_logger().warn(
+            'Heading hold is enabled, but no valid IMU yaw estimate is available yet. '
+            'Yaw correction is temporarily disabled.'
+        )
 
     def motion_is_zero(self, motion):
         return all(abs(value) < 1e-6 for value in motion)

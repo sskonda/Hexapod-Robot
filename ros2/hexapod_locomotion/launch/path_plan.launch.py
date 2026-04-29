@@ -12,10 +12,13 @@ def generate_launch_description():
     share_dir = Path(get_package_share_directory('hexapod_locomotion'))
     core_launch = share_dir / 'launch' / 'hexapod_core.launch.py'
 
+    yaw_kp = LaunchConfiguration('yaw_kp')
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
+    yaw_ki = LaunchConfiguration('yaw_ki')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
+    yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
@@ -45,14 +48,29 @@ def generate_launch_description():
             description='Apply saved calibration offsets in servo_driver.',
         ),
         DeclareLaunchArgument(
+            'yaw_kp',
+            default_value='0.45',
+            description='PI heading-hold proportional gain passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.1',
-            description='IMU heading-hold gain passed through to hexapod_core.launch.py.',
+            default_value='0.0',
+            description='Legacy alias for yaw_kp passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_ki',
+            default_value='0.12',
+            description='PI heading-hold integral gain passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'yaw_deadband_deg',
-            default_value='5.0',
+            default_value='2.5',
             description='Yaw-error deadband passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_integrator_limit',
+            default_value='1.2',
+            description='Heading-hold integrator limit passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',
@@ -139,8 +157,11 @@ def generate_launch_description():
             launch_arguments={
                 'servo_dry_run': servo_dry_run,
                 'apply_offsets': apply_offsets,
+                'yaw_kp': yaw_kp,
                 'yaw_correction_gain': yaw_correction_gain,
+                'yaw_ki': yaw_ki,
                 'yaw_deadband_deg': yaw_deadband_deg,
+                'yaw_integrator_limit': yaw_integrator_limit,
                 'imu_use_external_crystal': imu_use_external_crystal,
                 'imu_read_retry_count': imu_read_retry_count,
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,

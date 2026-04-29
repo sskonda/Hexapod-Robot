@@ -168,7 +168,7 @@ class PathPlanNode(Node):
         self.publish_stop()
         self.get_logger().info('Path plan complete. Published stop command.')
         self.timer.cancel()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
     def control_loop(self):
         if self.finished:
@@ -215,10 +215,8 @@ def main(args=None):
     finally:
         if rclpy.ok():
             node.publish_stop()
-            node.destroy_node()
-            rclpy.shutdown()
-        else:
-            node.destroy_node()
+        node.destroy_node()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':
