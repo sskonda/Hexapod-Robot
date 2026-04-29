@@ -24,7 +24,14 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu, MagneticField
 
 from .kalman_filter import YawComplementaryFilter
-from .yaw_control import StartupStillnessGate, resolve_parameter_value, vector_norm
+from .yaw_control import (
+    StartupStillnessGate,
+    normalize_angle,
+    relative_yaw_from_reference,
+    resolve_parameter_value,
+    update_startup_yaw_reference,
+    vector_norm,
+)
 
 try:
     import serial
@@ -44,10 +51,6 @@ def set_diagonal_covariance(covariance, diagonal_value):
     covariance[0] = diagonal_value
     covariance[4] = diagonal_value
     covariance[8] = diagonal_value
-
-
-def normalize_angle(angle_rad):
-    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
 def quaternion_from_euler(roll_rad, pitch_rad, yaw_rad):
@@ -377,6 +380,8 @@ class BNO055Publisher(Node):
         self.declare_parameter('imu_startup_gyro_still_tolerance_rad_s', 0.12)
         self.declare_parameter('imu_startup_motion_grace_sec', 0.5)
         self.declare_parameter('imu_startup_status_log_interval_sec', 2.0)
+        self.declare_parameter('zero_yaw_to_startup_heading', True)
+        self.declare_parameter('publish_orientation_during_startup', True)
 
         self.frame_id = str(self.get_parameter('frame_id').value)
         self.topic = str(self.get_parameter('topic').value)
@@ -435,12 +440,21 @@ class BNO055Publisher(Node):
             0.5,
             float(self.get_parameter('imu_startup_status_log_interval_sec').value),
         )
+        self.zero_yaw_to_startup_heading = bool(
+            self.get_parameter('zero_yaw_to_startup_heading').value
+        )
+        self.publish_orientation_during_startup = bool(
+            self.get_parameter('publish_orientation_during_startup').value
+        )
         self.last_warning_text = ''
         self.last_measurement_monotonic = None
         self.last_startup_status_log_monotonic = 0.0
         self.last_calibration_read_monotonic = 0.0
         self.last_calibration_status = (0, 0, 0, 0)
         self.last_yaw_source = None
+        self.startup_yaw_reference_rad = None
+        self.startup_yaw_reference_locked = not self.zero_yaw_to_startup_heading
+        self.startup_orientation_publish_logged = False
         self.startup_still_gate = StartupStillnessGate(
             required_still_time_sec=self.startup_still_time_sec,
             accel_tolerance_m_s2=self.startup_accel_still_tolerance_m_s2,
@@ -488,6 +502,16 @@ class BNO055Publisher(Node):
             self.get_logger().info(
                 'Magnetometer yaw correction requires mag calibration >= '
                 f'{self.min_mag_calibration_for_yaw}; below that, yaw will be gyro-only.'
+            )
+        if self.zero_yaw_to_startup_heading:
+            self.get_logger().info(
+                'IMU yaw will be zeroed to the startup heading so heading hold tracks '
+                'relative rotation from the robot\'s initial pose.'
+            )
+        if self.publish_orientation_during_startup:
+            self.get_logger().info(
+                'Publishing startup-relative orientation before the settle timer completes '
+                'so locomotion can react to heading drift immediately.'
             )
 
     def parameter_update_callback(self, parameters):
@@ -582,18 +606,14 @@ class BNO055Publisher(Node):
                     'BNO055 startup settle was interrupted by motion. '
                     'Hold the robot still to restart the settle timer.'
                 )
-            if orientation is None:
-                self.yaw_filter.reset()
-            else:
-                self.yaw_filter.reset(orientation[2])
-            imu_msg.orientation_covariance[0] = -1.0
             self._log_startup_status(measurement_time, accel, gyro)
-        elif orientation is None:
+
+        if orientation is None:
             imu_msg.orientation_covariance[0] = -1.0
         else:
-            if not self.startup_settle_logged:
+            if startup_ready and not self.startup_settle_logged:
                 self.get_logger().info(
-                    'IMU startup settle complete; yaw heading hold enabled. '
+                    'IMU startup settle complete; startup yaw reference is now locked. '
                     f'Calibration status (sys={calibration[0]}, gyro={calibration[1]}, '
                     f'accel={calibration[2]}, mag={calibration[3]}).'
                 )
@@ -613,19 +633,46 @@ class BNO055Publisher(Node):
                     fallback_yaw_rad=measured_yaw_rad,
                 )
                 self._log_yaw_source_once('gyro_only', calibration)
+            if self.zero_yaw_to_startup_heading:
+                self.startup_yaw_reference_rad = update_startup_yaw_reference(
+                    self.startup_yaw_reference_rad,
+                    filtered_yaw_rad,
+                    self.startup_yaw_reference_locked,
+                    self.startup_still_gate.is_still,
+                )
+                if startup_ready:
+                    self.startup_yaw_reference_locked = True
+                published_yaw_rad = relative_yaw_from_reference(
+                    filtered_yaw_rad,
+                    self.startup_yaw_reference_rad,
+                )
+            else:
+                published_yaw_rad = normalize_angle(filtered_yaw_rad)
+
+            publish_orientation = startup_ready or self.publish_orientation_during_startup
+            if not publish_orientation:
+                imu_msg.orientation_covariance[0] = -1.0
+            else:
+                if not startup_ready and not self.startup_orientation_publish_logged:
+                    self.get_logger().info(
+                        'Publishing startup-relative IMU yaw before settle completes; '
+                        'heading hold will use the initial still pose as its reference.'
+                    )
+                    self.startup_orientation_publish_logged = True
             orientation_quaternion = quaternion_from_euler(
                 roll_rad,
                 pitch_rad,
-                filtered_yaw_rad,
+                published_yaw_rad,
             )
-            imu_msg.orientation.x = float(orientation_quaternion[0])
-            imu_msg.orientation.y = float(orientation_quaternion[1])
-            imu_msg.orientation.z = float(orientation_quaternion[2])
-            imu_msg.orientation.w = float(orientation_quaternion[3])
-            set_diagonal_covariance(
-                imu_msg.orientation_covariance,
-                self.orientation_covariance,
-            )
+            if publish_orientation:
+                imu_msg.orientation.x = float(orientation_quaternion[0])
+                imu_msg.orientation.y = float(orientation_quaternion[1])
+                imu_msg.orientation.z = float(orientation_quaternion[2])
+                imu_msg.orientation.w = float(orientation_quaternion[3])
+                set_diagonal_covariance(
+                    imu_msg.orientation_covariance,
+                    self.orientation_covariance,
+                )
 
         self.imu_publisher.publish(imu_msg)
 

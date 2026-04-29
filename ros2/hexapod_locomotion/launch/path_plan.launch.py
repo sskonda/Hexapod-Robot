@@ -26,6 +26,8 @@ def generate_launch_description():
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
+    imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
+    imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
     wait_for_imu_yaw = LaunchConfiguration('wait_for_imu_yaw')
     imu_topic = LaunchConfiguration('imu_topic')
     publish_rate_hz = LaunchConfiguration('publish_rate_hz')
@@ -108,6 +110,16 @@ def generate_launch_description():
             description='Pass through to hexapod_core.launch.py for startup stillness motion grace.',
         ),
         DeclareLaunchArgument(
+            'imu_zero_yaw_to_startup_heading',
+            default_value='true',
+            description='Pass through to hexapod_core.launch.py to zero IMU yaw to the startup heading.',
+        ),
+        DeclareLaunchArgument(
+            'imu_publish_orientation_during_startup',
+            default_value='true',
+            description='Pass through to hexapod_core.launch.py to publish startup-relative IMU orientation before settle completes.',
+        ),
+        DeclareLaunchArgument(
             'wait_for_imu_yaw',
             default_value='true',
             description='Wait for valid IMU yaw before starting the predefined path.',
@@ -169,6 +181,8 @@ def generate_launch_description():
                 'imu_min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
+                'imu_zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
+                'imu_publish_orientation_during_startup': imu_publish_orientation_during_startup,
             }.items(),
         ),
         Node(

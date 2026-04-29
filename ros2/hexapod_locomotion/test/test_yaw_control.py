@@ -6,7 +6,9 @@ from hexapod_locomotion.yaw_control import (
     StartupStillnessGate,
     apply_angular_deadband,
     imu_is_still,
+    relative_yaw_from_reference,
     resolve_parameter_value,
+    update_startup_yaw_reference,
 )
 
 
@@ -84,3 +86,33 @@ def test_resolve_parameter_value_respects_legacy_default_value():
 
     assert resolved == pytest.approx(0.2)
     assert not conflict
+
+
+def test_update_startup_yaw_reference_initializes_and_tracks_while_still():
+    reference = update_startup_yaw_reference(None, math.radians(15.0), False, True)
+    assert reference == pytest.approx(math.radians(15.0))
+
+    reference = update_startup_yaw_reference(reference, math.radians(20.0), False, True)
+    assert reference == pytest.approx(math.radians(20.0))
+
+
+def test_update_startup_yaw_reference_holds_value_once_robot_is_moving():
+    reference = update_startup_yaw_reference(math.radians(12.0), math.radians(30.0), False, False)
+    assert reference == pytest.approx(math.radians(12.0))
+
+    locked_reference = update_startup_yaw_reference(
+        math.radians(12.0),
+        math.radians(30.0),
+        True,
+        True,
+    )
+    assert locked_reference == pytest.approx(math.radians(12.0))
+
+
+def test_relative_yaw_from_reference_wraps_to_shortest_difference():
+    relative_yaw = relative_yaw_from_reference(
+        math.radians(-170.0),
+        math.radians(170.0),
+    )
+
+    assert relative_yaw == pytest.approx(math.radians(20.0))

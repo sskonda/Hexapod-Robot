@@ -8,6 +8,10 @@ import math
 STANDARD_GRAVITY_M_S2 = 9.80665
 
 
+def normalize_angle(angle_rad: float) -> float:
+    return math.atan2(math.sin(float(angle_rad)), math.cos(float(angle_rad)))
+
+
 def apply_angular_deadband(error_rad: float, deadband_rad: float) -> float:
     """Return zero inside the deadband and a continuous error outside it."""
     error_rad = float(error_rad)
@@ -17,6 +21,26 @@ def apply_angular_deadband(error_rad: float, deadband_rad: float) -> float:
         return 0.0
 
     return math.copysign(abs(error_rad) - deadband_rad, error_rad)
+
+
+def update_startup_yaw_reference(
+    reference_yaw_rad,
+    current_yaw_rad,
+    reference_locked,
+    imu_is_still,
+):
+    current_yaw_rad = normalize_angle(current_yaw_rad)
+    if reference_yaw_rad is None or (not reference_locked and imu_is_still):
+        return current_yaw_rad
+
+    return normalize_angle(reference_yaw_rad)
+
+
+def relative_yaw_from_reference(yaw_rad, reference_yaw_rad):
+    if reference_yaw_rad is None:
+        return 0.0
+
+    return normalize_angle(float(yaw_rad) - float(reference_yaw_rad))
 
 
 def vector_norm(values) -> float:

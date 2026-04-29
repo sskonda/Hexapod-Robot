@@ -32,6 +32,8 @@ def generate_launch_description():
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
+    imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
+    imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -164,6 +166,16 @@ def generate_launch_description():
             description='Continuous motion time that resets the IMU startup stillness timer.',
         ),
         DeclareLaunchArgument(
+            'imu_zero_yaw_to_startup_heading',
+            default_value='true',
+            description='Zero IMU yaw to the startup heading so locomotion sees relative rotation from launch.',
+        ),
+        DeclareLaunchArgument(
+            'imu_publish_orientation_during_startup',
+            default_value='true',
+            description='Publish startup-relative IMU orientation before settle completes so heading hold can react immediately.',
+        ),
+        DeclareLaunchArgument(
             'imu_x',
             default_value='0.0',
             description='X offset of the IMU from base_link in metres (forward +).',
@@ -224,6 +236,8 @@ def generate_launch_description():
                 'min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
+                'zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
+                'publish_orientation_during_startup': imu_publish_orientation_during_startup,
             }]
         ),
         Node(
