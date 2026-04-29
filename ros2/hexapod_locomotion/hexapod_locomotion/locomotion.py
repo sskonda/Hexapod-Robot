@@ -14,6 +14,7 @@ from sensor_msgs.msg import Imu, JointState
 from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
+from .gait_math import tripod_points_for_phase
 from .kalman_filter import AngleKalmanFilter
 from .yaw_control import apply_angular_deadband, resolve_parameter_value
 
@@ -39,6 +40,7 @@ class GaitCycleState:
     total_steps: int
     lift_step_mm: float
     planar_delta_mm: list
+    cycle_planar_travel_mm: list
     baseline_points: list
     points: list
     step_index: int = 0
@@ -650,6 +652,10 @@ class LocomotionNode(Node):
             total_steps=total_steps,
             lift_step_mm=self.step_height_mm / float(total_steps),
             planar_delta_mm=planar_delta_mm,
+            cycle_planar_travel_mm=[
+                [delta_x * total_steps, delta_y * total_steps]
+                for delta_x, delta_y in planar_delta_mm
+            ],
             baseline_points=copy.deepcopy(stance_points),
             points=points,
             odom_vx_mps=stride_x_mm * self.control_rate_hz / (total_steps * 1000.0),
@@ -665,36 +671,13 @@ class LocomotionNode(Node):
         gait_state.step_index += 1
 
     def advance_tripod_gait(self, gait_state: GaitCycleState):
-        j = gait_state.step_index
-        total_steps = gait_state.total_steps
-        z_step = gait_state.lift_step_mm
-
-        for group_index in range(3):
-            even_leg = 2 * group_index
-            odd_leg = even_leg + 1
-
-            if j < total_steps / 8.0:
-                self.shift_leg_planar(gait_state, even_leg, -4.0)
-                self.shift_leg_planar(gait_state, odd_leg, 8.0)
-                gait_state.points[odd_leg][2] = gait_state.baseline_points[odd_leg][2] + self.step_height_mm
-            elif j < total_steps / 4.0:
-                self.shift_leg_planar(gait_state, even_leg, -4.0)
-                gait_state.points[odd_leg][2] -= z_step * 8.0
-            elif j < (3.0 * total_steps) / 8.0:
-                gait_state.points[even_leg][2] += z_step * 8.0
-                self.shift_leg_planar(gait_state, odd_leg, -4.0)
-            elif j < (5.0 * total_steps) / 8.0:
-                self.shift_leg_planar(gait_state, even_leg, 8.0)
-                self.shift_leg_planar(gait_state, odd_leg, -4.0)
-            elif j < (3.0 * total_steps) / 4.0:
-                gait_state.points[even_leg][2] -= z_step * 8.0
-                self.shift_leg_planar(gait_state, odd_leg, -4.0)
-            elif j < (7.0 * total_steps) / 8.0:
-                self.shift_leg_planar(gait_state, even_leg, -4.0)
-                gait_state.points[odd_leg][2] += z_step * 8.0
-            else:
-                self.shift_leg_planar(gait_state, even_leg, -4.0)
-                self.shift_leg_planar(gait_state, odd_leg, 8.0)
+        phase_progress = (gait_state.step_index + 1) / float(gait_state.total_steps)
+        gait_state.points = tripod_points_for_phase(
+            gait_state.baseline_points,
+            gait_state.cycle_planar_travel_mm,
+            self.step_height_mm,
+            phase_progress,
+        )
 
     def advance_wave_gait(self, gait_state: GaitCycleState):
         total_steps = gait_state.total_steps
