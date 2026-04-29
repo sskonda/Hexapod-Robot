@@ -14,7 +14,11 @@ from sensor_msgs.msg import Imu, JointState
 from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
-from .gait_math import tripod_points_for_phase
+from .gait_math import (
+    DEFAULT_TRIPOD_PLANAR_TRAVEL_SCALE,
+    cycle_planar_travel_from_deltas,
+    tripod_points_for_phase,
+)
 from .imu_fallback import integrate_relative_yaw, should_use_mpu6050_yaw_fallback
 from .kalman_filter import AngleKalmanFilter
 from .yaw_control import apply_angular_deadband, resolve_parameter_value
@@ -102,6 +106,10 @@ class LocomotionNode(Node):
         self.declare_parameter('command_timeout_sec', 0.5)
         self.declare_parameter('default_body_height_mm', -25.0)
         self.declare_parameter('step_height_mm', 40.0)
+        self.declare_parameter(
+            'tripod_planar_travel_scale',
+            DEFAULT_TRIPOD_PLANAR_TRAVEL_SCALE,
+        )
         self.declare_parameter('max_linear_speed_mps', 0.06)
         self.declare_parameter('max_lateral_speed_mps', 0.05)
         self.declare_parameter('max_yaw_rate_rad_s', 0.9)
@@ -136,6 +144,10 @@ class LocomotionNode(Node):
         self.command_timeout_sec = max(0.0, float(self.get_parameter('command_timeout_sec').value))
         self.default_body_height_mm = float(self.get_parameter('default_body_height_mm').value)
         self.step_height_mm = max(1.0, float(self.get_parameter('step_height_mm').value))
+        self.tripod_planar_travel_scale = max(
+            0.1,
+            float(self.get_parameter('tripod_planar_travel_scale').value),
+        )
         self.max_linear_speed_mps = max(0.001, float(self.get_parameter('max_linear_speed_mps').value))
         self.max_lateral_speed_mps = max(0.001, float(self.get_parameter('max_lateral_speed_mps').value))
         self.max_yaw_rate_rad_s = max(0.001, float(self.get_parameter('max_yaw_rate_rad_s').value))
@@ -266,6 +278,10 @@ class LocomotionNode(Node):
             f'deadband={math.degrees(self.yaw_deadband_rad):.1f} deg, '
             f'integrator_limit={self.yaw_integrator_limit:.2f}.'
         )
+        if self.gait == 'tripod':
+            self.get_logger().info(
+                f'Tripod gait planar travel scale={self.tripod_planar_travel_scale:.2f}.'
+            )
         if yaw_kp_conflict:
             self.get_logger().warn(
                 'Both yaw_kp and legacy yaw_correction_gain were set. Using yaw_kp.'
@@ -319,6 +335,17 @@ class LocomotionNode(Node):
                 )
                 changed_fields.append(
                     f'yaw_integrator_limit={self.yaw_integrator_limit:.3f}'
+                )
+            elif parameter.name == 'tripod_planar_travel_scale':
+                value = float(parameter.value)
+                if value <= 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='tripod_planar_travel_scale must be greater than zero.',
+                    )
+                self.tripod_planar_travel_scale = value
+                changed_fields.append(
+                    f'tripod_planar_travel_scale={self.tripod_planar_travel_scale:.3f}'
                 )
 
         if changed_fields:
@@ -737,10 +764,11 @@ class LocomotionNode(Node):
             total_steps=total_steps,
             lift_step_mm=self.step_height_mm / float(total_steps),
             planar_delta_mm=planar_delta_mm,
-            cycle_planar_travel_mm=[
-                [delta_x * total_steps, delta_y * total_steps]
-                for delta_x, delta_y in planar_delta_mm
-            ],
+            cycle_planar_travel_mm=cycle_planar_travel_from_deltas(
+                planar_delta_mm,
+                total_steps,
+                self.tripod_planar_travel_scale if self.gait == 'tripod' else 1.0,
+            ),
             baseline_points=copy.deepcopy(stance_points),
             points=points,
             odom_vx_mps=stride_x_mm * self.control_rate_hz / (total_steps * 1000.0),

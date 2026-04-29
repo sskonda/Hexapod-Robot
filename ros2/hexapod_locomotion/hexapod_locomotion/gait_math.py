@@ -3,6 +3,7 @@
 """Pure gait helpers that do not depend on ROS."""
 
 TRIPOD_GROUP_PHASE_OFFSETS = (0.5, 0.0, 0.5, 0.0, 0.5, 0.0)
+DEFAULT_TRIPOD_PLANAR_TRAVEL_SCALE = 2.0
 
 
 def clamp_unit_interval(value: float) -> float:
@@ -15,6 +16,26 @@ def triangular_lift_scale(progress: float) -> float:
     if progress <= 0.5:
         return progress * 2.0
     return (1.0 - progress) * 2.0
+
+
+def cycle_planar_travel_from_deltas(
+    planar_delta_mm,
+    total_steps: int,
+    travel_scale: float = DEFAULT_TRIPOD_PLANAR_TRAVEL_SCALE,
+):
+    """Expand per-step planar deltas into full-cycle tripod travel.
+
+    The older tripod gait effectively swung each foot through about twice the
+    per-cycle stride that the smooth phase-based gait uses by default. Keeping
+    this scale at ``2.0`` preserves that familiar physical step size while
+    still avoiding the old wrap discontinuity.
+    """
+
+    scale = max(0.0, float(travel_scale))
+    return [
+        [float(delta_x) * float(total_steps) * scale, float(delta_y) * float(total_steps) * scale]
+        for delta_x, delta_y in planar_delta_mm
+    ]
 
 
 def tripod_leg_pose(

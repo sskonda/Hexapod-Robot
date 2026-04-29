@@ -16,6 +16,7 @@ def generate_launch_description():
     yaw_ki = LaunchConfiguration('yaw_ki')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
+    tripod_planar_travel_scale = LaunchConfiguration('tripod_planar_travel_scale')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_frame_id = LaunchConfiguration('odom_frame_id')
     base_frame_id = LaunchConfiguration('base_frame_id')
@@ -94,6 +95,11 @@ def generate_launch_description():
             'yaw_integrator_limit',
             default_value='1.2',
             description='Absolute limit for the locomotion heading-hold integrator state.',
+        ),
+        DeclareLaunchArgument(
+            'tripod_planar_travel_scale',
+            default_value='2.0',
+            description='Planar foot-travel multiplier for the tripod gait. Increase slightly if the robot still under-travels.',
         ),
         DeclareLaunchArgument(
             'odom_topic',
@@ -345,6 +351,7 @@ def generate_launch_description():
                     'yaw_ki': yaw_ki,
                     'yaw_deadband_deg': yaw_deadband_deg,
                     'yaw_integrator_limit': yaw_integrator_limit,
+                    'tripod_planar_travel_scale': tripod_planar_travel_scale,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,
                     'base_frame_id': base_frame_id,

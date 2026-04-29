@@ -19,6 +19,7 @@ def generate_launch_description():
     yaw_ki = LaunchConfiguration('yaw_ki')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
+    tripod_planar_travel_scale = LaunchConfiguration('tripod_planar_travel_scale')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
@@ -90,6 +91,11 @@ def generate_launch_description():
             'yaw_integrator_limit',
             default_value='1.2',
             description='Heading-hold integrator limit passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'tripod_planar_travel_scale',
+            default_value='2.0',
+            description='Tripod gait planar foot-travel multiplier passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',
@@ -246,6 +252,7 @@ def generate_launch_description():
                 'yaw_ki': yaw_ki,
                 'yaw_deadband_deg': yaw_deadband_deg,
                 'yaw_integrator_limit': yaw_integrator_limit,
+                'tripod_planar_travel_scale': tripod_planar_travel_scale,
                 'imu_use_external_crystal': imu_use_external_crystal,
                 'imu_read_retry_count': imu_read_retry_count,
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,

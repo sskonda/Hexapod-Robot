@@ -1,6 +1,10 @@
 import pytest
 
-from hexapod_locomotion.gait_math import tripod_points_for_phase
+from hexapod_locomotion.gait_math import (
+    DEFAULT_TRIPOD_PLANAR_TRAVEL_SCALE,
+    cycle_planar_travel_from_deltas,
+    tripod_points_for_phase,
+)
 
 
 BASELINE_POINTS = [
@@ -68,3 +72,16 @@ def test_tripod_lifted_group_switches_between_half_cycles():
         else:
             assert early_points[leg_index][2] == pytest.approx(baseline_point[2])
             assert late_points[leg_index][2] > baseline_point[2]
+
+
+def test_tripod_cycle_travel_scale_matches_legacy_excursion():
+    planar_deltas = [[0.875, 0.0] for _ in range(6)]
+    scaled_travel = cycle_planar_travel_from_deltas(
+        planar_deltas,
+        total_steps=40,
+        travel_scale=DEFAULT_TRIPOD_PLANAR_TRAVEL_SCALE,
+    )
+
+    for travel in scaled_travel:
+        assert travel[0] == pytest.approx(70.0)
+        assert travel[1] == pytest.approx(0.0)
