@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'imu_publisher = hexapod_locomotion.imu_publisher:main',
             'bno055_publisher = hexapod_locomotion.bno055_publisher:main',
+            'mpu6050_publisher = hexapod_locomotion.mpu6050_publisher:main',
             'locomotion = hexapod_locomotion.locomotion:main',
             'crab_path_follower = hexapod_locomotion.crab_path_follower:main',
             'path_plan = hexapod_locomotion.path_plan:main',

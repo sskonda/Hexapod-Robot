@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
@@ -41,6 +42,10 @@ def generate_launch_description():
     imu_idle_baseline_min_still_samples = LaunchConfiguration(
         'imu_idle_baseline_min_still_samples'
     )
+    enable_mpu6050_yaw_fallback = LaunchConfiguration('enable_mpu6050_yaw_fallback')
+    mpu6050_imu_topic = LaunchConfiguration('mpu6050_imu_topic')
+    mpu6050_publish_rate_hz = LaunchConfiguration('mpu6050_publish_rate_hz')
+    imu_yaw_fallback_timeout_sec = LaunchConfiguration('imu_yaw_fallback_timeout_sec')
     imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
     imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
     imu_x = LaunchConfiguration('imu_x')
@@ -190,6 +195,26 @@ def generate_launch_description():
             description='Minimum still startup samples required before the low-calibration magnetometer baseline fallback may be accepted.',
         ),
         DeclareLaunchArgument(
+            'enable_mpu6050_yaw_fallback',
+            default_value='true',
+            description='Launch the MPU6050 fallback IMU and let locomotion use its integrated gyro yaw after a timeout when BNO055 yaw stays invalid.',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_imu_topic',
+            default_value='/imu/mpu6050',
+            description='Topic published by the MPU6050 fallback IMU node.',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_publish_rate_hz',
+            default_value='50.0',
+            description='Publish rate for the MPU6050 fallback IMU node.',
+        ),
+        DeclareLaunchArgument(
+            'imu_yaw_fallback_timeout_sec',
+            default_value='5.0',
+            description='How long to wait for valid BNO055 yaw before switching heading hold to the MPU6050 gyro-yaw fallback.',
+        ),
+        DeclareLaunchArgument(
             'imu_zero_yaw_to_startup_heading',
             default_value='true',
             description='Zero IMU yaw to the startup heading so locomotion sees relative rotation from launch.',
@@ -269,6 +294,18 @@ def generate_launch_description():
         ),
         Node(
             package='hexapod_locomotion',
+            executable='mpu6050_publisher',
+            name='mpu6050_publisher',
+            output='screen',
+            condition=IfCondition(enable_mpu6050_yaw_fallback),
+            parameters=[{
+                'frame_id': imu_frame,
+                'topic': mpu6050_imu_topic,
+                'publish_rate_hz': mpu6050_publish_rate_hz,
+            }]
+        ),
+        Node(
+            package='hexapod_locomotion',
             executable='locomotion',
             name='locomotion',
             output='screen',
@@ -284,6 +321,9 @@ def generate_launch_description():
                     'odom_frame_id': odom_frame_id,
                     'base_frame_id': base_frame_id,
                     'publish_odom_tf': publish_odom_tf,
+                    'enable_mpu6050_yaw_fallback': enable_mpu6050_yaw_fallback,
+                    'mpu6050_imu_topic': mpu6050_imu_topic,
+                    'imu_yaw_fallback_timeout_sec': imu_yaw_fallback_timeout_sec,
                 },
             ]
         ),

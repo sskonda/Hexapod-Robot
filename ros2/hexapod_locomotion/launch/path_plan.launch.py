@@ -35,6 +35,10 @@ def generate_launch_description():
     imu_idle_baseline_min_still_samples = LaunchConfiguration(
         'imu_idle_baseline_min_still_samples'
     )
+    enable_mpu6050_yaw_fallback = LaunchConfiguration('enable_mpu6050_yaw_fallback')
+    mpu6050_imu_topic = LaunchConfiguration('mpu6050_imu_topic')
+    mpu6050_publish_rate_hz = LaunchConfiguration('mpu6050_publish_rate_hz')
+    imu_yaw_fallback_timeout_sec = LaunchConfiguration('imu_yaw_fallback_timeout_sec')
     imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
     imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
     wait_for_imu_yaw = LaunchConfiguration('wait_for_imu_yaw')
@@ -134,6 +138,26 @@ def generate_launch_description():
             description='Pass through to hexapod_core.launch.py for the startup magnetic baseline sample count.',
         ),
         DeclareLaunchArgument(
+            'enable_mpu6050_yaw_fallback',
+            default_value='true',
+            description='Pass through to hexapod_core.launch.py to launch the MPU6050 yaw fallback path.',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_imu_topic',
+            default_value='/imu/mpu6050',
+            description='Pass through to hexapod_core.launch.py and path_plan for the MPU6050 fallback IMU topic.',
+        ),
+        DeclareLaunchArgument(
+            'mpu6050_publish_rate_hz',
+            default_value='50.0',
+            description='Pass through to hexapod_core.launch.py for the MPU6050 fallback IMU publish rate.',
+        ),
+        DeclareLaunchArgument(
+            'imu_yaw_fallback_timeout_sec',
+            default_value='5.0',
+            description='How long path_plan and locomotion wait for valid BNO055 yaw before using the MPU6050 fallback.',
+        ),
+        DeclareLaunchArgument(
             'imu_zero_yaw_to_startup_heading',
             default_value='true',
             description='Pass through to hexapod_core.launch.py to zero IMU yaw to the startup heading.',
@@ -208,6 +232,10 @@ def generate_launch_description():
                 'imu_allow_mag_baseline_trust_without_calibration': imu_allow_mag_baseline_trust_without_calibration,
                 'imu_idle_baseline_mag_axis_tolerance_ut': imu_idle_baseline_mag_axis_tolerance_ut,
                 'imu_idle_baseline_min_still_samples': imu_idle_baseline_min_still_samples,
+                'enable_mpu6050_yaw_fallback': enable_mpu6050_yaw_fallback,
+                'mpu6050_imu_topic': mpu6050_imu_topic,
+                'mpu6050_publish_rate_hz': mpu6050_publish_rate_hz,
+                'imu_yaw_fallback_timeout_sec': imu_yaw_fallback_timeout_sec,
                 'imu_zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
                 'imu_publish_orientation_during_startup': imu_publish_orientation_during_startup,
             }.items(),
@@ -227,6 +255,9 @@ def generate_launch_description():
                 'square_side_m': square_side_m,
                 'wait_for_imu_yaw': wait_for_imu_yaw,
                 'imu_topic': imu_topic,
+                'enable_mpu6050_yaw_fallback': enable_mpu6050_yaw_fallback,
+                'mpu6050_imu_topic': mpu6050_imu_topic,
+                'imu_yaw_fallback_timeout_sec': imu_yaw_fallback_timeout_sec,
             }],
         ),
     ])

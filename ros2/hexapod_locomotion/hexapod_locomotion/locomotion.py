@@ -15,6 +15,7 @@ from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
 from .gait_math import tripod_points_for_phase
+from .imu_fallback import integrate_relative_yaw, should_use_mpu6050_yaw_fallback
 from .kalman_filter import AngleKalmanFilter
 from .yaw_control import apply_angular_deadband, resolve_parameter_value
 
@@ -125,6 +126,9 @@ class LocomotionNode(Node):
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_odom_tf', True)
+        self.declare_parameter('enable_mpu6050_yaw_fallback', True)
+        self.declare_parameter('mpu6050_imu_topic', '/imu/mpu6050')
+        self.declare_parameter('imu_yaw_fallback_timeout_sec', 5.0)
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
         self.gait = str(self.get_parameter('gait').value).strip().lower()
@@ -162,6 +166,14 @@ class LocomotionNode(Node):
         self.odom_frame_id = str(self.get_parameter('odom_frame_id').value)
         self.base_frame_id = str(self.get_parameter('base_frame_id').value)
         self.publish_odom_tf = bool(self.get_parameter('publish_odom_tf').value)
+        self.enable_mpu6050_yaw_fallback = bool(
+            self.get_parameter('enable_mpu6050_yaw_fallback').value
+        )
+        self.mpu6050_imu_topic = str(self.get_parameter('mpu6050_imu_topic').value)
+        self.imu_yaw_fallback_timeout_sec = max(
+            0.0,
+            float(self.get_parameter('imu_yaw_fallback_timeout_sec').value),
+        )
 
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
@@ -180,13 +192,20 @@ class LocomotionNode(Node):
         self.imu_yaw_rate_rps = 0.0
         self.imu_yaw_rad = 0.0
         self.imu_yaw_valid = False
+        self.mpu6050_yaw_rad = 0.0
+        self.mpu6050_yaw_rate_rps = 0.0
+        self.mpu6050_yaw_valid = False
         self.roll_filter = AngleKalmanFilter()
         self.pitch_filter = AngleKalmanFilter()
         self.last_imu_stamp = None
+        self.last_mpu6050_imu_stamp = None
         self.heading_hold_target_rad = None
         self.heading_integral_state = 0.0
         self.last_invalid_warn_time = 0.0
         self.gait_state = None
+        self.yaw_source_start_monotonic = time.monotonic()
+        self.mpu6050_yaw_fallback_latched = False
+        self.last_yaw_source_name = None
 
         self.odom_x_m = 0.0
         self.odom_y_m = 0.0
@@ -215,6 +234,7 @@ class LocomotionNode(Node):
             10,
         )
         self.imu_subscription = None
+        self.mpu6050_imu_subscription = None
 
         if self.use_imu:
             self.imu_subscription = self.create_subscription(
@@ -223,6 +243,13 @@ class LocomotionNode(Node):
                 self.imu_callback,
                 10,
             )
+            if self.enable_mpu6050_yaw_fallback:
+                self.mpu6050_imu_subscription = self.create_subscription(
+                    Imu,
+                    self.mpu6050_imu_topic,
+                    self.mpu6050_imu_callback,
+                    10,
+                )
 
         self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self.control_loop)
@@ -364,6 +391,25 @@ class LocomotionNode(Node):
         else:
             self.imu_yaw_valid = False
 
+    def mpu6050_imu_callback(self, msg: Imu):
+        if self.last_mpu6050_imu_stamp is None:
+            dt = 0.02
+        else:
+            dt = (
+                msg.header.stamp.sec - self.last_mpu6050_imu_stamp.sec
+                + (msg.header.stamp.nanosec - self.last_mpu6050_imu_stamp.nanosec) * 1e-9
+            )
+            dt = max(1e-4, min(dt, 1.0))
+        self.last_mpu6050_imu_stamp = msg.header.stamp
+
+        self.mpu6050_yaw_rate_rps = msg.angular_velocity.z
+        self.mpu6050_yaw_rad = integrate_relative_yaw(
+            self.mpu6050_yaw_rad,
+            self.mpu6050_yaw_rate_rps,
+            dt,
+        )
+        self.mpu6050_yaw_valid = True
+
     def control_loop(self):
         stance_points = self.calculate_stance_points()
         motion = self.active_motion_command()
@@ -395,9 +441,10 @@ class LocomotionNode(Node):
 
         heading_rate = vtheta
         if self.use_imu:
-            heading_rate = self.imu_yaw_rate_rps
-            if self.imu_yaw_valid:
-                self.odom_theta_rad = self.imu_yaw_rad
+            yaw_available, yaw_rad, yaw_rate_rps = self._active_yaw_estimate()
+            heading_rate = yaw_rate_rps
+            if yaw_available:
+                self.odom_theta_rad = yaw_rad
             else:
                 self.odom_theta_rad = normalize_angle(self.odom_theta_rad + heading_rate * dt)
         else:
@@ -469,11 +516,12 @@ class LocomotionNode(Node):
             self._reset_heading_hold_state()
         elif self.use_imu and (self.yaw_kp != 0.0 or self.yaw_ki != 0.0):
             correction = 0.0
-            if self.imu_yaw_valid:
+            yaw_available, current_yaw_rad, _ = self._active_yaw_estimate()
+            if yaw_available:
                 if self.heading_hold_target_rad is None:
-                    self.heading_hold_target_rad = self.imu_yaw_rad
+                    self.heading_hold_target_rad = current_yaw_rad
                     self.heading_integral_state = 0.0
-                yaw_error = normalize_angle(self.heading_hold_target_rad - self.imu_yaw_rad)
+                yaw_error = normalize_angle(self.heading_hold_target_rad - current_yaw_rad)
                 deadbanded_yaw_error = apply_angular_deadband(
                     yaw_error,
                     self.yaw_deadband_rad,
@@ -522,6 +570,43 @@ class LocomotionNode(Node):
     def _reset_heading_hold_state(self):
         self.heading_hold_target_rad = None
         self.heading_integral_state = 0.0
+
+    def _active_yaw_estimate(self):
+        elapsed_sec = time.monotonic() - self.yaw_source_start_monotonic
+        use_mpu6050_fallback = should_use_mpu6050_yaw_fallback(
+            primary_yaw_valid=self.imu_yaw_valid,
+            fallback_enabled=self.enable_mpu6050_yaw_fallback,
+            fallback_available=self.mpu6050_yaw_valid,
+            elapsed_sec=elapsed_sec,
+            timeout_sec=self.imu_yaw_fallback_timeout_sec,
+            fallback_latched=self.mpu6050_yaw_fallback_latched,
+        )
+        if use_mpu6050_fallback:
+            if not self.mpu6050_yaw_fallback_latched:
+                self.mpu6050_yaw_fallback_latched = True
+                self._reset_heading_hold_state()
+            self._log_yaw_source_change('mpu6050')
+            return True, self.mpu6050_yaw_rad, self.mpu6050_yaw_rate_rps
+
+        if self.imu_yaw_valid:
+            self._log_yaw_source_change('bno055')
+            return True, self.imu_yaw_rad, self.imu_yaw_rate_rps
+
+        self._log_yaw_source_change(None)
+        return False, 0.0, self.imu_yaw_rate_rps
+
+    def _log_yaw_source_change(self, source_name):
+        if source_name == self.last_yaw_source_name:
+            return
+
+        self.last_yaw_source_name = source_name
+        if source_name == 'mpu6050':
+            self.get_logger().warn(
+                'BNO055 yaw is still unavailable, so heading hold is now using the MPU6050 '
+                f'gyro-yaw fallback after {self.imu_yaw_fallback_timeout_sec:.1f} s.'
+            )
+        elif source_name == 'bno055':
+            self.get_logger().info('Heading hold is using the BNO055 yaw estimate.')
 
     def _warn_missing_yaw_estimate(self):
         now = time.monotonic()
