@@ -84,7 +84,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_kp',
-            default_value='0.45',
+            default_value='0.02',
             description='Heading-hold proportional gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
@@ -94,12 +94,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_ki',
-            default_value='0.12',
+            default_value='0.01',
             description='Heading-hold integral gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
             'yaw_kd',
-            default_value='0.10',
+            default_value='0.01',
             description='Heading-hold derivative gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
