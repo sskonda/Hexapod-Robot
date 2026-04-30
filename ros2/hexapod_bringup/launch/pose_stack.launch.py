@@ -14,12 +14,18 @@ def generate_launch_description():
     launch_lidar = LaunchConfiguration('launch_lidar')
     lidar_launch_package = LaunchConfiguration('lidar_launch_package')
     lidar_launch_file = LaunchConfiguration('lidar_launch_file')
+    lidar_channel_type = LaunchConfiguration('lidar_channel_type')
+    lidar_serial_port = LaunchConfiguration('lidar_serial_port')
+    lidar_serial_baudrate = LaunchConfiguration('lidar_serial_baudrate')
+    lidar_inverted = LaunchConfiguration('lidar_inverted')
+    lidar_angle_compensate = LaunchConfiguration('lidar_angle_compensate')
+    lidar_scan_mode = LaunchConfiguration('lidar_scan_mode')
     scan_topic = LaunchConfiguration('scan_topic')
     use_sim_time = LaunchConfiguration('use_sim_time')
-    enable_explorer = LaunchConfiguration('enable_explorer')
+    enable_slam_toolbox = LaunchConfiguration('enable_slam_toolbox')
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
-    cmd_vel_yaw_offset_rad = LaunchConfiguration('cmd_vel_yaw_offset_rad')
+    locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
     laser_frame = LaunchConfiguration('laser_frame')
     laser_x = LaunchConfiguration('laser_x')
     laser_y = LaunchConfiguration('laser_y')
@@ -56,9 +62,39 @@ def generate_launch_description():
             description='RPLIDAR A1 launch file inside the lidar package launch directory.',
         ),
         DeclareLaunchArgument(
+            'lidar_channel_type',
+            default_value='serial',
+            description='RPLIDAR transport channel type.',
+        ),
+        DeclareLaunchArgument(
+            'lidar_serial_port',
+            default_value='/dev/ttyUSB0',
+            description='Serial device for the RPLIDAR A1 USB adapter.',
+        ),
+        DeclareLaunchArgument(
+            'lidar_serial_baudrate',
+            default_value='115200',
+            description='RPLIDAR A1 serial baud rate.',
+        ),
+        DeclareLaunchArgument(
+            'lidar_inverted',
+            default_value='false',
+            description='Invert RPLIDAR scan direction.',
+        ),
+        DeclareLaunchArgument(
+            'lidar_angle_compensate',
+            default_value='true',
+            description='Enable RPLIDAR angle compensation.',
+        ),
+        DeclareLaunchArgument(
+            'lidar_scan_mode',
+            default_value='Sensitivity',
+            description='RPLIDAR scan mode passed to rplidar_ros.',
+        ),
+        DeclareLaunchArgument(
             'scan_topic',
-            default_value='scan',
-            description='LaserScan topic used by slam_toolbox, safety, and exploration.',
+            default_value='/scan',
+            description='LaserScan topic used by slam_toolbox.',
         ),
         DeclareLaunchArgument(
             'use_sim_time',
@@ -66,12 +102,9 @@ def generate_launch_description():
             description='Use simulation time if a simulator is providing /clock.',
         ),
         DeclareLaunchArgument(
-            'enable_explorer',
+            'enable_slam_toolbox',
             default_value='true',
-            description=(
-                'Launch the autonomous gap-following explorer. Set false to bring '
-                'up only locomotion, EKF odom, safety, and SLAM for diagnostics.'
-            ),
+            description='Launch slam_toolbox for lidar mapping.',
         ),
         DeclareLaunchArgument(
             'servo_dry_run',
@@ -84,11 +117,11 @@ def generate_launch_description():
             description='Apply saved servo calibration offsets.',
         ),
         DeclareLaunchArgument(
-            'cmd_vel_yaw_offset_rad',
-            default_value='0.0',
+            'locomotion_use_imu_for_odom',
+            default_value='false',
             description=(
-                'Yaw offset between planner/base_link forward and physical locomotion '
-                'forward. Use this only if forward commands move sideways.'
+                'Use BNO055 yaw in locomotion odometry only when the IMU is trusted. '
+                'The default maps with gait odometry plus lidar scan matching.'
             ),
         ),
         DeclareLaunchArgument(
@@ -170,21 +203,23 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(str(mapping_bringup_launch)),
             launch_arguments={
                 'use_locomotion': 'true',
-                'enable_robot_localization': 'true',
-                'enable_explorer': enable_explorer,
-                'odom_topic': 'odom',
-                'raw_odom_topic': 'odom/raw',
+                'enable_slam_toolbox': enable_slam_toolbox,
                 'locomotion_odom_topic': 'odom',
                 'locomotion_publish_odom_tf': 'true',
-                'locomotion_use_imu_for_odom': 'true',
+                'locomotion_use_imu_for_odom': locomotion_use_imu_for_odom,
                 'launch_lidar': launch_lidar,
                 'lidar_launch_package': lidar_launch_package,
                 'lidar_launch_file': lidar_launch_file,
+                'lidar_channel_type': lidar_channel_type,
+                'lidar_serial_port': lidar_serial_port,
+                'lidar_serial_baudrate': lidar_serial_baudrate,
+                'lidar_inverted': lidar_inverted,
+                'lidar_angle_compensate': lidar_angle_compensate,
+                'lidar_scan_mode': lidar_scan_mode,
                 'scan_topic': scan_topic,
                 'use_sim_time': use_sim_time,
                 'servo_dry_run': servo_dry_run,
                 'apply_offsets': apply_offsets,
-                'cmd_vel_yaw_offset_rad': cmd_vel_yaw_offset_rad,
                 'laser_frame': laser_frame,
                 'laser_x': laser_x,
                 'laser_y': laser_y,

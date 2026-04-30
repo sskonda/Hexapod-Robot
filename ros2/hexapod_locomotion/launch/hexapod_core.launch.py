@@ -152,7 +152,7 @@ def generate_launch_description():
             default_value='true',
             description=(
                 'Use trusted IMU yaw inside locomotion odometry. Set false when '
-                'robot_localization owns odom pose fusion from raw gait velocity + IMU.'
+                'another node owns odom pose fusion from raw gait velocity + IMU.'
             ),
         ),
         DeclareLaunchArgument(
