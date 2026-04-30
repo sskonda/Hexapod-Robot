@@ -16,11 +16,13 @@ def generate_launch_description():
     yaw_kd = LaunchConfiguration('yaw_kd')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
+    heading_hold_release_grace_sec = LaunchConfiguration('heading_hold_release_grace_sec')
     tripod_planar_travel_scale = LaunchConfiguration('tripod_planar_travel_scale')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_frame_id = LaunchConfiguration('odom_frame_id')
     base_frame_id = LaunchConfiguration('base_frame_id')
     publish_odom_tf = LaunchConfiguration('publish_odom_tf')
+    use_imu_for_odom = LaunchConfiguration('use_imu_for_odom')
     imu_frame = LaunchConfiguration('imu_frame')
     imu_publish_rate_hz = LaunchConfiguration('imu_publish_rate_hz')
     imu_mag_topic = LaunchConfiguration('imu_mag_topic')
@@ -113,6 +115,14 @@ def generate_launch_description():
             description='Absolute limit for the locomotion heading-hold integrator state.',
         ),
         DeclareLaunchArgument(
+            'heading_hold_release_grace_sec',
+            default_value='0.75',
+            description=(
+                'Keep the current heading-hold reference through brief stop/replan pauses '
+                'to avoid relatching yaw drift as the new straight heading.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'tripod_planar_travel_scale',
             default_value='2.0',
             description='Planar foot-travel multiplier for the tripod gait. Increase slightly if the robot still under-travels.',
@@ -136,6 +146,14 @@ def generate_launch_description():
             'publish_odom_tf',
             default_value='true',
             description='Publish the odom to base_link TF from locomotion.',
+        ),
+        DeclareLaunchArgument(
+            'use_imu_for_odom',
+            default_value='true',
+            description=(
+                'Use trusted IMU yaw inside locomotion odometry. Set false when '
+                'robot_localization owns odom pose fusion from raw gait velocity + IMU.'
+            ),
         ),
         DeclareLaunchArgument(
             'imu_frame',
@@ -353,12 +371,14 @@ def generate_launch_description():
                     'yaw_kd': yaw_kd,
                     'yaw_deadband_deg': yaw_deadband_deg,
                     'yaw_integrator_limit': yaw_integrator_limit,
+                    'heading_hold_release_grace_sec': heading_hold_release_grace_sec,
                     'max_trusted_yaw_covariance_rad2': imu_max_trusted_yaw_covariance_rad2,
                     'tripod_planar_travel_scale': tripod_planar_travel_scale,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,
                     'base_frame_id': base_frame_id,
                     'publish_odom_tf': publish_odom_tf,
+                    'use_imu_for_odom': use_imu_for_odom,
                 },
             ]
         ),

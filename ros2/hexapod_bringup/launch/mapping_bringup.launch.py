@@ -85,6 +85,12 @@ def generate_launch_description():
     explorer_reverse_avoidance_deg = LaunchConfiguration('explorer_reverse_avoidance_deg')
     explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
     explorer_forward_bias_weight = LaunchConfiguration('explorer_forward_bias_weight')
+    explorer_centerline_balance_weight = LaunchConfiguration(
+        'explorer_centerline_balance_weight'
+    )
+    explorer_centerline_balance_window_deg = LaunchConfiguration(
+        'explorer_centerline_balance_window_deg'
+    )
     explorer_max_yaw_drift_deg = LaunchConfiguration('explorer_max_yaw_drift_deg')
     explorer_min_progress_m = LaunchConfiguration('explorer_min_progress_m')
     explorer_recovery_backup_m = LaunchConfiguration('explorer_recovery_backup_m')
@@ -110,8 +116,12 @@ def generate_launch_description():
     safety_stop_distance_m = LaunchConfiguration('safety_stop_distance_m')
     safety_slowdown_distance_m = LaunchConfiguration('safety_slowdown_distance_m')
     safety_clearance_window_deg = LaunchConfiguration('safety_clearance_window_deg')
+    safety_side_stop_distance_m = LaunchConfiguration('safety_side_stop_distance_m')
+    safety_side_slowdown_distance_m = LaunchConfiguration('safety_side_slowdown_distance_m')
+    safety_side_clearance_window_deg = LaunchConfiguration('safety_side_clearance_window_deg')
     locomotion_odom_topic = LaunchConfiguration('locomotion_odom_topic')
     locomotion_publish_odom_tf = LaunchConfiguration('locomotion_publish_odom_tf')
+    locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
     imu_frame = LaunchConfiguration('imu_frame')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
@@ -219,8 +229,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'enable_robot_localization',
-            default_value='false',
-            description='Launch robot_localization to fuse raw odom + IMU into odom.',
+            default_value='true',
+            description=(
+                'Launch robot_localization to fuse raw gait odom velocities with the '
+                'BNO055 fused IMU quaternion into odom.'
+            ),
         ),
         DeclareLaunchArgument(
             'robot_localization_params_file',
@@ -271,6 +284,14 @@ def generate_launch_description():
             'locomotion_publish_odom_tf',
             default_value='true',
             description='Whether locomotion publishes odom->base_link TF directly.',
+        ),
+        DeclareLaunchArgument(
+            'locomotion_use_imu_for_odom',
+            default_value='true',
+            description=(
+                'Whether locomotion uses IMU yaw internally for odom. Ignored and set '
+                'false when robot_localization is enabled so the EKF owns pose fusion.'
+            ),
         ),
         DeclareLaunchArgument(
             'imu_frame',
@@ -374,12 +395,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_footprint_radius_m',
-            default_value='0.30',
+            default_value='0.45',
             description='Robot circular footprint radius used by the explorer.',
         ),
         DeclareLaunchArgument(
             'explorer_wall_clearance_margin_m',
-            default_value='0.10',
+            default_value='0.05',
             description='Extra wall-clearance buffer used by the explorer.',
         ),
         DeclareLaunchArgument(
@@ -408,6 +429,16 @@ def generate_launch_description():
             description='Bias toward forward-facing gaps when selecting a heading.',
         ),
         DeclareLaunchArgument(
+            'explorer_centerline_balance_weight',
+            default_value='0.35',
+            description='Small reward for candidate headings with balanced left/right wall clearance.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_centerline_balance_window_deg',
+            default_value='12.0',
+            description='Half-width of side sectors used to estimate centerline balance.',
+        ),
+        DeclareLaunchArgument(
             'explorer_max_yaw_drift_deg',
             default_value='15.0',
             description='Maximum odom yaw drift allowed before the explorer forces a replan.',
@@ -434,8 +465,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'crab_follower_yaw_correction_gain',
-            default_value='0.6',
-            description='Proportional yaw correction gain used by the crab path follower.',
+            default_value='0.0',
+            description=(
+                'Proportional yaw correction gain used by the crab path follower. '
+                'Defaults to 0 so locomotion heading hold is the single yaw owner.'
+            ),
         ),
         DeclareLaunchArgument(
             'crab_follower_max_angular_speed_rad_s',
@@ -470,6 +504,21 @@ def generate_launch_description():
             default_value='15.0',
             description='LiDAR sector half-width used by the scan cmd_vel safety filter.',
         ),
+        DeclareLaunchArgument(
+            'safety_side_stop_distance_m',
+            default_value='0.46',
+            description='Minimum side-wall clearance before the scan safety filter blocks translation.',
+        ),
+        DeclareLaunchArgument(
+            'safety_side_slowdown_distance_m',
+            default_value='0.62',
+            description='Side-wall clearance below which the scan safety filter slows or nudges away.',
+        ),
+        DeclareLaunchArgument(
+            'safety_side_clearance_window_deg',
+            default_value='45.0',
+            description='LiDAR side-sector half-width used by the scan cmd_vel safety filter.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(core_launch)),
             condition=IfCondition(use_locomotion),
@@ -485,6 +534,10 @@ def generate_launch_description():
                 'publish_odom_tf': PythonExpression([
                     "'false' if '", enable_robot_localization,
                     "' == 'true' else '", locomotion_publish_odom_tf, "'",
+                ]),
+                'use_imu_for_odom': PythonExpression([
+                    "'false' if '", enable_robot_localization,
+                    "' == 'true' else '", locomotion_use_imu_for_odom, "'",
                 ]),
                 'imu_frame': imu_frame,
                 'imu_use_external_crystal': imu_use_external_crystal,
@@ -540,6 +593,8 @@ def generate_launch_description():
                 'explorer_reverse_avoidance_deg': explorer_reverse_avoidance_deg,
                 'explorer_max_replan_attempts': explorer_max_replan_attempts,
                 'explorer_forward_bias_weight': explorer_forward_bias_weight,
+                'explorer_centerline_balance_weight': explorer_centerline_balance_weight,
+                'explorer_centerline_balance_window_deg': explorer_centerline_balance_window_deg,
                 'explorer_max_yaw_drift_deg': explorer_max_yaw_drift_deg,
                 'explorer_min_progress_m': explorer_min_progress_m,
                 'explorer_recovery_backup_m': explorer_recovery_backup_m,
@@ -552,6 +607,9 @@ def generate_launch_description():
                 'safety_stop_distance_m': safety_stop_distance_m,
                 'safety_slowdown_distance_m': safety_slowdown_distance_m,
                 'safety_clearance_window_deg': safety_clearance_window_deg,
+                'safety_side_stop_distance_m': safety_side_stop_distance_m,
+                'safety_side_slowdown_distance_m': safety_side_slowdown_distance_m,
+                'safety_side_clearance_window_deg': safety_side_clearance_window_deg,
             }.items(),
         ),
     ])

@@ -24,4 +24,5 @@
     yaw_kd: 0.01
     yaw_deadband_deg: 2.5
     yaw_integrator_limit: 1.2
+    heading_hold_release_grace_sec: 0.75
     max_trusted_yaw_covariance_rad2: 1.0

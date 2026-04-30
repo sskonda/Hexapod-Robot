@@ -147,6 +147,8 @@ class LocomotionNode(Node):
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_odom_tf', True)
+        self.declare_parameter('use_imu_for_odom', True)
+        self.declare_parameter('heading_hold_release_grace_sec', 0.75)
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
         self.gait = str(self.get_parameter('gait').value).strip().lower()
@@ -196,6 +198,11 @@ class LocomotionNode(Node):
         self.odom_frame_id = str(self.get_parameter('odom_frame_id').value)
         self.base_frame_id = str(self.get_parameter('base_frame_id').value)
         self.publish_odom_tf = bool(self.get_parameter('publish_odom_tf').value)
+        self.use_imu_for_odom = bool(self.get_parameter('use_imu_for_odom').value)
+        self.heading_hold_release_grace_sec = max(
+            0.0,
+            float(self.get_parameter('heading_hold_release_grace_sec').value),
+        )
 
         if self.gait not in ('tripod', 'wave'):
             self.get_logger().warn(f'Unsupported gait "{self.gait}", defaulting to tripod')
@@ -222,6 +229,7 @@ class LocomotionNode(Node):
         self.last_imu_stamp = None
         self.heading_hold_target_rad = None
         self.heading_integral_state = 0.0
+        self.heading_hold_grace_until_monotonic = 0.0
         self.last_invalid_warn_time = 0.0
         self.last_diagnostic_publish_time = 0.0
         self.last_heading_hold_mode = 'idle'
@@ -358,6 +366,17 @@ class LocomotionNode(Node):
                 )
                 changed_fields.append(
                     f'yaw_integrator_limit={self.yaw_integrator_limit:.3f}'
+                )
+            elif parameter.name == 'heading_hold_release_grace_sec':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='heading_hold_release_grace_sec must be non-negative.',
+                    )
+                self.heading_hold_release_grace_sec = value
+                changed_fields.append(
+                    f'heading_hold_release_grace_sec={self.heading_hold_release_grace_sec:.3f}'
                 )
             elif parameter.name == 'max_trusted_yaw_covariance_rad2':
                 value = float(parameter.value)
@@ -499,7 +518,7 @@ class LocomotionNode(Node):
             vx = vy = vtheta = 0.0
 
         heading_rate = vtheta
-        if self.use_imu:
+        if self.use_imu and self.use_imu_for_odom:
             yaw_available, yaw_rad, yaw_rate_rps = self._active_yaw_estimate()
             heading_rate = yaw_rate_rps
             if yaw_available:
@@ -575,9 +594,22 @@ class LocomotionNode(Node):
         yaw_rate = self.cmd_yaw_rate_rad_s
         translating = abs(linear_x) > 1e-6 or abs(linear_y) > 1e-6
 
+        now_monotonic = time.monotonic()
+        if translating:
+            self.heading_hold_grace_until_monotonic = (
+                now_monotonic + self.heading_hold_release_grace_sec
+            )
+
         if not translating:
-            self._reset_heading_hold_state()
-            self.last_heading_hold_reason = 'no_translation'
+            if (
+                self.heading_hold_target_rad is not None
+                and now_monotonic <= self.heading_hold_grace_until_monotonic
+            ):
+                self.last_heading_hold_mode = 'paused'
+                self.last_heading_hold_reason = 'translation_pause_grace'
+            else:
+                self._reset_heading_hold_state()
+                self.last_heading_hold_reason = 'no_translation'
         elif abs(yaw_rate) >= 1e-6:
             self._reset_heading_hold_state()
             self.last_heading_hold_mode = 'manual_yaw'
@@ -637,6 +669,7 @@ class LocomotionNode(Node):
     def _reset_heading_hold_state(self):
         self.heading_hold_target_rad = None
         self.heading_integral_state = 0.0
+        self.heading_hold_grace_until_monotonic = 0.0
 
     def _active_yaw_estimate(self):
         if self.imu_yaw_valid and self.imu_yaw_trusted:

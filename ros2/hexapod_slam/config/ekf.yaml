@@ -17,7 +17,10 @@ ekf_filter_node:
     odom0_queue_size: 5
     odom0_differential: false
     odom0_relative: false
-    odom0_config: [true,  true,  false,
+    # Keep locomotion odom as raw gait motion. The EKF owns pose integration:
+    # it integrates the gait body-frame velocities below while using the BNO055
+    # fused quaternion from imu0 for yaw.
+    odom0_config: [false, false, false,
                    false, false, false,
                     true,  true,  false,
                    false, false, false,

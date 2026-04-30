@@ -147,6 +147,12 @@ def generate_launch_description():
     )
     explorer_max_replan_attempts = LaunchConfiguration('explorer_max_replan_attempts')
     explorer_forward_bias_weight = LaunchConfiguration('explorer_forward_bias_weight')
+    explorer_centerline_balance_weight = LaunchConfiguration(
+        'explorer_centerline_balance_weight'
+    )
+    explorer_centerline_balance_window_deg = LaunchConfiguration(
+        'explorer_centerline_balance_window_deg'
+    )
     explorer_max_yaw_drift_deg = LaunchConfiguration('explorer_max_yaw_drift_deg')
     explorer_min_progress_m = LaunchConfiguration('explorer_min_progress_m')
     explorer_recovery_backup_m = LaunchConfiguration('explorer_recovery_backup_m')
@@ -229,10 +235,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'enable_robot_localization',
-            default_value='false',
+            default_value='true',
             description=(
-                'Launch robot_localization to fuse raw odom and IMU into the odom topic '
-                'used by the explorer, follower, and SLAM.'
+                'Launch robot_localization to fuse raw gait odom velocities with the '
+                'BNO055 fused IMU quaternion into the odom topic used by the explorer, '
+                'follower, and SLAM.'
             ),
         ),
         DeclareLaunchArgument(
@@ -333,8 +340,8 @@ def generate_launch_description():
         # Half-tile       : 2 ft  = 0.6096 m  (centre to wall)
         # Robot radius    : 1.5 ft = 0.4572 m
         # Body-to-wall clearance when centred: 0.6096 - 0.4572 = 0.152 m (6 in)
-        # Min traversable gap: 2 × (footprint + margin) = 2 × 0.5572 = 1.114 m
-        #   -> 4 ft corridor = 1.2192 m  ✓  (~8 cm of angular margin each side)
+        # Min traversable gap: 2 × (footprint + margin) = 2 × 0.50 = 1.00 m
+        #   -> 4 ft corridor = 1.2192 m  ✓  (~11 cm of margin each side)
         # stop_distance = 0.60 m -> robot edge clears wall by 0.60 - 0.4572 = 0.14 m
         # -----------------------------------------------------------------------
         DeclareLaunchArgument(
@@ -374,12 +381,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_footprint_radius_m',
-            default_value='0.30',
+            default_value='0.45',
             description='Robot circular footprint radius used for clearance checks.',
         ),
         DeclareLaunchArgument(
             'explorer_wall_clearance_margin_m',
-            default_value='0.10',
+            default_value='0.05',
             description=(
                 'Safety buffer added beyond footprint_radius when checking '
                 'minimum wall clearance and gap width.'
@@ -579,6 +586,16 @@ def generate_launch_description():
             description='Bias toward selecting the forward heading on startup; 0.0 disables.',
         ),
         DeclareLaunchArgument(
+            'explorer_centerline_balance_weight',
+            default_value='0.35',
+            description='Small reward for candidate headings with balanced left/right wall clearance.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_centerline_balance_window_deg',
+            default_value='12.0',
+            description='Half-width of side sectors used to estimate centerline balance.',
+        ),
+        DeclareLaunchArgument(
             'explorer_max_yaw_drift_deg',
             default_value='8.0',
             description='Maximum allowed odom yaw drift from a committed heading before forcing a replan.',
@@ -611,8 +628,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'crab_follower_yaw_correction_gain',
-            default_value='0.6',
-            description='Proportional gain used to hold body yaw against drift while translating.',
+            default_value='0.0',
+            description=(
+                'Proportional yaw correction gain for the path follower. Defaults to 0 so '
+                'locomotion heading hold is the single yaw owner.'
+            ),
         ),
         DeclareLaunchArgument(
             'crab_follower_max_angular_speed_rad_s',
@@ -649,7 +669,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'safety_side_stop_distance_m',
-            default_value='0.32',
+            default_value='0.46',
             description=(
                 'Minimum allowed LiDAR clearance at the robot flanks before side-wall '
                 'safety blocks translation.'
@@ -657,7 +677,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'safety_side_slowdown_distance_m',
-            default_value='0.46',
+            default_value='0.62',
             description=(
                 'Side-wall clearance at which the lower-layer safety filter stops '
                 'slowing or nudging away from nearby walls.'
@@ -665,7 +685,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'safety_side_clearance_window_deg',
-            default_value='20.0',
+            default_value='45.0',
             description=(
                 'Half-width of the LiDAR sectors checked to the left and right of '
                 'the current motion direction.'
@@ -793,6 +813,8 @@ def generate_launch_description():
                 'wall_follow_stuck_time_sec': explorer_wall_follow_stuck_time_sec,
                 'max_replan_attempts': explorer_max_replan_attempts,
                 'forward_bias_weight': explorer_forward_bias_weight,
+                'centerline_balance_weight': explorer_centerline_balance_weight,
+                'centerline_balance_window_deg': explorer_centerline_balance_window_deg,
                 'max_yaw_drift_deg': explorer_max_yaw_drift_deg,
                 'min_progress_m': explorer_min_progress_m,
                 'recovery_backup_m': explorer_recovery_backup_m,

@@ -176,7 +176,7 @@ def generate_launch_description():
             "goal_tolerance_m": crab_follower_goal_tolerance_m,
             "path_timeout_sec": 1.0,
             "cmd_vel_rate_hz": 20.0,
-            "yaw_correction_gain": 0.6,
+            "yaw_correction_gain": 0.0,
             "max_angular_speed_rad_s": 0.12,
             "yaw_deadband_deg": 5.0,
             "cmd_vel_yaw_offset_rad": cmd_vel_yaw_offset_rad,
@@ -201,8 +201,8 @@ def generate_launch_description():
             "stop_distance_m": 0.42,
             "slowdown_distance_m": 0.75,
             "side_clearance_window_deg": 50.0,
-            "side_stop_distance_m": 0.38,
-            "side_slowdown_distance_m": 0.60,
+            "side_stop_distance_m": 0.46,
+            "side_slowdown_distance_m": 0.62,
             "max_side_push_ratio": 0.55,
             "preserve_turning_when_blocked": False,
         }],
@@ -225,10 +225,16 @@ def generate_launch_description():
             "open_distance_m": 0.80,
             # Keep rolling goal further from the detected obstacle
             "goal_backoff_m": 0.45,
+            # Match the physical hexapod footprint used by the SLAM explorer.
+            "footprint_radius_m": 0.45,
+            "wall_clearance_margin_m": 0.05,
             # Wider clearance window catches walls approached at an angle
             "clearance_window_deg": 15.0,
             # Bias the robot to move forward on startup instead of picking a random gap
             "forward_bias_weight": 1.5,
+            # Prefer headings that keep left/right wall clearance balanced.
+            "centerline_balance_weight": 0.35,
+            "centerline_balance_window_deg": 12.0,
         }],
         output="screen",
         condition=IfCondition(use_explorer),

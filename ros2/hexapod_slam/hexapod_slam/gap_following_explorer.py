@@ -178,6 +178,7 @@ class HeadingCandidate:
     score_gap_bonus: float
     score_forward_bias: float
     score_reverse_penalty: float
+    score_centering_bonus: float
 
 
 @dataclass(frozen=True)
@@ -226,6 +227,8 @@ class GapFollowingExplorerNode(Node):
         self.declare_parameter('clearance_window_deg', 15.0)
         self.declare_parameter('forward_bias_weight', 1.5)
         self.declare_parameter('gap_width_weight', 0.20)
+        self.declare_parameter('centerline_balance_weight', 0.35)
+        self.declare_parameter('centerline_balance_window_deg', 12.0)
         self.declare_parameter('reverse_penalty_weight', 1.50)
         self.declare_parameter('min_gap_width_deg', 18.0)
         self.declare_parameter('reverse_avoidance_deg', 70.0)
@@ -306,6 +309,13 @@ class GapFollowingExplorerNode(Node):
         )
         self.forward_bias_weight = float(self.get_parameter('forward_bias_weight').value)
         self.gap_width_weight = float(self.get_parameter('gap_width_weight').value)
+        self.centerline_balance_weight = max(
+            0.0,
+            float(self.get_parameter('centerline_balance_weight').value),
+        )
+        self.centerline_balance_window_rad = math.radians(
+            max(1.0, float(self.get_parameter('centerline_balance_window_deg').value))
+        )
         self.reverse_penalty_weight = float(self.get_parameter('reverse_penalty_weight').value)
         self.min_gap_width_rad = math.radians(
             max(1.0, float(self.get_parameter('min_gap_width_deg').value))
@@ -842,9 +852,11 @@ class GapFollowingExplorerNode(Node):
             score_gap = min(gap_width_rad, math.pi)
             score_gap_bonus = self.gap_width_weight * score_gap
             score_forward_bias = self.forward_bias_weight * math.cos(angle_rad)
+            score_centering_bonus = self.centerline_balance_score(angle_rad)
             score = score_clearance
             score += score_gap_bonus
             score += score_forward_bias
+            score += score_centering_bonus
             score_reverse_penalty = 0.0
 
             if incoming_angle_base_rad is not None:
@@ -861,6 +873,7 @@ class GapFollowingExplorerNode(Node):
                 score_gap_bonus=score_gap_bonus,
                 score_forward_bias=score_forward_bias,
                 score_reverse_penalty=score_reverse_penalty,
+                score_centering_bonus=score_centering_bonus,
             )
             candidates.append(candidate)
             if best_candidate is None or candidate.score > best_candidate.score:
@@ -1283,6 +1296,7 @@ class GapFollowingExplorerNode(Node):
                 score_gap_bonus=score_gap_bonus,
                 score_forward_bias=score_turn_preference,
                 score_reverse_penalty=0.0,
+                score_centering_bonus=0.0,
             )
             if best_candidate is None or candidate.score > best_candidate.score:
                 best_candidate = candidate
@@ -1418,6 +1432,40 @@ class GapFollowingExplorerNode(Node):
         if clearance_m <= 0.0 or gap_width_rad <= 0.0:
             return 0.0
         return 2.0 * clearance_m * math.sin(gap_width_rad / 2.0)
+
+    def centerline_balance_score(self, angle_rad: float) -> float:
+        if self.centerline_balance_weight <= 0.0:
+            return 0.0
+
+        left_clearance_m = self.scan_window_clearance(
+            normalize_angle(angle_rad + math.pi / 2.0),
+            window_rad=self.centerline_balance_window_rad,
+            use_stable=True,
+        )
+        right_clearance_m = self.scan_window_clearance(
+            normalize_angle(angle_rad - math.pi / 2.0),
+            window_rad=self.centerline_balance_window_rad,
+            use_stable=True,
+        )
+        if left_clearance_m is None or right_clearance_m is None:
+            return 0.0
+
+        wider_side_m = max(left_clearance_m, right_clearance_m)
+        narrower_side_m = min(left_clearance_m, right_clearance_m)
+        if wider_side_m <= 1e-6:
+            return 0.0
+
+        balance = narrower_side_m / wider_side_m
+        safe_side_span_m = max(
+            self.open_distance_m - self.minimum_wall_clearance_m,
+            1e-6,
+        )
+        side_clearance_gate = clamp(
+            (narrower_side_m - self.minimum_wall_clearance_m) / safe_side_span_m,
+            0.0,
+            1.0,
+        )
+        return self.centerline_balance_weight * balance * side_clearance_gate
 
     def valid_range(self, scan: LaserScan, index: int) -> Optional[float]:
         range_value = scan.ranges[index]
@@ -1656,7 +1704,8 @@ class GapFollowingExplorerNode(Node):
                 f'gap={math.degrees(candidate.gap_width_rad):.1f} deg/{candidate.gap_width_m:.2f} m '
                 f'score={candidate.score:.2f} '
                 f'[clear={candidate.score_clearance:.2f}, gap={candidate.score_gap_bonus:.2f}, '
-                f'fwd={candidate.score_forward_bias:+.2f}, rev_penalty={candidate.score_reverse_penalty:.2f}]'
+                f'fwd={candidate.score_forward_bias:+.2f}, center={candidate.score_centering_bonus:+.2f}, '
+                f'rev_penalty={candidate.score_reverse_penalty:.2f}]'
             )
 
         selected_text = (
