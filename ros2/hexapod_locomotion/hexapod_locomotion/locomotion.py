@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 
 import rclpy
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import TransformStamped, Twist, Vector3
 from nav_msgs.msg import Odometry
 from rcl_interfaces.msg import SetParametersResult
@@ -20,7 +21,14 @@ from .gait_math import (
     tripod_points_for_phase,
 )
 from .kalman_filter import AngleKalmanFilter
-from .yaw_control import apply_angular_deadband, resolve_parameter_value
+from .yaw_control import (
+    compute_heading_hold_pid,
+    quaternion_from_euler,
+    quaternion_normalize,
+    quaternion_to_yaw,
+    resolve_parameter_value,
+    yaw_is_trusted_from_covariance,
+)
 
 
 BASE_FOOTPOINTS = [
@@ -65,12 +73,6 @@ def normalize_angle(angle_rad):
     return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
-def quaternion_to_yaw(x_value, y_value, z_value, w_value):
-    siny_cosp = 2.0 * (w_value * z_value + x_value * y_value)
-    cosy_cosp = 1.0 - 2.0 * (y_value * y_value + z_value * z_value)
-    return math.atan2(siny_cosp, cosy_cosp)
-
-
 def matrix_multiply(a, b):
     return [
         [
@@ -95,6 +97,8 @@ class LocomotionNode(Node):
     DEFAULT_YAW_KD = 0.10
     DEFAULT_YAW_DEADBAND_DEG = 2.5
     DEFAULT_YAW_INTEGRATOR_LIMIT = 1.2
+    DEFAULT_MAX_TRUSTED_YAW_COVARIANCE_RAD2 = 1.0
+    DIAGNOSTIC_PUBLISH_PERIOD_SEC = 0.25
 
     def __init__(self):
         super().__init__('locomotion')
@@ -131,6 +135,14 @@ class LocomotionNode(Node):
         self.declare_parameter('yaw_kd', self.DEFAULT_YAW_KD)
         self.declare_parameter('yaw_deadband_deg', self.DEFAULT_YAW_DEADBAND_DEG)
         self.declare_parameter('yaw_integrator_limit', self.DEFAULT_YAW_INTEGRATOR_LIMIT)
+        self.declare_parameter(
+            'max_trusted_yaw_covariance_rad2',
+            self.DEFAULT_MAX_TRUSTED_YAW_COVARIANCE_RAD2,
+        )
+        self.declare_parameter(
+            'yaw_hold_diagnostic_topic',
+            '/locomotion/yaw_hold_diagnostics',
+        )
         self.declare_parameter('odom_topic', 'odom')
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
@@ -173,6 +185,13 @@ class LocomotionNode(Node):
             0.0,
             float(self.get_parameter('yaw_integrator_limit').value),
         )
+        self.max_trusted_yaw_covariance_rad2 = max(
+            0.0,
+            float(self.get_parameter('max_trusted_yaw_covariance_rad2').value),
+        )
+        self.yaw_hold_diagnostic_topic = str(
+            self.get_parameter('yaw_hold_diagnostic_topic').value
+        )
         self.odom_topic = str(self.get_parameter('odom_topic').value)
         self.odom_frame_id = str(self.get_parameter('odom_frame_id').value)
         self.base_frame_id = str(self.get_parameter('base_frame_id').value)
@@ -195,12 +214,20 @@ class LocomotionNode(Node):
         self.imu_yaw_rate_rps = 0.0
         self.imu_yaw_rad = 0.0
         self.imu_yaw_valid = False
+        self.imu_yaw_trusted = False
+        self.imu_yaw_covariance_rad2 = math.inf
+        self.imu_orientation_quaternion = None
         self.roll_filter = AngleKalmanFilter()
         self.pitch_filter = AngleKalmanFilter()
         self.last_imu_stamp = None
         self.heading_hold_target_rad = None
         self.heading_integral_state = 0.0
         self.last_invalid_warn_time = 0.0
+        self.last_diagnostic_publish_time = 0.0
+        self.last_heading_hold_mode = 'idle'
+        self.last_heading_hold_reason = 'startup'
+        self.last_heading_hold_step = None
+        self.last_heading_hold_correction_rad_s = 0.0
         self.gait_state = None
 
         self.odom_x_m = 0.0
@@ -209,6 +236,11 @@ class LocomotionNode(Node):
 
         self.target_publisher = self.create_publisher(JointState, 'servo_targets', 10)
         self.odom_publisher = self.create_publisher(Odometry, self.odom_topic, 10)
+        self.yaw_hold_diag_publisher = self.create_publisher(
+            DiagnosticArray,
+            self.yaw_hold_diagnostic_topic,
+            10,
+        )
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.cmd_vel_subscription = self.create_subscription(
@@ -254,6 +286,11 @@ class LocomotionNode(Node):
             f'kd={self.yaw_kd:.3f}, '
             f'deadband={math.degrees(self.yaw_deadband_rad):.1f} deg, '
             f'integrator_limit={self.yaw_integrator_limit:.2f}.'
+        )
+        self.get_logger().info(
+            'Heading hold trusts IMU yaw when orientation covariance yaw <= '
+            f'{self.max_trusted_yaw_covariance_rad2:.2f} rad^2. '
+            f'Publishing diagnostics on {self.yaw_hold_diagnostic_topic}.'
         )
         if self.gait == 'tripod':
             self.get_logger().info(
@@ -321,6 +358,18 @@ class LocomotionNode(Node):
                 )
                 changed_fields.append(
                     f'yaw_integrator_limit={self.yaw_integrator_limit:.3f}'
+                )
+            elif parameter.name == 'max_trusted_yaw_covariance_rad2':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='max_trusted_yaw_covariance_rad2 must be non-negative.',
+                    )
+                self.max_trusted_yaw_covariance_rad2 = value
+                changed_fields.append(
+                    'max_trusted_yaw_covariance_rad2='
+                    f'{self.max_trusted_yaw_covariance_rad2:.3f}'
                 )
             elif parameter.name == 'tripod_planar_travel_scale':
                 value = float(parameter.value)
@@ -394,15 +443,30 @@ class LocomotionNode(Node):
             ))
         )
         if orientation_available:
-            self.imu_yaw_rad = quaternion_to_yaw(
+            self.imu_orientation_quaternion = quaternion_normalize((
                 msg.orientation.x,
                 msg.orientation.y,
                 msg.orientation.z,
                 msg.orientation.w,
+            ))
+            self.imu_yaw_rad = quaternion_to_yaw(
+                *self.imu_orientation_quaternion,
             )
             self.imu_yaw_valid = True
+            self.imu_yaw_covariance_rad2 = (
+                float(orientation_covariance[8])
+                if len(orientation_covariance) >= 9
+                else math.inf
+            )
+            self.imu_yaw_trusted = yaw_is_trusted_from_covariance(
+                orientation_covariance,
+                self.max_trusted_yaw_covariance_rad2,
+            )
         else:
             self.imu_yaw_valid = False
+            self.imu_yaw_trusted = False
+            self.imu_yaw_covariance_rad2 = math.inf
+            self.imu_orientation_quaternion = None
 
     def control_loop(self):
         stance_points = self.calculate_stance_points()
@@ -422,6 +486,7 @@ class LocomotionNode(Node):
                 self.publish_points(self.gait_state.points)
 
         self._publish_odometry()
+        self._publish_yaw_hold_diagnostics(motion)
 
     def _publish_odometry(self):
         dt = 1.0 / self.control_rate_hz
@@ -495,8 +560,14 @@ class LocomotionNode(Node):
 
     def active_motion_command(self):
         age_sec = (self.get_clock().now() - self.last_motion_cmd_time).nanoseconds / 1e9
+        self.last_heading_hold_mode = 'idle'
+        self.last_heading_hold_reason = 'no_motion_command'
+        self.last_heading_hold_step = None
+        self.last_heading_hold_correction_rad_s = 0.0
+
         if age_sec > self.command_timeout_sec:
             self._reset_heading_hold_state()
+            self.last_heading_hold_reason = 'command_timeout'
             return 0.0, 0.0, 0.0
 
         linear_x = self.cmd_linear_x_mps
@@ -506,8 +577,11 @@ class LocomotionNode(Node):
 
         if not translating:
             self._reset_heading_hold_state()
+            self.last_heading_hold_reason = 'no_translation'
         elif abs(yaw_rate) >= 1e-6:
             self._reset_heading_hold_state()
+            self.last_heading_hold_mode = 'manual_yaw'
+            self.last_heading_hold_reason = 'manual_yaw_command'
         elif self.use_imu and (self.yaw_kp != 0.0 or self.yaw_ki != 0.0 or self.yaw_kd != 0.0):
             correction = 0.0
             yaw_available, current_yaw_rad, current_yaw_rate_rps = self._active_yaw_estimate()
@@ -515,46 +589,39 @@ class LocomotionNode(Node):
                 if self.heading_hold_target_rad is None:
                     self.heading_hold_target_rad = current_yaw_rad
                     self.heading_integral_state = 0.0
-                yaw_error = normalize_angle(self.heading_hold_target_rad - current_yaw_rad)
-                deadbanded_yaw_error = apply_angular_deadband(
-                    yaw_error,
-                    self.yaw_deadband_rad,
-                )
-                proportional_term = self.yaw_kp * deadbanded_yaw_error
-                derivative_term = -self.yaw_kd * current_yaw_rate_rps
-                integral_candidate = clamp(
-                    self.heading_integral_state + deadbanded_yaw_error * (1.0 / self.control_rate_hz),
-                    -self.yaw_integrator_limit,
-                    self.yaw_integrator_limit,
-                )
-                correction_limit = self.max_yaw_rate_rad_s * 0.3
-                unsaturated_correction = (
-                    proportional_term
-                    + self.yaw_ki * integral_candidate
-                    + derivative_term
-                )
-                correction = clamp(
-                    unsaturated_correction,
-                    -correction_limit,
-                    correction_limit,
-                )
-
-                if self.yaw_ki > 0.0:
-                    correction_is_saturated = not math.isclose(
-                        unsaturated_correction,
-                        correction,
-                        rel_tol=0.0,
-                        abs_tol=1e-9,
+                    self.get_logger().info(
+                        'Heading hold latched reference yaw '
+                        f'{math.degrees(self.heading_hold_target_rad):.1f} deg, quaternion '
+                        f'{self._format_quaternion(self._heading_reference_quaternion())}.'
                     )
-                    if (
-                        not correction_is_saturated
-                        or (unsaturated_correction > correction_limit and deadbanded_yaw_error < 0.0)
-                        or (unsaturated_correction < -correction_limit and deadbanded_yaw_error > 0.0)
-                    ):
-                        self.heading_integral_state = integral_candidate
+                step = compute_heading_hold_pid(
+                    target_yaw_rad=self.heading_hold_target_rad,
+                    current_yaw_rad=current_yaw_rad,
+                    current_yaw_rate_rps=current_yaw_rate_rps,
+                    integral_state_rad=self.heading_integral_state,
+                    control_dt_sec=1.0 / self.control_rate_hz,
+                    kp=self.yaw_kp,
+                    ki=self.yaw_ki,
+                    kd=self.yaw_kd,
+                    deadband_rad=self.yaw_deadband_rad,
+                    integral_limit=self.yaw_integrator_limit,
+                    correction_limit=self.max_yaw_rate_rad_s * 0.3,
+                )
+                correction = step.correction
+                if step.integral_should_update:
+                    self.heading_integral_state = step.integral_candidate
+                self.last_heading_hold_mode = 'tracking'
+                self.last_heading_hold_reason = 'yaw_trusted'
+                self.last_heading_hold_step = step
+                self.last_heading_hold_correction_rad_s = correction
+            elif self.imu_yaw_valid:
+                self.last_heading_hold_mode = 'open_loop'
+                self.last_heading_hold_reason = 'yaw_untrusted'
+                self._warn_unusable_yaw_estimate()
             else:
-                self._reset_heading_hold_state()
-                self._warn_missing_yaw_estimate()
+                self.last_heading_hold_mode = 'open_loop'
+                self.last_heading_hold_reason = 'yaw_missing'
+                self._warn_unusable_yaw_estimate()
 
             yaw_rate = clamp(
                 correction,
@@ -563,6 +630,7 @@ class LocomotionNode(Node):
             )
         else:
             self._reset_heading_hold_state()
+            self.last_heading_hold_reason = 'heading_hold_disabled'
 
         return linear_x, linear_y, yaw_rate
 
@@ -571,21 +639,191 @@ class LocomotionNode(Node):
         self.heading_integral_state = 0.0
 
     def _active_yaw_estimate(self):
-        if self.imu_yaw_valid:
+        if self.imu_yaw_valid and self.imu_yaw_trusted:
             return True, self.imu_yaw_rad, self.imu_yaw_rate_rps
 
         return False, 0.0, self.imu_yaw_rate_rps
 
-    def _warn_missing_yaw_estimate(self):
+    def _heading_reference_quaternion(self):
+        if self.heading_hold_target_rad is None:
+            return None
+
+        return quaternion_normalize(
+            quaternion_from_euler(0.0, 0.0, self.heading_hold_target_rad)
+        )
+
+    def _format_quaternion(self, quaternion):
+        if quaternion is None:
+            return 'n/a'
+
+        return (
+            f'({quaternion[0]:.4f}, {quaternion[1]:.4f}, '
+            f'{quaternion[2]:.4f}, {quaternion[3]:.4f})'
+        )
+
+    def _warn_unusable_yaw_estimate(self):
         now = time.monotonic()
         if now - self.last_invalid_warn_time < 2.0:
             return
 
         self.last_invalid_warn_time = now
+        if self.imu_yaw_valid and not self.imu_yaw_trusted:
+            self.get_logger().warn(
+                'Heading hold is enabled, but IMU yaw is currently untrusted '
+                f'(yaw covariance={self.imu_yaw_covariance_rad2:.3f} rad^2, '
+                f'limit={self.max_trusted_yaw_covariance_rad2:.3f}). '
+                'Yaw correction is temporarily disabled while translation continues open-loop.'
+            )
+            return
+
         self.get_logger().warn(
             'Heading hold is enabled, but no valid IMU yaw estimate is available yet. '
             'Yaw correction is temporarily disabled.'
         )
+
+    def _publish_yaw_hold_diagnostics(self, motion):
+        now = time.monotonic()
+        if now - self.last_diagnostic_publish_time < self.DIAGNOSTIC_PUBLISH_PERIOD_SEC:
+            return
+
+        self.last_diagnostic_publish_time = now
+        step = self.last_heading_hold_step
+        reference_quaternion = self._heading_reference_quaternion()
+        current_quaternion = self.imu_orientation_quaternion
+        current_yaw_deg = (
+            math.degrees(self.imu_yaw_rad) if self.imu_yaw_valid else math.nan
+        )
+        reference_yaw_deg = (
+            math.degrees(self.heading_hold_target_rad)
+            if self.heading_hold_target_rad is not None
+            else math.nan
+        )
+        yaw_error_rad = step.yaw_error_rad if step is not None else 0.0
+        deadbanded_yaw_error_rad = (
+            step.deadbanded_yaw_error_rad if step is not None else 0.0
+        )
+        yaw_error_percent_of_180 = min(
+            100.0,
+            abs(yaw_error_rad) * 100.0 / math.pi,
+        )
+
+        diag = DiagnosticArray()
+        diag.header.stamp = self.get_clock().now().to_msg()
+
+        status = DiagnosticStatus()
+        status.name = 'hexapod_locomotion/yaw_hold'
+        status.hardware_id = self.base_frame_id
+        if self.last_heading_hold_mode == 'tracking' and self.imu_yaw_trusted:
+            status.level = DiagnosticStatus.OK
+            status.message = 'tracking heading'
+        elif self.motion_is_zero(motion) or self.last_heading_hold_mode == 'manual_yaw':
+            status.level = DiagnosticStatus.OK
+            status.message = self.last_heading_hold_reason
+        else:
+            status.level = DiagnosticStatus.WARN
+            status.message = self.last_heading_hold_reason
+
+        status.values = [
+            KeyValue(key='control_mode', value=self.last_heading_hold_mode),
+            KeyValue(key='control_reason', value=self.last_heading_hold_reason),
+            KeyValue(
+                key='control_strategy',
+                value=(
+                    'yaw_error=reference-current; positive yaw error commands positive angular.z; '
+                    'derivative opposes measured yaw rate.'
+                ),
+            ),
+            KeyValue(
+                key='tracking_active',
+                value=str(self.last_heading_hold_mode == 'tracking').lower(),
+            ),
+            KeyValue(key='imu_yaw_valid', value=str(self.imu_yaw_valid).lower()),
+            KeyValue(key='imu_yaw_trusted', value=str(self.imu_yaw_trusted).lower()),
+            KeyValue(
+                key='imu_yaw_covariance_rad2',
+                value='nan'
+                if not math.isfinite(self.imu_yaw_covariance_rad2)
+                else f'{self.imu_yaw_covariance_rad2:.6f}',
+            ),
+            KeyValue(
+                key='max_trusted_yaw_covariance_rad2',
+                value=f'{self.max_trusted_yaw_covariance_rad2:.6f}',
+            ),
+            KeyValue(
+                key='reference_yaw_deg',
+                value='nan'
+                if not math.isfinite(reference_yaw_deg)
+                else f'{reference_yaw_deg:.3f}',
+            ),
+            KeyValue(
+                key='current_yaw_deg',
+                value='nan'
+                if not math.isfinite(current_yaw_deg)
+                else f'{current_yaw_deg:.3f}',
+            ),
+            KeyValue(
+                key='yaw_error_deg',
+                value=f'{math.degrees(yaw_error_rad):.3f}',
+            ),
+            KeyValue(
+                key='yaw_error_percent_of_180deg',
+                value=f'{yaw_error_percent_of_180:.3f}',
+            ),
+            KeyValue(
+                key='deadbanded_yaw_error_deg',
+                value=f'{math.degrees(deadbanded_yaw_error_rad):.3f}',
+            ),
+            KeyValue(
+                key='measured_yaw_rate_deg_s',
+                value=f'{math.degrees(self.imu_yaw_rate_rps):.3f}',
+            ),
+            KeyValue(
+                key='manual_yaw_command_deg_s',
+                value=f'{math.degrees(self.cmd_yaw_rate_rad_s):.3f}',
+            ),
+            KeyValue(
+                key='auto_correction_yaw_rate_deg_s',
+                value=f'{math.degrees(self.last_heading_hold_correction_rad_s):.3f}',
+            ),
+            KeyValue(
+                key='integral_state_rad',
+                value=f'{self.heading_integral_state:.6f}',
+            ),
+            KeyValue(
+                key='pid_p_term_deg_s',
+                value=f'{math.degrees(step.proportional_term) if step is not None else 0.0:.3f}',
+            ),
+            KeyValue(
+                key='pid_i_term_deg_s',
+                value=f'{math.degrees(step.integral_term) if step is not None else 0.0:.3f}',
+            ),
+            KeyValue(
+                key='pid_d_term_deg_s',
+                value=f'{math.degrees(step.derivative_term) if step is not None else 0.0:.3f}',
+            ),
+            KeyValue(
+                key='pid_unsaturated_output_deg_s',
+                value=f'{math.degrees(step.unsaturated_correction) if step is not None else 0.0:.3f}',
+            ),
+            KeyValue(
+                key='pid_output_deg_s',
+                value=f'{math.degrees(step.correction) if step is not None else 0.0:.3f}',
+            ),
+            KeyValue(
+                key='pid_output_saturated',
+                value=str(step.correction_is_saturated if step is not None else False).lower(),
+            ),
+            KeyValue(
+                key='reference_quaternion_xyzw',
+                value=self._format_quaternion(reference_quaternion),
+            ),
+            KeyValue(
+                key='current_quaternion_xyzw',
+                value=self._format_quaternion(current_quaternion),
+            ),
+        ]
+        diag.status.append(status)
+        self.yaw_hold_diag_publisher.publish(diag)
 
     def motion_is_zero(self, motion):
         return all(abs(value) < 1e-6 for value in motion)

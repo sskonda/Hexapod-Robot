@@ -5,12 +5,16 @@ import pytest
 from hexapod_locomotion.yaw_control import (
     StartupStillnessGate,
     apply_angular_deadband,
+    compute_heading_hold_pid,
+    fused_yaw_is_trusted,
+    fused_yaw_untrusted_reason,
     imu_is_still,
     relative_yaw_from_reference,
     resolve_parameter_value,
     update_startup_yaw_reference,
     update_vector_running_average,
     vector_components_within_tolerance,
+    yaw_is_trusted_from_covariance,
 )
 
 
@@ -141,3 +145,94 @@ def test_vector_components_within_tolerance_requires_every_axis_to_match():
         (12.1, -5.0, 2.5),
         2.0,
     )
+
+
+def test_fused_yaw_trust_requires_sys_only_until_reference_locks():
+    calibration = (0, 3, 2, 2)
+
+    assert not fused_yaw_is_trusted(
+        calibration,
+        reference_locked=False,
+        min_sys=1,
+        min_gyro=3,
+        min_accel=2,
+        min_mag=2,
+    )
+    assert fused_yaw_is_trusted(
+        calibration,
+        reference_locked=True,
+        min_sys=1,
+        min_gyro=3,
+        min_accel=2,
+        min_mag=2,
+    )
+
+
+def test_fused_yaw_trust_still_requires_mag_after_reference_locks():
+    calibration = (0, 3, 3, 1)
+
+    assert not fused_yaw_is_trusted(
+        calibration,
+        reference_locked=True,
+        min_sys=1,
+        min_gyro=3,
+        min_accel=2,
+        min_mag=2,
+    )
+    assert fused_yaw_untrusted_reason(
+        calibration,
+        reference_locked=True,
+        min_sys=1,
+        min_gyro=3,
+        min_accel=2,
+        min_mag=2,
+    ) == 'mag_calibration_low'
+
+
+def test_yaw_covariance_gate_accepts_only_low_uncertainty_heading():
+    trusted_covariance = [0.05] * 9
+    trusted_covariance[8] = 0.05
+    untrusted_covariance = [0.05] * 9
+    untrusted_covariance[8] = 25.0
+
+    assert yaw_is_trusted_from_covariance(trusted_covariance, 1.0)
+    assert not yaw_is_trusted_from_covariance(untrusted_covariance, 1.0)
+
+
+def test_heading_hold_pid_positive_yaw_error_commands_positive_correction():
+    step = compute_heading_hold_pid(
+        target_yaw_rad=math.radians(15.0),
+        current_yaw_rad=0.0,
+        current_yaw_rate_rps=0.0,
+        integral_state_rad=0.0,
+        control_dt_sec=0.02,
+        kp=0.5,
+        ki=0.0,
+        kd=0.0,
+        deadband_rad=0.0,
+        integral_limit=1.0,
+        correction_limit=1.0,
+    )
+
+    assert step.yaw_error_rad > 0.0
+    assert step.proportional_term > 0.0
+    assert step.correction > 0.0
+
+
+def test_heading_hold_pid_derivative_opposes_measured_positive_yaw_rate():
+    step = compute_heading_hold_pid(
+        target_yaw_rad=0.0,
+        current_yaw_rad=0.0,
+        current_yaw_rate_rps=0.5,
+        integral_state_rad=0.0,
+        control_dt_sec=0.02,
+        kp=0.0,
+        ki=0.0,
+        kd=0.2,
+        deadband_rad=0.0,
+        integral_limit=1.0,
+        correction_limit=1.0,
+    )
+
+    assert step.derivative_term == pytest.approx(-0.1)
+    assert step.correction < 0.0

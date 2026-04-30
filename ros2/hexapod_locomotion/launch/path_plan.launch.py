@@ -27,6 +27,24 @@ def generate_launch_description():
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
+    imu_min_sys_calibration_for_fused_yaw_acquire = LaunchConfiguration(
+        'imu_min_sys_calibration_for_fused_yaw_acquire'
+    )
+    imu_min_gyro_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_gyro_calibration_for_fused_yaw'
+    )
+    imu_min_accel_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_accel_calibration_for_fused_yaw'
+    )
+    imu_min_mag_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_mag_calibration_for_fused_yaw'
+    )
+    imu_ignore_sys_calibration_after_fused_yaw_lock = LaunchConfiguration(
+        'imu_ignore_sys_calibration_after_fused_yaw_lock'
+    )
+    imu_max_trusted_yaw_covariance_rad2 = LaunchConfiguration(
+        'imu_max_trusted_yaw_covariance_rad2'
+    )
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
     imu_allow_mag_baseline_trust_without_calibration = LaunchConfiguration(
@@ -126,6 +144,36 @@ def generate_launch_description():
             'imu_min_mag_calibration_for_yaw',
             default_value='3',
             description='Pass through to hexapod_core.launch.py for magnetic yaw correction gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_sys_calibration_for_fused_yaw_acquire',
+            default_value='1',
+            description='Pass through to hexapod_core.launch.py for fused yaw reference acquisition.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_gyro_calibration_for_fused_yaw',
+            default_value='3',
+            description='Pass through to hexapod_core.launch.py for fused yaw gyro trust gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_accel_calibration_for_fused_yaw',
+            default_value='2',
+            description='Pass through to hexapod_core.launch.py for fused yaw accel trust gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_mag_calibration_for_fused_yaw',
+            default_value='2',
+            description='Pass through to hexapod_core.launch.py for fused yaw mag trust gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_ignore_sys_calibration_after_fused_yaw_lock',
+            default_value='true',
+            description='Pass through to hexapod_core.launch.py to ignore transient SYS drops after fused yaw lock.',
+        ),
+        DeclareLaunchArgument(
+            'imu_max_trusted_yaw_covariance_rad2',
+            default_value='1.0',
+            description='Maximum yaw covariance that path planning and locomotion still consider trusted.',
         ),
         DeclareLaunchArgument(
             'imu_startup_still_time_sec',
@@ -230,6 +278,12 @@ def generate_launch_description():
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'imu_min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
+                'imu_min_sys_calibration_for_fused_yaw_acquire': imu_min_sys_calibration_for_fused_yaw_acquire,
+                'imu_min_gyro_calibration_for_fused_yaw': imu_min_gyro_calibration_for_fused_yaw,
+                'imu_min_accel_calibration_for_fused_yaw': imu_min_accel_calibration_for_fused_yaw,
+                'imu_min_mag_calibration_for_fused_yaw': imu_min_mag_calibration_for_fused_yaw,
+                'imu_ignore_sys_calibration_after_fused_yaw_lock': imu_ignore_sys_calibration_after_fused_yaw_lock,
+                'imu_max_trusted_yaw_covariance_rad2': imu_max_trusted_yaw_covariance_rad2,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
                 'imu_allow_mag_baseline_trust_without_calibration': imu_allow_mag_baseline_trust_without_calibration,
@@ -255,6 +309,7 @@ def generate_launch_description():
                 'square_side_m': square_side_m,
                 'wait_for_imu_yaw': wait_for_imu_yaw,
                 'imu_topic': imu_topic,
+                'max_trusted_yaw_covariance_rad2': imu_max_trusted_yaw_covariance_rad2,
             }],
         ),
     ])

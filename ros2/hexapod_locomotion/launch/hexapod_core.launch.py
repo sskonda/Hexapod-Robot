@@ -32,6 +32,24 @@ def generate_launch_description():
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
+    imu_min_sys_calibration_for_fused_yaw_acquire = LaunchConfiguration(
+        'imu_min_sys_calibration_for_fused_yaw_acquire'
+    )
+    imu_min_gyro_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_gyro_calibration_for_fused_yaw'
+    )
+    imu_min_accel_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_accel_calibration_for_fused_yaw'
+    )
+    imu_min_mag_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_mag_calibration_for_fused_yaw'
+    )
+    imu_ignore_sys_calibration_after_fused_yaw_lock = LaunchConfiguration(
+        'imu_ignore_sys_calibration_after_fused_yaw_lock'
+    )
+    imu_max_trusted_yaw_covariance_rad2 = LaunchConfiguration(
+        'imu_max_trusted_yaw_covariance_rad2'
+    )
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
     imu_allow_mag_baseline_trust_without_calibration = LaunchConfiguration(
@@ -178,6 +196,36 @@ def generate_launch_description():
             description='Minimum BNO055 magnetometer calibration level required for magnetic yaw correction.',
         ),
         DeclareLaunchArgument(
+            'imu_min_sys_calibration_for_fused_yaw_acquire',
+            default_value='1',
+            description='Minimum BNO055 SYS calibration level required to acquire the fused absolute yaw reference.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_gyro_calibration_for_fused_yaw',
+            default_value='3',
+            description='Minimum gyroscope calibration level required to trust fused yaw.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_accel_calibration_for_fused_yaw',
+            default_value='2',
+            description='Minimum accelerometer calibration level required to trust fused yaw.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_mag_calibration_for_fused_yaw',
+            default_value='2',
+            description='Minimum magnetometer calibration level required to trust fused yaw.',
+        ),
+        DeclareLaunchArgument(
+            'imu_ignore_sys_calibration_after_fused_yaw_lock',
+            default_value='true',
+            description='Ignore transient SYS calibration drops after fused yaw has already acquired its absolute reference.',
+        ),
+        DeclareLaunchArgument(
+            'imu_max_trusted_yaw_covariance_rad2',
+            default_value='1.0',
+            description='Maximum yaw covariance that locomotion and path planning still consider trusted.',
+        ),
+        DeclareLaunchArgument(
             'imu_startup_still_time_sec',
             default_value='15.0',
             description='Continuous still time required before IMU yaw heading hold becomes active.',
@@ -276,6 +324,11 @@ def generate_launch_description():
                 'retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
+                'imu_min_sys_calibration_for_fused_yaw_acquire': imu_min_sys_calibration_for_fused_yaw_acquire,
+                'imu_min_gyro_calibration_for_fused_yaw': imu_min_gyro_calibration_for_fused_yaw,
+                'imu_min_accel_calibration_for_fused_yaw': imu_min_accel_calibration_for_fused_yaw,
+                'imu_min_mag_calibration_for_fused_yaw': imu_min_mag_calibration_for_fused_yaw,
+                'imu_ignore_sys_calibration_after_fused_yaw_lock': imu_ignore_sys_calibration_after_fused_yaw_lock,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
                 'allow_mag_baseline_trust_without_calibration': imu_allow_mag_baseline_trust_without_calibration,
@@ -300,6 +353,7 @@ def generate_launch_description():
                     'yaw_kd': yaw_kd,
                     'yaw_deadband_deg': yaw_deadband_deg,
                     'yaw_integrator_limit': yaw_integrator_limit,
+                    'max_trusted_yaw_covariance_rad2': imu_max_trusted_yaw_covariance_rad2,
                     'tripod_planar_travel_scale': tripod_planar_travel_scale,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,

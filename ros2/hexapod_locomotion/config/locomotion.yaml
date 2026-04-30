@@ -24,3 +24,4 @@
     yaw_kd: 0.10
     yaw_deadband_deg: 2.5
     yaw_integrator_limit: 1.2
+    max_trusted_yaw_covariance_rad2: 1.0

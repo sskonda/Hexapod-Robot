@@ -3,6 +3,7 @@
 """Shared helpers for yaw control and IMU startup settling."""
 
 import math
+from dataclasses import dataclass
 
 
 STANDARD_GRAVITY_M_S2 = 9.80665
@@ -30,6 +31,14 @@ def quaternion_from_euler(roll_rad, pitch_rad, yaw_rad):
         cr * cp * sy - sr * sp * cy,
         cr * cp * cy + sr * sp * sy,
     )
+
+
+def quaternion_to_yaw(x_value, y_value, z_value, w_value):
+    siny_cosp = 2.0 * (float(w_value) * float(z_value) + float(x_value) * float(y_value))
+    cosy_cosp = 1.0 - 2.0 * (
+        float(y_value) * float(y_value) + float(z_value) * float(z_value)
+    )
+    return math.atan2(siny_cosp, cosy_cosp)
 
 
 def quaternion_normalize(quaternion):
@@ -70,8 +79,92 @@ def relative_yaw_from_reference(yaw_rad, reference_yaw_rad):
     return normalize_angle(float(yaw_rad) - float(reference_yaw_rad))
 
 
+def calibration_status_meets_thresholds(
+    calibration,
+    min_sys: int = 0,
+    min_gyro: int = 0,
+    min_accel: int = 0,
+    min_mag: int = 0,
+) -> bool:
+    if calibration is None or len(calibration) != 4:
+        return False
+
+    sys_calib, gyro_calib, accel_calib, mag_calib = (
+        int(value) for value in calibration
+    )
+    return (
+        sys_calib >= int(min_sys)
+        and gyro_calib >= int(min_gyro)
+        and accel_calib >= int(min_accel)
+        and mag_calib >= int(min_mag)
+    )
+
+
+def fused_yaw_untrusted_reason(
+    calibration,
+    reference_locked: bool,
+    min_sys: int,
+    min_gyro: int,
+    min_accel: int,
+    min_mag: int,
+    ignore_sys_after_lock: bool = True,
+) -> str:
+    if calibration is None or len(calibration) != 4:
+        return 'calibration_missing'
+
+    sys_calib, gyro_calib, accel_calib, mag_calib = (
+        int(value) for value in calibration
+    )
+    if gyro_calib < int(min_gyro):
+        return 'gyro_calibration_low'
+    if accel_calib < int(min_accel):
+        return 'accel_calibration_low'
+    if mag_calib < int(min_mag):
+        return 'mag_calibration_low'
+    if (not bool(reference_locked) or not bool(ignore_sys_after_lock)) and sys_calib < int(min_sys):
+        return 'sys_calibration_low'
+    return 'calibration_healthy'
+
+
+def fused_yaw_is_trusted(
+    calibration,
+    reference_locked: bool,
+    min_sys: int,
+    min_gyro: int,
+    min_accel: int,
+    min_mag: int,
+    ignore_sys_after_lock: bool = True,
+) -> bool:
+    return fused_yaw_untrusted_reason(
+        calibration,
+        reference_locked=reference_locked,
+        min_sys=min_sys,
+        min_gyro=min_gyro,
+        min_accel=min_accel,
+        min_mag=min_mag,
+        ignore_sys_after_lock=ignore_sys_after_lock,
+    ) == 'calibration_healthy'
+
+
 def vector_norm(values) -> float:
     return math.sqrt(sum(float(value) * float(value) for value in values))
+
+
+def yaw_is_trusted_from_covariance(
+    orientation_covariance,
+    max_trusted_yaw_covariance_rad2: float,
+) -> bool:
+    if orientation_covariance is None or len(orientation_covariance) < 9:
+        return False
+
+    yaw_covariance = float(orientation_covariance[8])
+    if not math.isfinite(yaw_covariance):
+        return False
+
+    return yaw_covariance >= 0.0 and yaw_covariance <= max(
+        0.0,
+        float(max_trusted_yaw_covariance_rad2),
+    )
 
 
 def update_vector_running_average(current_average, sample_values, sample_count):
@@ -176,6 +269,86 @@ def resolve_parameter_value(
         return legacy_value, False
 
     return preferred_value, False
+
+
+@dataclass(frozen=True)
+class HeadingHoldPidStep:
+    yaw_error_rad: float
+    deadbanded_yaw_error_rad: float
+    proportional_term: float
+    integral_candidate: float
+    integral_term: float
+    derivative_term: float
+    unsaturated_correction: float
+    correction: float
+    correction_limit: float
+    correction_is_saturated: bool
+    integral_should_update: bool
+
+
+def compute_heading_hold_pid(
+    target_yaw_rad: float,
+    current_yaw_rad: float,
+    current_yaw_rate_rps: float,
+    integral_state_rad: float,
+    control_dt_sec: float,
+    kp: float,
+    ki: float,
+    kd: float,
+    deadband_rad: float,
+    integral_limit: float,
+    correction_limit: float,
+) -> HeadingHoldPidStep:
+    yaw_error_rad = normalize_angle(float(target_yaw_rad) - float(current_yaw_rad))
+    deadbanded_yaw_error_rad = apply_angular_deadband(yaw_error_rad, deadband_rad)
+    proportional_term = float(kp) * deadbanded_yaw_error_rad
+    derivative_term = -float(kd) * float(current_yaw_rate_rps)
+    integral_candidate = max(
+        -float(integral_limit),
+        min(
+            float(integral_limit),
+            float(integral_state_rad) + deadbanded_yaw_error_rad * max(0.0, float(control_dt_sec)),
+        ),
+    )
+    integral_term = float(ki) * integral_candidate
+    unsaturated_correction = proportional_term + integral_term + derivative_term
+    correction = max(
+        -float(correction_limit),
+        min(float(correction_limit), unsaturated_correction),
+    )
+    correction_is_saturated = not math.isclose(
+        unsaturated_correction,
+        correction,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    )
+    integral_should_update = (
+        float(ki) > 0.0
+        and (
+            not correction_is_saturated
+            or (
+                unsaturated_correction > float(correction_limit)
+                and deadbanded_yaw_error_rad < 0.0
+            )
+            or (
+                unsaturated_correction < -float(correction_limit)
+                and deadbanded_yaw_error_rad > 0.0
+            )
+        )
+    )
+    return HeadingHoldPidStep(
+        yaw_error_rad=yaw_error_rad,
+        deadbanded_yaw_error_rad=deadbanded_yaw_error_rad,
+        proportional_term=proportional_term,
+        integral_candidate=integral_candidate,
+        integral_term=integral_term,
+        derivative_term=derivative_term,
+        unsaturated_correction=unsaturated_correction,
+        correction=correction,
+        correction_limit=float(correction_limit),
+        correction_is_saturated=correction_is_saturated,
+        integral_should_update=integral_should_update,
+    )
 
 
 class StartupStillnessGate:

@@ -27,6 +27,8 @@ from .kalman_filter import YawComplementaryFilter
 from .yaw_control import (
     STANDARD_GRAVITY_M_S2,
     StartupStillnessGate,
+    fused_yaw_is_trusted,
+    fused_yaw_untrusted_reason,
     normalize_angle,
     quaternion_from_euler,
     quaternion_normalize,
@@ -64,18 +66,23 @@ def calibration_is_fully_calibrated(calibration):
     )
 
 
-def yaw_calibration_is_healthy(calibration):
-    if calibration is None or len(calibration) != 4:
-        return False
-
-    sys_calib, gyro_calib, accel_calib, mag_calib = (
-        int(value) for value in calibration
-    )
-    return (
-        gyro_calib == 3
-        and mag_calib >= 2
-        and sys_calib >= 2
-        and accel_calib >= 2
+def yaw_calibration_is_healthy(
+    calibration,
+    reference_locked=False,
+    min_sys=1,
+    min_gyro=3,
+    min_accel=2,
+    min_mag=2,
+    ignore_sys_after_lock=True,
+):
+    return fused_yaw_is_trusted(
+        calibration,
+        reference_locked=reference_locked,
+        min_sys=min_sys,
+        min_gyro=min_gyro,
+        min_accel=min_accel,
+        min_mag=min_mag,
+        ignore_sys_after_lock=ignore_sys_after_lock,
     )
 
 
@@ -407,6 +414,10 @@ class BNO055Publisher(Node):
     DEFAULT_YAW_FILTER_TIME_CONSTANT_SEC = 0.5
     DEFAULT_ABSOLUTE_YAW_COVARIANCE = 0.05
     DEFAULT_RELATIVE_YAW_COVARIANCE = 25.0
+    DEFAULT_MIN_SYS_CALIBRATION_FOR_FUSED_YAW_ACQUIRE = 1
+    DEFAULT_MIN_GYRO_CALIBRATION_FOR_FUSED_YAW = 3
+    DEFAULT_MIN_ACCEL_CALIBRATION_FOR_FUSED_YAW = 2
+    DEFAULT_MIN_MAG_CALIBRATION_FOR_FUSED_YAW = 2
     DEFAULT_ACCEL_HEADING_TOLERANCE_M_S2 = 1.0
     DEFAULT_MAG_NORM_TOLERANCE_RATIO = 0.25
     DEFAULT_MAG_YAW_JUMP_REJECT_DEG = 25.0
@@ -441,6 +452,26 @@ class BNO055Publisher(Node):
             self.DEFAULT_RELATIVE_YAW_COVARIANCE,
         )
         self.declare_parameter('min_mag_calibration_for_yaw', 3)
+        self.declare_parameter(
+            'imu_min_sys_calibration_for_fused_yaw_acquire',
+            self.DEFAULT_MIN_SYS_CALIBRATION_FOR_FUSED_YAW_ACQUIRE,
+        )
+        self.declare_parameter(
+            'imu_min_gyro_calibration_for_fused_yaw',
+            self.DEFAULT_MIN_GYRO_CALIBRATION_FOR_FUSED_YAW,
+        )
+        self.declare_parameter(
+            'imu_min_accel_calibration_for_fused_yaw',
+            self.DEFAULT_MIN_ACCEL_CALIBRATION_FOR_FUSED_YAW,
+        )
+        self.declare_parameter(
+            'imu_min_mag_calibration_for_fused_yaw',
+            self.DEFAULT_MIN_MAG_CALIBRATION_FOR_FUSED_YAW,
+        )
+        self.declare_parameter(
+            'imu_ignore_sys_calibration_after_fused_yaw_lock',
+            True,
+        )
         self.declare_parameter('calibration_status_period_sec', 0.5)
         self.declare_parameter(
             'imu_yaw_filter_time_constant_sec',
@@ -512,6 +543,37 @@ class BNO055Publisher(Node):
             3,
             max(0, int(self.get_parameter('min_mag_calibration_for_yaw').value)),
         )
+        self.min_sys_calibration_for_fused_yaw_acquire = min(
+            3,
+            max(
+                0,
+                int(self.get_parameter('imu_min_sys_calibration_for_fused_yaw_acquire').value),
+            ),
+        )
+        self.min_gyro_calibration_for_fused_yaw = min(
+            3,
+            max(
+                0,
+                int(self.get_parameter('imu_min_gyro_calibration_for_fused_yaw').value),
+            ),
+        )
+        self.min_accel_calibration_for_fused_yaw = min(
+            3,
+            max(
+                0,
+                int(self.get_parameter('imu_min_accel_calibration_for_fused_yaw').value),
+            ),
+        )
+        self.min_mag_calibration_for_fused_yaw = min(
+            3,
+            max(
+                0,
+                int(self.get_parameter('imu_min_mag_calibration_for_fused_yaw').value),
+            ),
+        )
+        self.ignore_sys_calibration_after_fused_yaw_lock = bool(
+            self.get_parameter('imu_ignore_sys_calibration_after_fused_yaw_lock').value
+        )
         self.calibration_status_period_sec = max(
             0.05,
             float(self.get_parameter('calibration_status_period_sec').value),
@@ -577,6 +639,7 @@ class BNO055Publisher(Node):
         self.last_yaw_is_absolute = False
         self.last_yaw_trusted = False
         self.last_orientation_published = False
+        self.fused_yaw_reference_locked = False
         self.last_mag_norm_t = math.nan
         self.reference_mag_norm_t = None
         self.last_mag_norm_error_ratio = 0.0
@@ -649,9 +712,18 @@ class BNO055Publisher(Node):
             )
         if self.use_fused_orientation:
             self.get_logger().info(
-                'Fused yaw trust requires healthy BNO055 yaw calibration '
-                '(gyro=3, mag>=2, sys>=2, accel>=2).'
+                'Fused yaw trust requires '
+                f'gyro>={self.min_gyro_calibration_for_fused_yaw}, '
+                f'accel>={self.min_accel_calibration_for_fused_yaw}, '
+                f'mag>={self.min_mag_calibration_for_fused_yaw}, and '
+                f'sys>={self.min_sys_calibration_for_fused_yaw_acquire} to acquire the '
+                'absolute heading reference.'
             )
+            if self.ignore_sys_calibration_after_fused_yaw_lock:
+                self.get_logger().info(
+                    'Once fused yaw is locked, temporary SYS calibration drops will be ignored '
+                    'as long as gyro, accel, and mag stay above their yaw thresholds.'
+                )
         elif self.min_mag_calibration_for_yaw > 0:
             self.get_logger().info(
                 'Magnetometer yaw correction requires mag calibration >= '
@@ -719,6 +791,57 @@ class BNO055Publisher(Node):
                 self.min_mag_calibration_for_yaw = value
                 changed_fields.append(
                     f'min_mag_calibration_for_yaw={self.min_mag_calibration_for_yaw}'
+                )
+            elif parameter.name == 'imu_min_sys_calibration_for_fused_yaw_acquire':
+                value = int(parameter.value)
+                if value < 0 or value > 3:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='imu_min_sys_calibration_for_fused_yaw_acquire must be in the range 0..3.',
+                    )
+                self.min_sys_calibration_for_fused_yaw_acquire = value
+                changed_fields.append(
+                    'imu_min_sys_calibration_for_fused_yaw_acquire='
+                    f'{self.min_sys_calibration_for_fused_yaw_acquire}'
+                )
+            elif parameter.name == 'imu_min_gyro_calibration_for_fused_yaw':
+                value = int(parameter.value)
+                if value < 0 or value > 3:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='imu_min_gyro_calibration_for_fused_yaw must be in the range 0..3.',
+                    )
+                self.min_gyro_calibration_for_fused_yaw = value
+                changed_fields.append(
+                    f'imu_min_gyro_calibration_for_fused_yaw={self.min_gyro_calibration_for_fused_yaw}'
+                )
+            elif parameter.name == 'imu_min_accel_calibration_for_fused_yaw':
+                value = int(parameter.value)
+                if value < 0 or value > 3:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='imu_min_accel_calibration_for_fused_yaw must be in the range 0..3.',
+                    )
+                self.min_accel_calibration_for_fused_yaw = value
+                changed_fields.append(
+                    f'imu_min_accel_calibration_for_fused_yaw={self.min_accel_calibration_for_fused_yaw}'
+                )
+            elif parameter.name == 'imu_min_mag_calibration_for_fused_yaw':
+                value = int(parameter.value)
+                if value < 0 or value > 3:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='imu_min_mag_calibration_for_fused_yaw must be in the range 0..3.',
+                    )
+                self.min_mag_calibration_for_fused_yaw = value
+                changed_fields.append(
+                    f'imu_min_mag_calibration_for_fused_yaw={self.min_mag_calibration_for_fused_yaw}'
+                )
+            elif parameter.name == 'imu_ignore_sys_calibration_after_fused_yaw_lock':
+                self.ignore_sys_calibration_after_fused_yaw_lock = bool(parameter.value)
+                changed_fields.append(
+                    'imu_ignore_sys_calibration_after_fused_yaw_lock='
+                    f'{str(self.ignore_sys_calibration_after_fused_yaw_lock).lower()}'
                 )
             elif parameter.name == 'imu_accel_heading_tolerance_m_s2':
                 value = float(parameter.value)
@@ -848,10 +971,29 @@ class BNO055Publisher(Node):
             self.linear_acceleration_covariance,
         )
 
-        fully_calibrated = calibration_is_fully_calibrated(calibration)
-        yaw_healthy = yaw_calibration_is_healthy(calibration)
+        yaw_healthy = yaw_calibration_is_healthy(
+            calibration,
+            reference_locked=self.fused_yaw_reference_locked,
+            min_sys=self.min_sys_calibration_for_fused_yaw_acquire,
+            min_gyro=self.min_gyro_calibration_for_fused_yaw,
+            min_accel=self.min_accel_calibration_for_fused_yaw,
+            min_mag=self.min_mag_calibration_for_fused_yaw,
+            ignore_sys_after_lock=self.ignore_sys_calibration_after_fused_yaw_lock,
+        )
         yaw_source = 'fused_ndof' if self.mode_name == 'NDOF_MODE' else 'fused_bno055'
-        yaw_reason = 'calibration_healthy' if yaw_healthy else 'calibration_unhealthy'
+        yaw_reason = (
+            'calibration_healthy'
+            if yaw_healthy
+            else fused_yaw_untrusted_reason(
+                calibration,
+                reference_locked=self.fused_yaw_reference_locked,
+                min_sys=self.min_sys_calibration_for_fused_yaw_acquire,
+                min_gyro=self.min_gyro_calibration_for_fused_yaw,
+                min_accel=self.min_accel_calibration_for_fused_yaw,
+                min_mag=self.min_mag_calibration_for_fused_yaw,
+                ignore_sys_after_lock=self.ignore_sys_calibration_after_fused_yaw_lock,
+            )
+        )
         yaw_is_absolute = False
         yaw_trusted = False
         yaw_covariance = self.relative_yaw_covariance
@@ -868,6 +1010,8 @@ class BNO055Publisher(Node):
             yaw_is_absolute = True
             yaw_trusted = True
             yaw_covariance = self.absolute_yaw_covariance
+            if self.use_fused_orientation:
+                self.fused_yaw_reference_locked = True
 
         if startup_ready and not self.startup_settle_logged:
             self.get_logger().info(
@@ -1094,7 +1238,15 @@ class BNO055Publisher(Node):
         self.last_diag_publish_monotonic = measurement_time
 
         fully_calibrated = calibration_is_fully_calibrated(calibration)
-        yaw_healthy = yaw_calibration_is_healthy(calibration)
+        yaw_healthy = yaw_calibration_is_healthy(
+            calibration,
+            reference_locked=self.fused_yaw_reference_locked,
+            min_sys=self.min_sys_calibration_for_fused_yaw_acquire,
+            min_gyro=self.min_gyro_calibration_for_fused_yaw,
+            min_accel=self.min_accel_calibration_for_fused_yaw,
+            min_mag=self.min_mag_calibration_for_fused_yaw,
+            ignore_sys_after_lock=self.ignore_sys_calibration_after_fused_yaw_lock,
+        )
 
         diag = DiagnosticArray()
         diag.header.stamp = stamp
@@ -1119,10 +1271,34 @@ class BNO055Publisher(Node):
             KeyValue(key='yaw_reason', value=self.last_yaw_reason),
             KeyValue(key='yaw_absolute', value=str(self.last_yaw_is_absolute).lower()),
             KeyValue(key='yaw_trusted', value=str(self.last_yaw_trusted).lower()),
+            KeyValue(
+                key='yaw_reference_locked',
+                value=str(self.fused_yaw_reference_locked).lower(),
+            ),
             KeyValue(key='orientation_published', value=str(self.last_orientation_published).lower()),
             KeyValue(key='startup_ready', value=str(startup_ready).lower()),
             KeyValue(key='yaw_healthy', value=str(yaw_healthy).lower()),
             KeyValue(key='fully_calibrated', value=str(fully_calibrated).lower()),
+            KeyValue(
+                key='min_sys_calib_for_fused_yaw_acquire',
+                value=str(self.min_sys_calibration_for_fused_yaw_acquire),
+            ),
+            KeyValue(
+                key='min_gyro_calib_for_fused_yaw',
+                value=str(self.min_gyro_calibration_for_fused_yaw),
+            ),
+            KeyValue(
+                key='min_accel_calib_for_fused_yaw',
+                value=str(self.min_accel_calibration_for_fused_yaw),
+            ),
+            KeyValue(
+                key='min_mag_calib_for_fused_yaw',
+                value=str(self.min_mag_calibration_for_fused_yaw),
+            ),
+            KeyValue(
+                key='ignore_sys_after_fused_yaw_lock',
+                value=str(self.ignore_sys_calibration_after_fused_yaw_lock).lower(),
+            ),
             KeyValue(
                 key='yaw_covariance_rad2',
                 value=f'{self.last_yaw_covariance:.6f}',
