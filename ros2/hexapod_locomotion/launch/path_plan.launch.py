@@ -15,6 +15,10 @@ def generate_launch_description():
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
+    yaw_integral_gain = LaunchConfiguration('yaw_integral_gain')
+    yaw_derivative_gain = LaunchConfiguration('yaw_derivative_gain')
+    yaw_integral_limit_rad_s = LaunchConfiguration('yaw_integral_limit_rad_s')
+    yaw_hold_max_yaw_rate_ratio = LaunchConfiguration('yaw_hold_max_yaw_rate_ratio')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
@@ -46,12 +50,32 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.1',
-            description='IMU heading-hold gain passed through to hexapod_core.launch.py.',
+            default_value='0.9',
+            description='Yaw PID proportional gain passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_integral_gain',
+            default_value='0.04',
+            description='Yaw PID integral gain passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_derivative_gain',
+            default_value='0.16',
+            description='Yaw PID derivative gain passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_integral_limit_rad_s',
+            default_value='0.10',
+            description='Integral output limit passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_hold_max_yaw_rate_ratio',
+            default_value='0.3',
+            description='Heading-hold yaw-rate ratio passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'yaw_deadband_deg',
-            default_value='5.0',
+            default_value='2.0',
             description='Yaw-error deadband passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
@@ -140,6 +164,10 @@ def generate_launch_description():
                 'servo_dry_run': servo_dry_run,
                 'apply_offsets': apply_offsets,
                 'yaw_correction_gain': yaw_correction_gain,
+                'yaw_integral_gain': yaw_integral_gain,
+                'yaw_derivative_gain': yaw_derivative_gain,
+                'yaw_integral_limit_rad_s': yaw_integral_limit_rad_s,
+                'yaw_hold_max_yaw_rate_ratio': yaw_hold_max_yaw_rate_ratio,
                 'yaw_deadband_deg': yaw_deadband_deg,
                 'imu_use_external_crystal': imu_use_external_crystal,
                 'imu_read_retry_count': imu_read_retry_count,

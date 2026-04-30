@@ -1,9 +1,10 @@
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
-from ament_index_python.packages import get_package_share_directory
-from pathlib import Path
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -11,6 +12,10 @@ def generate_launch_description():
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
+    yaw_integral_gain = LaunchConfiguration('yaw_integral_gain')
+    yaw_derivative_gain = LaunchConfiguration('yaw_derivative_gain')
+    yaw_integral_limit_rad_s = LaunchConfiguration('yaw_integral_limit_rad_s')
+    yaw_hold_max_yaw_rate_ratio = LaunchConfiguration('yaw_hold_max_yaw_rate_ratio')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_frame_id = LaunchConfiguration('odom_frame_id')
@@ -49,12 +54,32 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_correction_gain',
-            default_value='0.1',
-            description='IMU heading-hold gain used by locomotion when no yaw is commanded.',
+            default_value='0.9',
+            description='Yaw PID proportional gain used by locomotion heading hold.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_integral_gain',
+            default_value='0.04',
+            description='Yaw PID integral gain used by locomotion heading hold.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_derivative_gain',
+            default_value='0.16',
+            description='Yaw PID derivative gain used by locomotion heading hold.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_integral_limit_rad_s',
+            default_value='0.10',
+            description='Maximum integral contribution to heading-hold yaw-rate output.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_hold_max_yaw_rate_ratio',
+            default_value='0.3',
+            description='Fraction of max yaw rate reserved for automatic heading hold.',
         ),
         DeclareLaunchArgument(
             'yaw_deadband_deg',
-            default_value='5.0',
+            default_value='2.0',
             description='Yaw-error deadband used by locomotion heading hold.',
         ),
         DeclareLaunchArgument(
@@ -104,8 +129,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'imu_mode',
-            default_value='AMG_MODE',
-            description='BNO055 operating mode. AMG_MODE keeps accel, gyro, and mag raw for explicit yaw correction.',
+            default_value='NDOF_MODE',
+            description=(
+                'BNO055 operating mode. NDOF_MODE publishes the sensor fused quaternion '
+                'by default; use AMG_MODE to fall back to raw accel, gyro, and mag fusion '
+                'in the ROS node.'
+            ),
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',
@@ -118,7 +147,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'imu_read_retry_count',
             default_value='3',
-            description='How many times the BNO055 UART driver retries transient read overruns/timeouts.',
+            description=(
+                'How many times the BNO055 UART driver retries transient '
+                'read overruns/timeouts.'
+            ),
         ),
         DeclareLaunchArgument(
             'imu_retry_backoff_sec',
@@ -133,12 +165,18 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'imu_min_mag_calibration_for_yaw',
             default_value='3',
-            description='Minimum BNO055 magnetometer calibration level required for magnetic yaw correction.',
+            description=(
+                'Minimum BNO055 magnetometer calibration level required '
+                'for magnetic yaw correction.'
+            ),
         ),
         DeclareLaunchArgument(
             'imu_startup_still_time_sec',
             default_value='15.0',
-            description='Continuous still time required before IMU yaw heading hold becomes active.',
+            description=(
+                'Continuous still time required before IMU yaw heading '
+                'hold becomes active.'
+            ),
         ),
         DeclareLaunchArgument(
             'imu_startup_motion_grace_sec',
@@ -217,6 +255,10 @@ def generate_launch_description():
                 str(config_dir / 'locomotion.yaml'),
                 {
                     'yaw_correction_gain': yaw_correction_gain,
+                    'yaw_integral_gain': yaw_integral_gain,
+                    'yaw_derivative_gain': yaw_derivative_gain,
+                    'yaw_integral_limit_rad_s': yaw_integral_limit_rad_s,
+                    'yaw_hold_max_yaw_rate_ratio': yaw_hold_max_yaw_rate_ratio,
                     'yaw_deadband_deg': yaw_deadband_deg,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,

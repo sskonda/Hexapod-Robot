@@ -19,6 +19,11 @@ def apply_angular_deadband(error_rad: float, deadband_rad: float) -> float:
     return math.copysign(abs(error_rad) - deadband_rad, error_rad)
 
 
+def normalize_angle(angle_rad: float) -> float:
+    """Wrap an angle to the [-pi, pi] interval."""
+    return math.atan2(math.sin(float(angle_rad)), math.cos(float(angle_rad)))
+
+
 def vector_norm(values) -> float:
     return math.sqrt(sum(float(value) * float(value) for value in values))
 
@@ -145,3 +150,99 @@ class StartupStillnessGate:
                 self.accumulated_still_time_sec = 0.0
 
         return self.ready
+
+
+class HeadingHoldPid:
+    """Yaw-rate PID for holding a target heading while translating."""
+
+    def __init__(
+        self,
+        kp: float,
+        ki: float = 0.0,
+        kd: float = 0.0,
+        integral_limit_rad_s: float = 0.0,
+    ):
+        self.kp = max(0.0, float(kp))
+        self.ki = max(0.0, float(ki))
+        self.kd = max(0.0, float(kd))
+        self.integral_limit_rad_s = max(0.0, float(integral_limit_rad_s))
+        self.integral_correction_rad_s = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            self.kp > 1e-9
+            or self.ki > 1e-9
+            or self.kd > 1e-9
+        )
+
+    def set_gains(self, kp: float, ki: float, kd: float):
+        self.kp = max(0.0, float(kp))
+        self.ki = max(0.0, float(ki))
+        self.kd = max(0.0, float(kd))
+
+    def set_integral_limit(self, integral_limit_rad_s: float):
+        self.integral_limit_rad_s = max(0.0, float(integral_limit_rad_s))
+        if self.integral_limit_rad_s <= 0.0:
+            self.integral_correction_rad_s = 0.0
+        else:
+            self.integral_correction_rad_s = max(
+                -self.integral_limit_rad_s,
+                min(self.integral_limit_rad_s, self.integral_correction_rad_s),
+            )
+
+    def reset(self):
+        self.integral_correction_rad_s = 0.0
+
+    def update(
+        self,
+        target_yaw_rad: float,
+        current_yaw_rad: float,
+        current_yaw_rate_rad_s: float,
+        dt: float,
+        deadband_rad: float = 0.0,
+        output_limit_rad_s: float | None = None,
+    ) -> float:
+        if not self.enabled:
+            return 0.0
+
+        error_rad = normalize_angle(float(target_yaw_rad) - float(current_yaw_rad))
+        error_rad = apply_angular_deadband(error_rad, deadband_rad)
+        proportional = self.kp * error_rad
+        derivative = -self.kd * float(current_yaw_rate_rad_s)
+
+        previous_integral_correction = self.integral_correction_rad_s
+        dt = max(0.0, float(dt))
+        if dt > 0.0 and self.ki > 0.0 and abs(error_rad) > 1e-6:
+            self.integral_correction_rad_s += self.ki * error_rad * dt
+            if self.integral_limit_rad_s > 0.0:
+                self.integral_correction_rad_s = max(
+                    -self.integral_limit_rad_s,
+                    min(self.integral_limit_rad_s, self.integral_correction_rad_s),
+                )
+        elif abs(error_rad) <= 1e-6:
+            self.integral_correction_rad_s *= max(0.0, 1.0 - min(1.0, dt))
+
+        correction_rad_s = proportional + self.integral_correction_rad_s + derivative
+        if output_limit_rad_s is None or output_limit_rad_s <= 0.0:
+            return correction_rad_s
+
+        output_limit_rad_s = float(output_limit_rad_s)
+        clamped_correction_rad_s = max(
+            -output_limit_rad_s,
+            min(output_limit_rad_s, correction_rad_s),
+        )
+        if abs(clamped_correction_rad_s - correction_rad_s) > 1e-9:
+            if (
+                clamped_correction_rad_s > 0.0 and error_rad > 0.0
+            ) or (
+                clamped_correction_rad_s < 0.0 and error_rad < 0.0
+            ):
+                self.integral_correction_rad_s = previous_integral_correction
+                correction_rad_s = proportional + self.integral_correction_rad_s + derivative
+                clamped_correction_rad_s = max(
+                    -output_limit_rad_s,
+                    min(output_limit_rad_s, correction_rad_s),
+                )
+
+        return clamped_correction_rad_s

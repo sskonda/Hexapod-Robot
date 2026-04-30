@@ -19,4 +19,9 @@
     max_roll_deg: 15.0
     max_pitch_deg: 15.0
     max_yaw_deg: 15.0
-    yaw_deadband_deg: 5.0
+    yaw_correction_gain: 0.9
+    yaw_integral_gain: 0.04
+    yaw_derivative_gain: 0.16
+    yaw_integral_limit_rad_s: 0.10
+    yaw_hold_max_yaw_rate_ratio: 0.3
+    yaw_deadband_deg: 2.0

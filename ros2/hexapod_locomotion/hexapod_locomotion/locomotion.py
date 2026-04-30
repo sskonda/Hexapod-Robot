@@ -15,7 +15,7 @@ from tf2_ros import TransformBroadcaster
 
 from .calibration_store import JOINT_NAMES, servo_angles_from_leg_coordinates
 from .kalman_filter import AngleKalmanFilter
-from .yaw_control import apply_angular_deadband
+from .yaw_control import HeadingHoldPid
 
 
 BASE_FOOTPOINTS = [
@@ -105,8 +105,12 @@ class LocomotionNode(Node):
         self.declare_parameter('max_roll_deg', 15.0)
         self.declare_parameter('max_pitch_deg', 15.0)
         self.declare_parameter('max_yaw_deg', 15.0)
-        self.declare_parameter('yaw_correction_gain', 0.0)
-        self.declare_parameter('yaw_deadband_deg', 5.0)
+        self.declare_parameter('yaw_correction_gain', 0.9)
+        self.declare_parameter('yaw_integral_gain', 0.04)
+        self.declare_parameter('yaw_derivative_gain', 0.16)
+        self.declare_parameter('yaw_integral_limit_rad_s', 0.10)
+        self.declare_parameter('yaw_hold_max_yaw_rate_ratio', 0.3)
+        self.declare_parameter('yaw_deadband_deg', 2.0)
         self.declare_parameter('odom_topic', 'odom')
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
@@ -131,6 +135,19 @@ class LocomotionNode(Node):
         self.max_pitch_deg = max(0.0, float(self.get_parameter('max_pitch_deg').value))
         self.max_yaw_deg = max(0.0, float(self.get_parameter('max_yaw_deg').value))
         self.yaw_correction_gain = float(self.get_parameter('yaw_correction_gain').value)
+        self.yaw_integral_gain = max(0.0, float(self.get_parameter('yaw_integral_gain').value))
+        self.yaw_derivative_gain = max(
+            0.0,
+            float(self.get_parameter('yaw_derivative_gain').value),
+        )
+        self.yaw_integral_limit_rad_s = max(
+            0.0,
+            float(self.get_parameter('yaw_integral_limit_rad_s').value),
+        )
+        self.yaw_hold_max_yaw_rate_ratio = min(
+            1.0,
+            max(0.0, float(self.get_parameter('yaw_hold_max_yaw_rate_ratio').value)),
+        )
         self.yaw_deadband_rad = math.radians(
             max(0.0, float(self.get_parameter('yaw_deadband_deg').value))
         )
@@ -160,6 +177,13 @@ class LocomotionNode(Node):
         self.pitch_filter = AngleKalmanFilter()
         self.last_imu_stamp = None
         self.heading_hold_target_rad = None
+        self.heading_hold_pid = HeadingHoldPid(
+            kp=self.yaw_correction_gain,
+            ki=self.yaw_integral_gain,
+            kd=self.yaw_derivative_gain,
+            integral_limit_rad_s=self.yaw_integral_limit_rad_s,
+        )
+        self.last_heading_hold_update_time = None
         self.last_invalid_warn_time = 0.0
         self.gait_state = None
 
@@ -210,8 +234,10 @@ class LocomotionNode(Node):
             f'with TF {"enabled" if self.publish_odom_tf else "disabled"}.'
         )
         self.get_logger().info(
-            f'Heading hold gain {self.yaw_correction_gain:.3f}, '
-            f'deadband {math.degrees(self.yaw_deadband_rad):.1f} deg.'
+            f'Heading hold PID kp={self.yaw_correction_gain:.3f}, '
+            f'ki={self.yaw_integral_gain:.3f}, kd={self.yaw_derivative_gain:.3f}, '
+            f'deadband {math.degrees(self.yaw_deadband_rad):.1f} deg, '
+            f'max correction {self.heading_hold_output_limit_rad_s():.2f} rad/s.'
         )
 
     def parameter_update_callback(self, parameters):
@@ -220,8 +246,70 @@ class LocomotionNode(Node):
         for parameter in parameters:
             if parameter.name == 'yaw_correction_gain':
                 self.yaw_correction_gain = float(parameter.value)
+                self.heading_hold_pid.set_gains(
+                    self.yaw_correction_gain,
+                    self.yaw_integral_gain,
+                    self.yaw_derivative_gain,
+                )
                 changed_fields.append(
                     f'yaw_correction_gain={self.yaw_correction_gain:.3f}'
+                )
+            elif parameter.name == 'yaw_integral_gain':
+                yaw_integral_gain = float(parameter.value)
+                if yaw_integral_gain < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_integral_gain must be non-negative.',
+                    )
+                self.yaw_integral_gain = yaw_integral_gain
+                self.heading_hold_pid.set_gains(
+                    self.yaw_correction_gain,
+                    self.yaw_integral_gain,
+                    self.yaw_derivative_gain,
+                )
+                changed_fields.append(
+                    f'yaw_integral_gain={self.yaw_integral_gain:.3f}'
+                )
+            elif parameter.name == 'yaw_derivative_gain':
+                yaw_derivative_gain = float(parameter.value)
+                if yaw_derivative_gain < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_derivative_gain must be non-negative.',
+                    )
+                self.yaw_derivative_gain = yaw_derivative_gain
+                self.heading_hold_pid.set_gains(
+                    self.yaw_correction_gain,
+                    self.yaw_integral_gain,
+                    self.yaw_derivative_gain,
+                )
+                changed_fields.append(
+                    f'yaw_derivative_gain={self.yaw_derivative_gain:.3f}'
+                )
+            elif parameter.name == 'yaw_integral_limit_rad_s':
+                yaw_integral_limit_rad_s = float(parameter.value)
+                if yaw_integral_limit_rad_s < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_integral_limit_rad_s must be non-negative.',
+                    )
+                self.yaw_integral_limit_rad_s = yaw_integral_limit_rad_s
+                self.heading_hold_pid.set_integral_limit(self.yaw_integral_limit_rad_s)
+                changed_fields.append(
+                    'yaw_integral_limit_rad_s='
+                    f'{self.yaw_integral_limit_rad_s:.3f}'
+                )
+            elif parameter.name == 'yaw_hold_max_yaw_rate_ratio':
+                yaw_hold_max_yaw_rate_ratio = float(parameter.value)
+                if yaw_hold_max_yaw_rate_ratio < 0.0 or yaw_hold_max_yaw_rate_ratio > 1.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_hold_max_yaw_rate_ratio must be in the range 0..1.',
+                    )
+                self.yaw_hold_max_yaw_rate_ratio = yaw_hold_max_yaw_rate_ratio
+                changed_fields.append(
+                    'yaw_hold_max_yaw_rate_ratio='
+                    f'{self.yaw_hold_max_yaw_rate_ratio:.3f}'
                 )
             elif parameter.name == 'yaw_deadband_deg':
                 yaw_deadband_deg = float(parameter.value)
@@ -396,7 +484,7 @@ class LocomotionNode(Node):
     def active_motion_command(self):
         age_sec = (self.get_clock().now() - self.last_motion_cmd_time).nanoseconds / 1e9
         if age_sec > self.command_timeout_sec:
-            self.heading_hold_target_rad = None
+            self.reset_heading_hold()
             return 0.0, 0.0, 0.0
 
         linear_x = self.cmd_linear_x_mps
@@ -405,29 +493,48 @@ class LocomotionNode(Node):
         translating = abs(linear_x) > 1e-6 or abs(linear_y) > 1e-6
 
         if not translating:
-            self.heading_hold_target_rad = None
+            self.reset_heading_hold()
         elif abs(yaw_rate) >= 1e-6:
-            self.heading_hold_target_rad = None
-        elif self.use_imu and self.yaw_correction_gain != 0.0:
-            correction = 0.0
+            self.reset_heading_hold()
+        elif (
+            self.use_imu
+            and self.heading_hold_pid.enabled
+            and self.heading_hold_output_limit_rad_s() > 0.0
+        ):
             if self.imu_yaw_valid:
                 if self.heading_hold_target_rad is None:
                     self.heading_hold_target_rad = self.imu_yaw_rad
-                yaw_error = normalize_angle(self.heading_hold_target_rad - self.imu_yaw_rad)
-                correction = (
-                    apply_angular_deadband(yaw_error, self.yaw_deadband_rad)
-                    * self.yaw_correction_gain
+                    self.heading_hold_pid.reset()
+                now = time.monotonic()
+                if self.last_heading_hold_update_time is None:
+                    dt = 1.0 / self.control_rate_hz
+                else:
+                    dt = clamp(now - self.last_heading_hold_update_time, 1e-4, 0.5)
+                self.last_heading_hold_update_time = now
+                yaw_rate = self.heading_hold_pid.update(
+                    self.heading_hold_target_rad,
+                    self.imu_yaw_rad,
+                    self.imu_yaw_rate_rps,
+                    dt,
+                    deadband_rad=self.yaw_deadband_rad,
+                    output_limit_rad_s=self.heading_hold_output_limit_rad_s(),
                 )
             else:
+                self.heading_hold_pid.reset()
+                self.last_heading_hold_update_time = None
                 self._warn_missing_yaw_estimate()
-
-            yaw_rate = clamp(
-                correction,
-                -self.max_yaw_rate_rad_s * 0.3,
-                self.max_yaw_rate_rad_s * 0.3,
-            )
+        else:
+            self.reset_heading_hold()
 
         return linear_x, linear_y, yaw_rate
+
+    def heading_hold_output_limit_rad_s(self):
+        return self.max_yaw_rate_rad_s * self.yaw_hold_max_yaw_rate_ratio
+
+    def reset_heading_hold(self):
+        self.heading_hold_target_rad = None
+        self.heading_hold_pid.reset()
+        self.last_heading_hold_update_time = None
 
     def _warn_missing_yaw_estimate(self):
         now = time.monotonic()

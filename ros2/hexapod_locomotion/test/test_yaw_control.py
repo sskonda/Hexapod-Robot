@@ -3,6 +3,7 @@ import math
 import pytest
 
 from hexapod_locomotion.yaw_control import (
+    HeadingHoldPid,
     StartupStillnessGate,
     apply_angular_deadband,
     imu_is_still,
@@ -62,3 +63,60 @@ def test_resolve_parameter_value_prefers_new_name_and_reports_conflict():
 
     assert resolved == pytest.approx(0.8)
     assert conflict
+
+
+def test_heading_hold_pid_combines_pid_terms():
+    controller = HeadingHoldPid(
+        kp=1.0,
+        ki=0.5,
+        kd=0.25,
+        integral_limit_rad_s=1.0,
+    )
+
+    correction = controller.update(
+        target_yaw_rad=1.0,
+        current_yaw_rad=0.0,
+        current_yaw_rate_rad_s=0.4,
+        dt=0.2,
+    )
+
+    assert correction == pytest.approx(1.0)
+
+
+def test_heading_hold_pid_prevents_integral_windup_at_output_limit():
+    controller = HeadingHoldPid(
+        kp=2.0,
+        ki=1.0,
+        kd=0.0,
+        integral_limit_rad_s=0.5,
+    )
+
+    correction = controller.update(
+        target_yaw_rad=1.0,
+        current_yaw_rad=0.0,
+        current_yaw_rate_rad_s=0.0,
+        dt=1.0,
+        output_limit_rad_s=0.2,
+    )
+
+    assert correction == pytest.approx(0.2)
+    assert controller.integral_correction_rad_s == pytest.approx(0.0)
+
+
+def test_heading_hold_pid_reset_clears_integral_state():
+    controller = HeadingHoldPid(
+        kp=0.0,
+        ki=1.0,
+        kd=0.0,
+        integral_limit_rad_s=0.5,
+    )
+    controller.update(
+        target_yaw_rad=0.5,
+        current_yaw_rad=0.0,
+        current_yaw_rate_rad_s=0.0,
+        dt=1.0,
+    )
+
+    controller.reset()
+
+    assert controller.integral_correction_rad_s == pytest.approx(0.0)
