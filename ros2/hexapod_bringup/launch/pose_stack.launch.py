@@ -39,22 +39,21 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'launch_lidar',
-            default_value='false',
+            default_value='true',
             description=(
-                'When true, also launch the lidar driver named by '
-                'lidar_launch_package/lidar_launch_file. Leave false if scan is '
-                'already being published elsewhere.'
+                'When true, launch the RPLIDAR A1 driver before starting SLAM. '
+                'Set false only if scan is already being published elsewhere.'
             ),
         ),
         DeclareLaunchArgument(
             'lidar_launch_package',
-            default_value='',
-            description='Package containing the optional lidar launch file.',
+            default_value='rplidar_ros',
+            description='Package containing the RPLIDAR A1 launch file.',
         ),
         DeclareLaunchArgument(
             'lidar_launch_file',
-            default_value='',
-            description='Launch file inside the optional lidar package launch directory.',
+            default_value='rplidar_a1_launch.py',
+            description='RPLIDAR A1 launch file inside the lidar package launch directory.',
         ),
         DeclareLaunchArgument(
             'scan_topic',
