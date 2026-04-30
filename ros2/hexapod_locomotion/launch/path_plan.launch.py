@@ -17,6 +17,7 @@ def generate_launch_description():
     apply_offsets = LaunchConfiguration('apply_offsets')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
     yaw_ki = LaunchConfiguration('yaw_ki')
+    yaw_kd = LaunchConfiguration('yaw_kd')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
     tripod_planar_travel_scale = LaunchConfiguration('tripod_planar_travel_scale')
@@ -75,6 +76,11 @@ def generate_launch_description():
             'yaw_ki',
             default_value='0.12',
             description='PI heading-hold integral gain passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_kd',
+            default_value='0.10',
+            description='PID heading-hold derivative gain passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'yaw_deadband_deg',
@@ -214,6 +220,7 @@ def generate_launch_description():
                 'yaw_kp': yaw_kp,
                 'yaw_correction_gain': yaw_correction_gain,
                 'yaw_ki': yaw_ki,
+                'yaw_kd': yaw_kd,
                 'yaw_deadband_deg': yaw_deadband_deg,
                 'yaw_integrator_limit': yaw_integrator_limit,
                 'tripod_planar_travel_scale': tripod_planar_travel_scale,

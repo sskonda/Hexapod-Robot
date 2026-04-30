@@ -92,6 +92,7 @@ class LocomotionNode(Node):
     DEFAULT_YAW_KP = 0.45
     DEFAULT_LEGACY_YAW_CORRECTION_GAIN = 0.0
     DEFAULT_YAW_KI = 0.12
+    DEFAULT_YAW_KD = 0.10
     DEFAULT_YAW_DEADBAND_DEG = 2.5
     DEFAULT_YAW_INTEGRATOR_LIMIT = 1.2
 
@@ -127,6 +128,7 @@ class LocomotionNode(Node):
             self.DEFAULT_LEGACY_YAW_CORRECTION_GAIN,
         )
         self.declare_parameter('yaw_ki', self.DEFAULT_YAW_KI)
+        self.declare_parameter('yaw_kd', self.DEFAULT_YAW_KD)
         self.declare_parameter('yaw_deadband_deg', self.DEFAULT_YAW_DEADBAND_DEG)
         self.declare_parameter('yaw_integrator_limit', self.DEFAULT_YAW_INTEGRATOR_LIMIT)
         self.declare_parameter('odom_topic', 'odom')
@@ -163,6 +165,7 @@ class LocomotionNode(Node):
             legacy_default_value=self.DEFAULT_LEGACY_YAW_CORRECTION_GAIN,
         )
         self.yaw_ki = max(0.0, float(self.get_parameter('yaw_ki').value))
+        self.yaw_kd = max(0.0, float(self.get_parameter('yaw_kd').value))
         self.yaw_deadband_rad = math.radians(
             max(0.0, float(self.get_parameter('yaw_deadband_deg').value))
         )
@@ -247,7 +250,8 @@ class LocomotionNode(Node):
             f'with TF {"enabled" if self.publish_odom_tf else "disabled"}.'
         )
         self.get_logger().info(
-            f'Heading hold PI gains kp={self.yaw_kp:.3f}, ki={self.yaw_ki:.3f}, '
+            f'Heading hold PID gains kp={self.yaw_kp:.3f}, ki={self.yaw_ki:.3f}, '
+            f'kd={self.yaw_kd:.3f}, '
             f'deadband={math.degrees(self.yaw_deadband_rad):.1f} deg, '
             f'integrator_limit={self.yaw_integrator_limit:.2f}.'
         )
@@ -282,6 +286,15 @@ class LocomotionNode(Node):
                     )
                 self.yaw_ki = value
                 changed_fields.append(f'yaw_ki={self.yaw_ki:.3f}')
+            elif parameter.name == 'yaw_kd':
+                value = float(parameter.value)
+                if value < 0.0:
+                    return SetParametersResult(
+                        successful=False,
+                        reason='yaw_kd must be non-negative.',
+                    )
+                self.yaw_kd = value
+                changed_fields.append(f'yaw_kd={self.yaw_kd:.3f}')
             elif parameter.name == 'yaw_deadband_deg':
                 yaw_deadband_deg = float(parameter.value)
                 if yaw_deadband_deg < 0.0:
@@ -495,9 +508,9 @@ class LocomotionNode(Node):
             self._reset_heading_hold_state()
         elif abs(yaw_rate) >= 1e-6:
             self._reset_heading_hold_state()
-        elif self.use_imu and (self.yaw_kp != 0.0 or self.yaw_ki != 0.0):
+        elif self.use_imu and (self.yaw_kp != 0.0 or self.yaw_ki != 0.0 or self.yaw_kd != 0.0):
             correction = 0.0
-            yaw_available, current_yaw_rad, _ = self._active_yaw_estimate()
+            yaw_available, current_yaw_rad, current_yaw_rate_rps = self._active_yaw_estimate()
             if yaw_available:
                 if self.heading_hold_target_rad is None:
                     self.heading_hold_target_rad = current_yaw_rad
@@ -508,13 +521,18 @@ class LocomotionNode(Node):
                     self.yaw_deadband_rad,
                 )
                 proportional_term = self.yaw_kp * deadbanded_yaw_error
+                derivative_term = -self.yaw_kd * current_yaw_rate_rps
                 integral_candidate = clamp(
                     self.heading_integral_state + deadbanded_yaw_error * (1.0 / self.control_rate_hz),
                     -self.yaw_integrator_limit,
                     self.yaw_integrator_limit,
                 )
                 correction_limit = self.max_yaw_rate_rad_s * 0.3
-                unsaturated_correction = proportional_term + self.yaw_ki * integral_candidate
+                unsaturated_correction = (
+                    proportional_term
+                    + self.yaw_ki * integral_candidate
+                    + derivative_term
+                )
                 correction = clamp(
                     unsaturated_correction,
                     -correction_limit,

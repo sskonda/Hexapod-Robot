@@ -13,6 +13,7 @@ def generate_launch_description():
     yaw_kp = LaunchConfiguration('yaw_kp')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
     yaw_ki = LaunchConfiguration('yaw_ki')
+    yaw_kd = LaunchConfiguration('yaw_kd')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
     tripod_planar_travel_scale = LaunchConfiguration('tripod_planar_travel_scale')
@@ -77,6 +78,11 @@ def generate_launch_description():
             'yaw_ki',
             default_value='0.12',
             description='Heading-hold integral gain used by locomotion when no yaw is commanded.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_kd',
+            default_value='0.10',
+            description='Heading-hold derivative gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
             'yaw_deadband_deg',
@@ -291,6 +297,7 @@ def generate_launch_description():
                     'yaw_kp': yaw_kp,
                     'yaw_correction_gain': yaw_correction_gain,
                     'yaw_ki': yaw_ki,
+                    'yaw_kd': yaw_kd,
                     'yaw_deadband_deg': yaw_deadband_deg,
                     'yaw_integrator_limit': yaw_integrator_limit,
                     'tripod_planar_travel_scale': tripod_planar_travel_scale,
