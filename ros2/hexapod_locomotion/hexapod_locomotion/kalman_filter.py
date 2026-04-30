@@ -5,6 +5,10 @@ def normalize_angle(angle_rad):
     return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
+def clamp(value, min_value, max_value):
+    return max(min_value, min(max_value, value))
+
+
 class AngleKalmanFilter:
     """
     Two-state Kalman filter for tilt angle estimation from IMU data.
@@ -86,20 +90,35 @@ class AngleKalmanFilter:
 
 class YawComplementaryFilter:
     """
-    Complementary filter for wrapped yaw angles.
+    Complementary yaw filter with a slow gyro-bias observer.
 
-    The gyroscope provides the short-term yaw estimate by integrating angular
-    rate, while the magnetometer-derived yaw slowly corrects long-term drift.
-    A time constant controls how aggressively the estimate is pulled back
-    toward the measured magnetic heading.
+    The gyroscope provides short-term yaw dynamics, while trusted absolute yaw
+    corrections slowly remove drift. The internal bias estimate prevents the
+    filter from integrating a persistent gyro offset indefinitely.
     """
 
-    def __init__(self, time_constant_sec=0.5):
+    def __init__(
+        self,
+        time_constant_sec=0.5,
+        bias_gain=0.05,
+        max_bias_rad_s=0.25,
+    ):
         self.time_constant_sec = max(1e-3, float(time_constant_sec))
+        self.bias_gain = max(0.0, float(bias_gain))
+        self.max_bias_rad_s = max(0.0, float(max_bias_rad_s))
         self.yaw_rad = 0.0
+        self.gyro_bias_rad_s = 0.0
+        self.last_innovation_rad = 0.0
         self.initialized = False
 
-    def reset(self, yaw_rad=None):
+    def reset(self, yaw_rad=None, gyro_bias_rad_s=0.0):
+        self.gyro_bias_rad_s = clamp(
+            float(gyro_bias_rad_s),
+            -self.max_bias_rad_s,
+            self.max_bias_rad_s,
+        )
+        self.last_innovation_rad = 0.0
+
         if yaw_rad is None:
             self.yaw_rad = 0.0
             self.initialized = False
@@ -108,9 +127,18 @@ class YawComplementaryFilter:
         self.yaw_rad = normalize_angle(float(yaw_rad))
         self.initialized = True
 
+    def peek_prediction(self, gyro_yaw_rate_rad_s, dt, fallback_yaw_rad=None):
+        dt = max(0.0, float(dt))
+
+        if not self.initialized:
+            return normalize_angle(0.0 if fallback_yaw_rad is None else fallback_yaw_rad)
+
+        corrected_rate_rad_s = float(gyro_yaw_rate_rad_s) - self.gyro_bias_rad_s
+        return normalize_angle(self.yaw_rad + corrected_rate_rad_s * dt)
+
     def update(self, measured_yaw_rad, gyro_yaw_rate_rad_s, dt):
         """
-        Fuse a magnetometer yaw measurement with gyroscope yaw rate.
+        Fuse an absolute yaw measurement with gyroscope yaw rate.
 
         Args:
             measured_yaw_rad: absolute yaw measurement (radians)
@@ -125,28 +153,37 @@ class YawComplementaryFilter:
 
         if not self.initialized:
             self.yaw_rad = measured_yaw_rad
+            self.last_innovation_rad = 0.0
             self.initialized = True
             return self.yaw_rad
 
-        predicted_yaw_rad = normalize_angle(self.yaw_rad + float(gyro_yaw_rate_rad_s) * dt)
+        predicted_yaw_rad = self.peek_prediction(gyro_yaw_rate_rad_s, dt)
         correction_gain = dt / (self.time_constant_sec + dt)
         innovation = normalize_angle(measured_yaw_rad - predicted_yaw_rad)
+        self.last_innovation_rad = innovation
+
         self.yaw_rad = normalize_angle(predicted_yaw_rad + correction_gain * innovation)
+        self.gyro_bias_rad_s = clamp(
+            self.gyro_bias_rad_s - self.bias_gain * innovation * dt,
+            -self.max_bias_rad_s,
+            self.max_bias_rad_s,
+        )
         return self.yaw_rad
 
     def predict(self, gyro_yaw_rate_rad_s, dt, fallback_yaw_rad=None):
         """
         Advance yaw using only gyro integration.
 
-        This is useful when the absolute magnetic heading is known to be
-        uncalibrated but short-term relative yaw is still needed.
+        This is useful when the absolute heading is unavailable or untrusted,
+        but short-term relative yaw is still needed.
         """
-        dt = max(0.0, float(dt))
+        predicted_yaw_rad = self.peek_prediction(
+            gyro_yaw_rate_rad_s,
+            dt,
+            fallback_yaw_rad=fallback_yaw_rad,
+        )
 
-        if not self.initialized:
-            self.yaw_rad = normalize_angle(0.0 if fallback_yaw_rad is None else fallback_yaw_rad)
-            self.initialized = True
-            return self.yaw_rad
-
-        self.yaw_rad = normalize_angle(self.yaw_rad + float(gyro_yaw_rate_rad_s) * dt)
+        self.yaw_rad = predicted_yaw_rad
+        self.last_innovation_rad = 0.0
+        self.initialized = True
         return self.yaw_rad

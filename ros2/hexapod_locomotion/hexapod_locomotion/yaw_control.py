@@ -12,6 +12,33 @@ def normalize_angle(angle_rad: float) -> float:
     return math.atan2(math.sin(float(angle_rad)), math.cos(float(angle_rad)))
 
 
+def quaternion_from_euler(roll_rad, pitch_rad, yaw_rad):
+    half_roll = float(roll_rad) * 0.5
+    half_pitch = float(pitch_rad) * 0.5
+    half_yaw = float(yaw_rad) * 0.5
+
+    cr = math.cos(half_roll)
+    sr = math.sin(half_roll)
+    cp = math.cos(half_pitch)
+    sp = math.sin(half_pitch)
+    cy = math.cos(half_yaw)
+    sy = math.sin(half_yaw)
+
+    return (
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    )
+
+
+def quaternion_normalize(quaternion):
+    norm = vector_norm(quaternion)
+    if norm < 1e-12:
+        return 0.0, 0.0, 0.0, 1.0
+    return tuple(float(value) / norm for value in quaternion)
+
+
 def apply_angular_deadband(error_rad: float, deadband_rad: float) -> float:
     """Return zero inside the deadband and a continuous error outside it."""
     error_rad = float(error_rad)

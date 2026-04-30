@@ -140,8 +140,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'imu_mode',
-            default_value='AMG_MODE',
-            description='BNO055 operating mode. AMG_MODE keeps accel, gyro, and mag raw for explicit yaw correction.',
+            default_value='NDOF_MODE',
+            description='BNO055 operating mode. NDOF_MODE publishes the BNO055 fused orientation quaternion.',
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',

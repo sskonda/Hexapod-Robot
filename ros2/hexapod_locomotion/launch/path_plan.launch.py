@@ -21,6 +21,7 @@ def generate_launch_description():
     yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
     tripod_planar_travel_scale = LaunchConfiguration('tripod_planar_travel_scale')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
+    imu_mode = LaunchConfiguration('imu_mode')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
@@ -94,6 +95,11 @@ def generate_launch_description():
             'imu_use_external_crystal',
             default_value='false',
             description='Pass through to hexapod_core.launch.py for the BNO055 UART bring-up.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mode',
+            default_value='NDOF_MODE',
+            description='BNO055 operating mode passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'imu_read_retry_count',
@@ -211,6 +217,7 @@ def generate_launch_description():
                 'yaw_deadband_deg': yaw_deadband_deg,
                 'yaw_integrator_limit': yaw_integrator_limit,
                 'tripod_planar_travel_scale': tripod_planar_travel_scale,
+                'imu_mode': imu_mode,
                 'imu_use_external_crystal': imu_use_external_crystal,
                 'imu_read_retry_count': imu_read_retry_count,
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,
