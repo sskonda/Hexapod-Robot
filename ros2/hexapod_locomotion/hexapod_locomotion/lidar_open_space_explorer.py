@@ -144,6 +144,11 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('side_stop_distance_m', 0.38)
         self.declare_parameter('side_check_angle_deg', 85.0)
         self.declare_parameter('side_check_window_deg', 28.0)
+        self.declare_parameter('wall_escape_enter_distance_m', 0.32)
+        self.declare_parameter('wall_escape_exit_distance_m', 0.42)
+        self.declare_parameter('wall_escape_lateral_speed_mps', 0.025)
+        self.declare_parameter('wall_escape_turn_rate_rad_s', 0.10)
+        self.declare_parameter('wall_escape_max_duration_sec', 4.0)
         self.declare_parameter('desired_clearance_m', 0.45)
         self.declare_parameter('minimum_direction_range_m', 0.32)
         self.declare_parameter('max_usable_range_m', 4.0)
@@ -229,6 +234,9 @@ class LidarOpenSpaceExplorer(Node):
         self.bug_started_at_sec = 0.0
         self.bug_clear_since_sec = None
         self.bug_timed_out = False
+        self.wall_escape_active = False
+        self.wall_escape_side = 0
+        self.wall_escape_started_sec = 0.0
 
         self._load_parameters()
 
@@ -295,6 +303,26 @@ class LidarOpenSpaceExplorer(Node):
         )
         self.side_check_window_rad = math.radians(
             max(1.0, min(60.0, float(self.get_parameter('side_check_window_deg').value)))
+        )
+        self.wall_escape_enter_distance_m = max(
+            0.0,
+            float(self.get_parameter('wall_escape_enter_distance_m').value),
+        )
+        self.wall_escape_exit_distance_m = max(
+            self.wall_escape_enter_distance_m,
+            float(self.get_parameter('wall_escape_exit_distance_m').value),
+        )
+        self.wall_escape_lateral_speed_mps = max(
+            0.0,
+            float(self.get_parameter('wall_escape_lateral_speed_mps').value),
+        )
+        self.wall_escape_turn_rate_rad_s = max(
+            0.0,
+            float(self.get_parameter('wall_escape_turn_rate_rad_s').value),
+        )
+        self.wall_escape_max_duration_sec = max(
+            0.0,
+            float(self.get_parameter('wall_escape_max_duration_sec').value),
         )
         self.desired_clearance_m = max(
             self.obstacle_stop_distance_m,
@@ -710,6 +738,23 @@ class LidarOpenSpaceExplorer(Node):
                 self.side_check_window_rad = math.radians(
                     max(1.0, min(60.0, float(parameter.value)))
                 )
+            elif parameter.name == 'wall_escape_enter_distance_m':
+                self.wall_escape_enter_distance_m = max(0.0, float(parameter.value))
+                self.wall_escape_exit_distance_m = max(
+                    self.wall_escape_enter_distance_m,
+                    self.wall_escape_exit_distance_m,
+                )
+            elif parameter.name == 'wall_escape_exit_distance_m':
+                self.wall_escape_exit_distance_m = max(
+                    self.wall_escape_enter_distance_m,
+                    float(parameter.value),
+                )
+            elif parameter.name == 'wall_escape_lateral_speed_mps':
+                self.wall_escape_lateral_speed_mps = max(0.0, float(parameter.value))
+            elif parameter.name == 'wall_escape_turn_rate_rad_s':
+                self.wall_escape_turn_rate_rad_s = max(0.0, float(parameter.value))
+            elif parameter.name == 'wall_escape_max_duration_sec':
+                self.wall_escape_max_duration_sec = max(0.0, float(parameter.value))
             elif parameter.name == 'desired_clearance_m':
                 self.desired_clearance_m = max(
                     self.obstacle_stop_distance_m,
@@ -776,6 +821,13 @@ class LidarOpenSpaceExplorer(Node):
                 throttle_duration_sec=2.0,
             )
             self.cmd_pub.publish(cmd)
+            return
+
+        wall_escape_cmd = self.wall_escape_command()
+        if wall_escape_cmd is not None:
+            self.reset_frontier_progress()
+            self.publish_reactive_markers(None)
+            self.cmd_pub.publish(wall_escape_cmd)
             return
 
         if self.exploration_mode == 'frontier':
@@ -987,6 +1039,156 @@ class LidarOpenSpaceExplorer(Node):
             turn = math.copysign(min_turn, body_angle_rad if abs(body_angle_rad) > 1e-6 else 1.0)
         cmd.angular.z = turn
         return cmd
+
+    def wall_escape_command(self):
+        left_clearance, right_clearance = self.side_clearances()
+        front_clearance = self.min_scan_range_near_body_angle(
+            0.0,
+            self.direction_window_rad,
+        )
+        now_sec = self.now_sec()
+        side_too_close = self.side_clearance_below(
+            left_clearance,
+            right_clearance,
+            self.wall_escape_enter_distance_m,
+        )
+        front_too_close = (
+            front_clearance is not None
+            and front_clearance < self.obstacle_stop_distance_m
+        )
+
+        if self.wall_escape_active:
+            restored = self.side_clearance_above(
+                left_clearance,
+                right_clearance,
+                self.wall_escape_exit_distance_m,
+            )
+            timed_out = (
+                self.wall_escape_max_duration_sec > 0.0
+                and now_sec - self.wall_escape_started_sec >= self.wall_escape_max_duration_sec
+            )
+            if restored or timed_out:
+                self.wall_escape_active = False
+                self.wall_escape_side = 0
+                self.reset_frontier_progress()
+                if restored:
+                    self.get_logger().info(
+                        'Exiting wall escape: side clearance restored',
+                        throttle_duration_sec=1.0,
+                    )
+                else:
+                    self.get_logger().info(
+                        'Exiting wall escape: max duration reached',
+                        throttle_duration_sec=1.0,
+                    )
+                if not side_too_close and not front_too_close:
+                    return None
+
+        if not self.wall_escape_active and side_too_close:
+            self.wall_escape_side = self.closer_wall_side(left_clearance, right_clearance)
+            if self.wall_escape_side != 0:
+                self.wall_escape_active = True
+                self.wall_escape_started_sec = now_sec
+                self.get_logger().warn(
+                    'Entering wall escape: '
+                    f'wall on {self.wall_side_name(self.wall_escape_side)}, '
+                    f'left_clearance={self.format_clearance(left_clearance)}, '
+                    f'right_clearance={self.format_clearance(right_clearance)}',
+                    throttle_duration_sec=1.0,
+                )
+
+        if self.wall_escape_active and self.wall_escape_side != 0:
+            return self.wall_escape_cmd_for_side(self.wall_escape_side)
+
+        if front_too_close:
+            self.reset_frontier_progress()
+            cmd = Twist()
+            cmd.angular.z = self.front_escape_turn_direction(
+                left_clearance,
+                right_clearance,
+            ) * self.wall_escape_turn_rate_rad_s
+            self.get_logger().warn(
+                f'Front clearance {front_clearance:.2f} m is below '
+                f'{self.obstacle_stop_distance_m:.2f} m; turning toward clearer side.',
+                throttle_duration_sec=2.0,
+            )
+            return cmd
+
+        return None
+
+    def wall_escape_cmd_for_side(self, wall_side: int) -> Twist:
+        away_direction = -float(wall_side)
+        cmd = Twist()
+        cmd.linear.x = 0.0
+        if self.crab_motion:
+            cmd.linear.y = away_direction * min(
+                self.wall_escape_lateral_speed_mps,
+                self.max_lateral_speed_mps,
+            )
+        cmd.angular.z = away_direction * min(
+            self.wall_escape_turn_rate_rad_s,
+            self.max_turn_rate_rad_s,
+        )
+        self.reset_frontier_progress()
+        self.get_logger().warn(
+            f'Wall escape active: moving away from {self.wall_side_name(wall_side)} wall',
+            throttle_duration_sec=1.0,
+        )
+        return cmd
+
+    def side_clearance_below(
+        self,
+        left_clearance: float | None,
+        right_clearance: float | None,
+        threshold_m: float,
+    ) -> bool:
+        return (
+            left_clearance is not None and left_clearance < threshold_m
+        ) or (
+            right_clearance is not None and right_clearance < threshold_m
+        )
+
+    def side_clearance_above(
+        self,
+        left_clearance: float | None,
+        right_clearance: float | None,
+        threshold_m: float,
+    ) -> bool:
+        left_ok = left_clearance is None or left_clearance > threshold_m
+        right_ok = right_clearance is None or right_clearance > threshold_m
+        return left_ok and right_ok
+
+    def closer_wall_side(
+        self,
+        left_clearance: float | None,
+        right_clearance: float | None,
+    ) -> int:
+        left_value = math.inf if left_clearance is None else left_clearance
+        right_value = math.inf if right_clearance is None else right_clearance
+        if not math.isfinite(left_value) and not math.isfinite(right_value):
+            return 0
+        return 1 if left_value <= right_value else -1
+
+    def front_escape_turn_direction(
+        self,
+        left_clearance: float | None,
+        right_clearance: float | None,
+    ) -> float:
+        left_value = -math.inf if left_clearance is None else left_clearance
+        right_value = -math.inf if right_clearance is None else right_clearance
+        if left_value == right_value:
+            return 1.0
+        return 1.0 if left_value > right_value else -1.0
+
+    def wall_side_name(self, wall_side: int) -> str:
+        if wall_side > 0:
+            return 'left'
+        if wall_side < 0:
+            return 'right'
+        return 'unknown'
+
+    def format_clearance(self, clearance_m: float | None) -> str:
+        return 'unknown' if clearance_m is None else f'{clearance_m:.2f}'
 
     def side_clearance_is_too_close(self) -> bool:
         left_clearance, right_clearance = self.side_clearances()
