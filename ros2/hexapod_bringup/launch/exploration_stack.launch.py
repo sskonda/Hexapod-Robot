@@ -55,6 +55,22 @@ def generate_launch_description():
     explorer_frontier_min_clearance_m = LaunchConfiguration(
         'explorer_frontier_min_clearance_m'
     )
+    explorer_robot_radius_m = LaunchConfiguration('explorer_robot_radius_m')
+    explorer_planner_safety_margin_m = LaunchConfiguration(
+        'explorer_planner_safety_margin_m'
+    )
+    explorer_frontier_unknown_margin_cells = LaunchConfiguration(
+        'explorer_frontier_unknown_margin_cells'
+    )
+    explorer_frontier_min_area_cells = LaunchConfiguration(
+        'explorer_frontier_min_area_cells'
+    )
+    explorer_frontier_goal_projection_radius_m = LaunchConfiguration(
+        'explorer_frontier_goal_projection_radius_m'
+    )
+    explorer_frontier_standoff_distance_m = LaunchConfiguration(
+        'explorer_frontier_standoff_distance_m'
+    )
     explorer_frontier_failure_memory_enabled = LaunchConfiguration(
         'explorer_frontier_failure_memory_enabled'
     )
@@ -237,6 +253,36 @@ def generate_launch_description():
             description='Minimum map clearance from occupied cells for frontier goals and traversed cells.',
         ),
         DeclareLaunchArgument(
+            'explorer_robot_radius_m',
+            default_value='0.30',
+            description='Robot body radius used for occupancy-grid obstacle inflation.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_planner_safety_margin_m',
+            default_value='0.10',
+            description='Extra inflation margin added around occupied/unknown-danger cells.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_unknown_margin_cells',
+            default_value='2',
+            description='Unknown cells this many cells from occupied cells are treated as danger.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_min_area_cells',
+            default_value='5',
+            description='Reject connected frontier regions smaller than this many cells.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_goal_projection_radius_m',
+            default_value='0.90',
+            description='Search radius for projecting frontier boundaries to safe standoff goals.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_standoff_distance_m',
+            default_value='0.40',
+            description='Preferred distance back into known free space from a frontier boundary.',
+        ),
+        DeclareLaunchArgument(
             'explorer_frontier_failure_memory_enabled',
             default_value='true',
             description='Remember failed frontier paths and temporarily avoid repeating them.',
@@ -355,6 +401,14 @@ def generate_launch_description():
                 'frontier_goal_tolerance_m': explorer_frontier_goal_tolerance_m,
                 'frontier_waypoint_spacing_m': explorer_frontier_waypoint_spacing_m,
                 'frontier_min_clearance_m': explorer_frontier_min_clearance_m,
+                'robot_radius_m': explorer_robot_radius_m,
+                'planner_safety_margin_m': explorer_planner_safety_margin_m,
+                'frontier_unknown_margin_cells': explorer_frontier_unknown_margin_cells,
+                'frontier_min_area_cells': explorer_frontier_min_area_cells,
+                'frontier_goal_projection_radius_m': (
+                    explorer_frontier_goal_projection_radius_m
+                ),
+                'frontier_standoff_distance_m': explorer_frontier_standoff_distance_m,
                 'frontier_failure_memory_enabled': (
                     explorer_frontier_failure_memory_enabled
                 ),
