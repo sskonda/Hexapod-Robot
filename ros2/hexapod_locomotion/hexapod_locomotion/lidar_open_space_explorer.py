@@ -183,6 +183,13 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('max_projection_attempts_per_frontier', 50)
         self.declare_parameter('unknown_visibility_radius_m', 1.20)
         self.declare_parameter('unknown_visibility_min_cells', 1)
+        self.declare_parameter('visible_unknown_weight', 0.15)
+        self.declare_parameter('frontier_area_weight', 0.08)
+        self.declare_parameter('frontier_unknown_region_max_cells', 200)
+        self.declare_parameter('frontier_clearance_weight', 1.0)
+        self.declare_parameter('frontier_path_cost_weight', 0.45)
+        self.declare_parameter('frontier_heading_change_weight', 0.25)
+        self.declare_parameter('tiny_frontier_score_penalty', 0.20)
         self.declare_parameter('suppress_only_after_motion_failure', True)
         self.declare_parameter('frontier_failure_memory_enabled', True)
         self.declare_parameter('frontier_suppression_duration_sec', 5.0)
@@ -446,6 +453,34 @@ class LidarOpenSpaceExplorer(Node):
             0,
             int(self.get_parameter('unknown_visibility_min_cells').value),
         )
+        self.visible_unknown_weight = max(
+            0.0,
+            float(self.get_parameter('visible_unknown_weight').value),
+        )
+        self.frontier_area_weight = max(
+            0.0,
+            float(self.get_parameter('frontier_area_weight').value),
+        )
+        self.frontier_unknown_region_max_cells = max(
+            1,
+            int(self.get_parameter('frontier_unknown_region_max_cells').value),
+        )
+        self.frontier_clearance_weight = max(
+            0.0,
+            float(self.get_parameter('frontier_clearance_weight').value),
+        )
+        self.frontier_path_cost_weight = max(
+            0.0,
+            float(self.get_parameter('frontier_path_cost_weight').value),
+        )
+        self.frontier_heading_change_weight = max(
+            0.0,
+            float(self.get_parameter('frontier_heading_change_weight').value),
+        )
+        self.tiny_frontier_score_penalty = max(
+            0.0,
+            float(self.get_parameter('tiny_frontier_score_penalty').value),
+        )
         self.suppress_only_after_motion_failure = as_bool(
             self.get_parameter('suppress_only_after_motion_failure').value
         )
@@ -624,6 +659,20 @@ class LidarOpenSpaceExplorer(Node):
                 )
             elif parameter.name == 'unknown_visibility_min_cells':
                 self.unknown_visibility_min_cells = max(0, int(parameter.value))
+            elif parameter.name == 'visible_unknown_weight':
+                self.visible_unknown_weight = max(0.0, float(parameter.value))
+            elif parameter.name == 'frontier_area_weight':
+                self.frontier_area_weight = max(0.0, float(parameter.value))
+            elif parameter.name == 'frontier_unknown_region_max_cells':
+                self.frontier_unknown_region_max_cells = max(1, int(parameter.value))
+            elif parameter.name == 'frontier_clearance_weight':
+                self.frontier_clearance_weight = max(0.0, float(parameter.value))
+            elif parameter.name == 'frontier_path_cost_weight':
+                self.frontier_path_cost_weight = max(0.0, float(parameter.value))
+            elif parameter.name == 'frontier_heading_change_weight':
+                self.frontier_heading_change_weight = max(0.0, float(parameter.value))
+            elif parameter.name == 'tiny_frontier_score_penalty':
+                self.tiny_frontier_score_penalty = max(0.0, float(parameter.value))
             elif parameter.name == 'suppress_only_after_motion_failure':
                 self.suppress_only_after_motion_failure = as_bool(parameter.value)
             elif parameter.name == 'frontier_failure_memory_enabled':
@@ -2068,12 +2117,20 @@ class LidarOpenSpaceExplorer(Node):
             path_length_m = path_cost_cells[target_index] * grid.info.resolution
             clearance_m = planner.clearance_m[target_index]
             area_cells = len(component)
+            unknown_region_cells = self.count_adjacent_unknown_region_cells(component, planner)
+            information_area_cells = max(area_cells, unknown_region_cells)
+            tiny_penalty = (
+                self.tiny_frontier_score_penalty
+                if area_cells < self.frontier_min_area_cells
+                else 0.0
+            )
             score = (
-                0.05 * area_cells
-                + 2.0 * min(clearance_m, 1.0)
-                + 0.08 * min(candidate.unknown_visible_cells, 50)
-                - 0.75 * path_length_m
-                - 0.35 * heading_change
+                self.frontier_area_weight * min(information_area_cells, self.frontier_unknown_region_max_cells)
+                + self.frontier_clearance_weight * min(clearance_m, 1.0)
+                + self.visible_unknown_weight * min(candidate.unknown_visible_cells, 80)
+                - self.frontier_path_cost_weight * path_length_m
+                - self.frontier_heading_change_weight * heading_change
+                - tiny_penalty
             )
             if score > best_score:
                 best_score = score
@@ -2085,7 +2142,7 @@ class LidarOpenSpaceExplorer(Node):
                     searched_cells=searched,
                     path=path,
                     frontier_cells=tuple(component),
-                    frontier_area_cells=area_cells,
+                    frontier_area_cells=information_area_cells,
                     clearance_m=clearance_m,
                     path_length_m=path_length_m,
                     unknown_visible_cells=candidate.unknown_visible_cells,
@@ -2285,6 +2342,41 @@ class LidarOpenSpaceExplorer(Node):
 
         return filled
 
+    def count_adjacent_unknown_region_cells(
+        self,
+        component: list[int],
+        planner: PlannerGrid,
+    ) -> int:
+        width = planner.width
+        height = planner.height
+        max_cells = self.frontier_unknown_region_max_cells
+        seeds = []
+        seen_seed = set()
+        for frontier_index in component:
+            for neighbor in self.cardinal_neighbor_indices(frontier_index, width, height):
+                if planner.unknown[neighbor] and neighbor not in seen_seed:
+                    seen_seed.add(neighbor)
+                    seeds.append(neighbor)
+
+        if not seeds:
+            return 0
+
+        visited = bytearray(width * height)
+        pending = deque(seeds)
+        for seed in seeds:
+            visited[seed] = 1
+
+        count = 0
+        while pending and count < max_cells:
+            current = pending.popleft()
+            count += 1
+            for neighbor in self.cardinal_neighbor_indices(current, width, height):
+                if planner.unknown[neighbor] and not visited[neighbor]:
+                    visited[neighbor] = 1
+                    pending.append(neighbor)
+
+        return count
+
     def connected_frontier_components(
         self,
         grid: OccupancyGrid,
@@ -2299,7 +2391,6 @@ class LidarOpenSpaceExplorer(Node):
 
         visited = bytearray(width * height)
         components = []
-        tiny_components = []
         for index, is_frontier in enumerate(frontier):
             if not is_frontier or visited[index]:
                 continue
@@ -2316,16 +2407,8 @@ class LidarOpenSpaceExplorer(Node):
             if len(component) >= self.frontier_min_area_cells:
                 components.append(component)
             else:
-                tiny_components.append(component)
                 self.add_rejected_frontier_debug(grid, component, 'tiny_frontier')
-        if components:
-            return components
-        if tiny_components:
-            self.get_logger().info(
-                f'Only tiny frontier clusters are available; promoting {len(tiny_components)} tiny frontier(s) for exploration.',
-                throttle_duration_sec=2.0,
-            )
-            return tiny_components
+                components.append(component)
         return components
 
     def project_frontier_component_to_goal(
@@ -2403,9 +2486,9 @@ class LidarOpenSpaceExplorer(Node):
             standoff_penalty = abs(distance_to_frontier_cells - standoff_cells)
             path_length_m = effective_cost * planner.resolution
             score = (
-                0.18 * min(unknown_visible, 80)
-                + 2.0 * min(planner.clearance_m[index], 1.0)
-                - 0.50 * path_length_m
+                self.visible_unknown_weight * min(unknown_visible, 80)
+                + self.frontier_clearance_weight * min(planner.clearance_m[index], 1.0)
+                - self.frontier_path_cost_weight * path_length_m
                 - 0.25 * standoff_penalty * planner.resolution
             )
             candidates.append(
