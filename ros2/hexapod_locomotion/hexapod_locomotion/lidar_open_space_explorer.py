@@ -123,7 +123,7 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('cmd_vel_rate_hz', 10.0)
         self.declare_parameter('scan_timeout_sec', 0.75)
-        self.declare_parameter('map_timeout_sec', 2.5)
+        self.declare_parameter('map_timeout_sec', 8.0)
         self.declare_parameter('frontier_wait_before_reactive_sec', 3.0)
         self.declare_parameter('enabled', True)
         self.declare_parameter('exploration_mode', 'frontier')
