@@ -718,10 +718,12 @@ class LidarOpenSpaceExplorer(Node):
         best = self.choose_best_direction(self.latest_scan)
         if best is None:
             cmd.angular.z = self.max_turn_rate_rad_s
+            self.publish_reactive_markers(None)
             self.cmd_pub.publish(cmd)
             return
 
         body_angle_rad = self.scan_angle_to_body_angle(self.latest_scan, best.angle_rad)
+        self.publish_reactive_markers(best)
         if best.min_range_m < self.obstacle_stop_distance_m:
             cmd.angular.z = clamp(
                 self.turn_gain * body_angle_rad,
@@ -1101,6 +1103,7 @@ class LidarOpenSpaceExplorer(Node):
 
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
+        markers.markers.append(self.delete_all_marker())
         if self.bug_active:
             node_color = (0.45, 0.24, 0.08, 0.95)
             line_color = (0.55, 0.30, 0.10, 0.85)
@@ -1158,35 +1161,7 @@ class LidarOpenSpaceExplorer(Node):
         self.set_marker_color(viewpoint, (0.0, 0.85, 1.0, 0.75))
         markers.markers.append(viewpoint)
 
-        if self.frontier_failure_memory_enabled and self.suppressed_frontiers:
-            suppressed = self.make_marker('suppressed_frontiers', 5, Marker.SPHERE_LIST, now)
-            suppressed.scale.x = self.target_marker_scale_m * 0.5
-            suppressed.scale.y = self.target_marker_scale_m * 0.5
-            suppressed.scale.z = self.target_marker_scale_m * 0.5
-            suppressed.color.r = 1.0
-            suppressed.color.g = 0.1
-            suppressed.color.b = 0.1
-            suppressed.color.a = 0.65
-            suppressed.points = [
-                self.point_from_xy(frontier.x_m, frontier.y_m)
-                for frontier in self.suppressed_frontiers
-            ]
-            markers.markers.append(suppressed)
-
-        if self.rejected_frontiers:
-            rejected = self.make_marker('rejected_candidates', 6, Marker.CUBE_LIST, now)
-            rejected.scale.x = self.target_marker_scale_m * 0.45
-            rejected.scale.y = self.target_marker_scale_m * 0.45
-            rejected.scale.z = self.target_marker_scale_m * 0.45
-            rejected.color.r = 1.0
-            rejected.color.g = 0.45
-            rejected.color.b = 0.0
-            rejected.color.a = 0.75
-            rejected.points = [
-                self.point_from_xy(frontier.x_m, frontier.y_m)
-                for frontier in self.rejected_frontiers
-            ]
-            markers.markers.append(rejected)
+        self.append_frontier_memory_markers(markers, now)
 
         self.marker_pub.publish(markers)
 
@@ -1213,23 +1188,64 @@ class LidarOpenSpaceExplorer(Node):
     def clear_target_markers(self):
         if not hasattr(self, 'marker_pub'):
             return
-        marker = Marker()
-        marker.action = Marker.DELETEALL
         markers = MarkerArray()
-        markers.markers.append(marker)
+        markers.markers.append(self.delete_all_marker())
         self.marker_pub.publish(markers)
 
     def publish_suppressed_markers(self):
         if (
             not self.publish_target_markers
             or not hasattr(self, 'marker_pub')
-            or (not self.suppressed_frontiers and not self.rejected_frontiers)
         ):
             return
 
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
+        markers.markers.append(self.delete_all_marker())
+        self.append_frontier_memory_markers(markers, now)
+        self.marker_pub.publish(markers)
 
+    def publish_reactive_markers(self, choice: DirectionScore | None):
+        if not self.publish_target_markers or not hasattr(self, 'marker_pub'):
+            return
+
+        now = self.get_clock().now().to_msg()
+        markers = MarkerArray()
+        markers.markers.append(self.delete_all_marker())
+        self.append_frontier_memory_markers(markers, now)
+
+        robot_pose = self.robot_pose_in_map()
+        if choice is not None and robot_pose is not None and self.latest_scan is not None:
+            robot_x, robot_y, robot_yaw = robot_pose
+            body_angle = self.scan_angle_to_body_angle(
+                self.latest_scan,
+                choice.angle_rad,
+            )
+            map_angle = robot_yaw + body_angle
+            length_m = max(0.15, min(choice.mean_range_m, self.max_usable_range_m, 1.0))
+            target_x = robot_x + length_m * math.cos(map_angle)
+            target_y = robot_y + length_m * math.sin(map_angle)
+
+            heading = self.make_marker('reactive_heading', 8, Marker.LINE_STRIP, now)
+            heading.scale.x = max(0.02, self.target_marker_scale_m * 0.25)
+            self.set_marker_color(heading, (0.65, 0.9, 1.0, 0.9))
+            heading.points = [
+                self.point_from_xy(robot_x, robot_y),
+                self.point_from_xy(target_x, target_y),
+            ]
+            markers.markers.append(heading)
+
+            target = self.make_marker('reactive_target', 9, Marker.SPHERE, now)
+            target.pose.position = self.point_from_xy(target_x, target_y)
+            target.scale.x = self.target_marker_scale_m
+            target.scale.y = self.target_marker_scale_m
+            target.scale.z = self.target_marker_scale_m
+            self.set_marker_color(target, (0.0, 0.95, 1.0, 0.95))
+            markers.markers.append(target)
+
+        self.marker_pub.publish(markers)
+
+    def append_frontier_memory_markers(self, markers: MarkerArray, now):
         if self.suppressed_frontiers:
             suppressed = self.make_marker('suppressed_frontiers', 5, Marker.SPHERE_LIST, now)
             suppressed.scale.x = self.target_marker_scale_m * 0.5
@@ -1259,7 +1275,6 @@ class LidarOpenSpaceExplorer(Node):
                 for frontier in self.rejected_frontiers
             ]
             markers.markers.append(rejected)
-        self.marker_pub.publish(markers)
 
     def point_from_xy(self, x_m: float, y_m: float):
         point = Point()
@@ -1267,6 +1282,11 @@ class LidarOpenSpaceExplorer(Node):
         point.y = float(y_m)
         point.z = 0.05
         return point
+
+    def delete_all_marker(self):
+        marker = Marker()
+        marker.action = Marker.DELETEALL
+        return marker
 
     def plan_frontier_target(self):
         if self.current_frontier is not None:
@@ -1558,6 +1578,21 @@ class LidarOpenSpaceExplorer(Node):
         path: tuple[tuple[float, float], ...],
     ) -> bool:
         return any(self.frontier_is_suppressed(x_m, y_m) for x_m, y_m in path)
+
+    def robot_pose_in_map(self):
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.map_frame,
+                self.base_frame,
+                Time(),
+            )
+        except TransformException:
+            return None
+
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        yaw = quaternion_to_yaw(rotation.x, rotation.y, rotation.z, rotation.w)
+        return translation.x, translation.y, yaw
 
     def map_target_vector_in_body(self, target_x_m: float, target_y_m: float):
         try:
