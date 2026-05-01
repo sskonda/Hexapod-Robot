@@ -59,17 +59,34 @@ def generate_launch_description():
     explorer_planner_safety_margin_m = LaunchConfiguration(
         'explorer_planner_safety_margin_m'
     )
+    explorer_path_clearance_m = LaunchConfiguration('explorer_path_clearance_m')
+    explorer_goal_clearance_m = LaunchConfiguration('explorer_goal_clearance_m')
     explorer_frontier_unknown_margin_cells = LaunchConfiguration(
         'explorer_frontier_unknown_margin_cells'
     )
     explorer_frontier_min_area_cells = LaunchConfiguration(
         'explorer_frontier_min_area_cells'
     )
+    explorer_min_frontier_cluster_size = LaunchConfiguration(
+        'explorer_min_frontier_cluster_size'
+    )
     explorer_frontier_goal_projection_radius_m = LaunchConfiguration(
         'explorer_frontier_goal_projection_radius_m'
     )
     explorer_frontier_standoff_distance_m = LaunchConfiguration(
         'explorer_frontier_standoff_distance_m'
+    )
+    explorer_max_projection_attempts_per_frontier = LaunchConfiguration(
+        'explorer_max_projection_attempts_per_frontier'
+    )
+    explorer_unknown_visibility_radius_m = LaunchConfiguration(
+        'explorer_unknown_visibility_radius_m'
+    )
+    explorer_unknown_visibility_min_cells = LaunchConfiguration(
+        'explorer_unknown_visibility_min_cells'
+    )
+    explorer_suppress_only_after_motion_failure = LaunchConfiguration(
+        'explorer_suppress_only_after_motion_failure'
     )
     explorer_frontier_failure_memory_enabled = LaunchConfiguration(
         'explorer_frontier_failure_memory_enabled'
@@ -263,6 +280,16 @@ def generate_launch_description():
             description='Extra inflation margin added around occupied/unknown-danger cells.',
         ),
         DeclareLaunchArgument(
+            'explorer_path_clearance_m',
+            default_value='0.40',
+            description='Required clearance for traversed BFS/DFS path cells.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_goal_clearance_m',
+            default_value='0.33',
+            description='Softer clearance for final known-free viewpoint goals near doorways.',
+        ),
+        DeclareLaunchArgument(
             'explorer_frontier_unknown_margin_cells',
             default_value='2',
             description='Unknown cells this many cells from occupied cells are treated as danger.',
@@ -273,6 +300,11 @@ def generate_launch_description():
             description='Reject connected frontier regions smaller than this many cells.',
         ),
         DeclareLaunchArgument(
+            'explorer_min_frontier_cluster_size',
+            default_value='5',
+            description='Alias for the minimum connected frontier cluster size.',
+        ),
+        DeclareLaunchArgument(
             'explorer_frontier_goal_projection_radius_m',
             default_value='0.90',
             description='Search radius for projecting frontier boundaries to safe standoff goals.',
@@ -281,6 +313,26 @@ def generate_launch_description():
             'explorer_frontier_standoff_distance_m',
             default_value='0.40',
             description='Preferred distance back into known free space from a frontier boundary.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_max_projection_attempts_per_frontier',
+            default_value='50',
+            description='Maximum known-free viewpoint candidates to try for each frontier cluster.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_unknown_visibility_radius_m',
+            default_value='1.20',
+            description='Radius for estimating unknown information gain from a viewpoint.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_unknown_visibility_min_cells',
+            default_value='1',
+            description='Minimum visible unknown cells required for a frontier viewpoint.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_suppress_only_after_motion_failure',
+            default_value='true',
+            description='Only create frontier suppression memory after actual movement failures.',
         ),
         DeclareLaunchArgument(
             'explorer_frontier_failure_memory_enabled',
@@ -294,7 +346,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_frontier_suppression_radius_m',
-            default_value='0.75',
+            default_value='0.45',
             description='Radius around a rejected frontier to skip during the suppression window.',
         ),
         DeclareLaunchArgument(
@@ -403,12 +455,23 @@ def generate_launch_description():
                 'frontier_min_clearance_m': explorer_frontier_min_clearance_m,
                 'robot_radius_m': explorer_robot_radius_m,
                 'planner_safety_margin_m': explorer_planner_safety_margin_m,
+                'path_clearance_m': explorer_path_clearance_m,
+                'goal_clearance_m': explorer_goal_clearance_m,
                 'frontier_unknown_margin_cells': explorer_frontier_unknown_margin_cells,
                 'frontier_min_area_cells': explorer_frontier_min_area_cells,
+                'min_frontier_cluster_size': explorer_min_frontier_cluster_size,
                 'frontier_goal_projection_radius_m': (
                     explorer_frontier_goal_projection_radius_m
                 ),
                 'frontier_standoff_distance_m': explorer_frontier_standoff_distance_m,
+                'max_projection_attempts_per_frontier': (
+                    explorer_max_projection_attempts_per_frontier
+                ),
+                'unknown_visibility_radius_m': explorer_unknown_visibility_radius_m,
+                'unknown_visibility_min_cells': explorer_unknown_visibility_min_cells,
+                'suppress_only_after_motion_failure': (
+                    explorer_suppress_only_after_motion_failure
+                ),
                 'frontier_failure_memory_enabled': (
                     explorer_frontier_failure_memory_enabled
                 ),
