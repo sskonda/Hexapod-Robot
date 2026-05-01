@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
@@ -22,6 +23,7 @@ def generate_launch_description():
     odom_frame_id = LaunchConfiguration('odom_frame_id')
     base_frame_id = LaunchConfiguration('base_frame_id')
     publish_odom_tf = LaunchConfiguration('publish_odom_tf')
+    use_imu = LaunchConfiguration('use_imu')
     use_imu_for_odom = LaunchConfiguration('use_imu_for_odom')
     locomotion_debug_logging = LaunchConfiguration('locomotion_debug_logging')
     locomotion_publish_yaw_hold_diagnostics = LaunchConfiguration(
@@ -153,8 +155,16 @@ def generate_launch_description():
             description='Publish the odom to base_link TF from locomotion.',
         ),
         DeclareLaunchArgument(
+            'use_imu',
+            default_value='false',
+            description=(
+                'Enable IMU subscription and IMU-based balance / heading correction '
+                'inside locomotion.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'use_imu_for_odom',
-            default_value='true',
+            default_value='false',
             description=(
                 'Use trusted IMU yaw inside locomotion odometry. Set false when '
                 'another node owns odom pose fusion from raw gait velocity + IMU.'
@@ -341,6 +351,7 @@ def generate_launch_description():
             executable='static_transform_publisher',
             name='base_link_to_imu',
             output='screen',
+            condition=IfCondition(use_imu),
             arguments=[
                 '--x', imu_x, '--y', imu_y, '--z', imu_z,
                 '--roll', imu_roll, '--pitch', imu_pitch, '--yaw', imu_yaw,
@@ -352,6 +363,7 @@ def generate_launch_description():
             executable='bno055_publisher',
             name='imu_publisher',
             output='screen',
+            condition=IfCondition(use_imu),
             parameters=[{
                 'frame_id': imu_frame,
                 'topic': '/imu/data_raw',
@@ -389,6 +401,7 @@ def generate_launch_description():
             parameters=[
                 str(config_dir / 'locomotion.yaml'),
                 {
+                    'use_imu': use_imu,
                     'yaw_kp': yaw_kp,
                     'yaw_correction_gain': yaw_correction_gain,
                     'yaw_ki': yaw_ki,

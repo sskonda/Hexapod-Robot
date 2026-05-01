@@ -108,7 +108,7 @@ class LocomotionNode(Node):
     def __init__(self):
         super().__init__('locomotion')
 
-        self.declare_parameter('use_imu', True)
+        self.declare_parameter('use_imu', False)
         self.declare_parameter('balance_gain', 0.1)
         self.declare_parameter('gait', 'tripod')
         self.declare_parameter('control_rate_hz', 50.0)
@@ -152,7 +152,7 @@ class LocomotionNode(Node):
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_odom_tf', True)
-        self.declare_parameter('use_imu_for_odom', True)
+        self.declare_parameter('use_imu_for_odom', False)
         self.declare_parameter('heading_hold_release_grace_sec', 0.75)
         self.declare_parameter('debug_logging', True)
         self.declare_parameter('publish_yaw_hold_diagnostics', True)
@@ -683,140 +683,21 @@ class LocomotionNode(Node):
         self.last_heading_hold_correction_rad_s = 0.0
 
         if age_sec > self.command_timeout_sec:
-            self._reset_heading_hold_state()
+            self._reset_heading_hold_state('command_timeout')
             self.last_heading_hold_reason = 'command_timeout'
             return 0.0, 0.0, 0.0
 
         linear_x = self.cmd_linear_x_mps
         linear_y = self.cmd_linear_y_mps
         yaw_rate = self.cmd_yaw_rate_rad_s
-        translating = abs(linear_x) > 1e-6 or abs(linear_y) > 1e-6
-        yaw_command_zero = abs(yaw_rate) <= self.zero_yaw_command_threshold_rad_s()
-
-        self._update_spin_fault(translating, yaw_command_zero)
-        if self.spin_fault_active:
-            self.last_heading_reason = 'spin_fault'
-            return 0.0, 0.0, 0.0
-
-        now_monotonic = time.monotonic()
-        if translating:
-            self.heading_hold_grace_until_monotonic = (
-                now_monotonic + self.heading_hold_release_grace_sec
-            )
-
-        if not translating:
-            if (
-                self.heading_hold_target_rad is not None
-                and now_monotonic <= self.heading_hold_grace_until_monotonic
-            ):
-                self.last_heading_hold_mode = 'paused'
-                self.last_heading_hold_reason = 'translation_pause_grace'
-            else:
-                self._reset_heading_hold_state()
-                self.last_heading_hold_reason = 'no_translation'
-        elif abs(yaw_rate) >= 1e-6:
-            self._reset_heading_hold_state()
+        self._reset_heading_hold_state('pass_through_command')
+        if abs(yaw_rate) >= 1e-6:
             self.last_heading_hold_mode = 'manual_yaw'
             self.last_heading_hold_reason = 'manual_yaw_command'
-        elif self.use_imu and (self.yaw_kp != 0.0 or self.yaw_ki != 0.0 or self.yaw_kd != 0.0):
-            correction = 0.0
-            yaw_available, current_yaw_rad, current_yaw_rate_rps = self._active_yaw_estimate()
-            if yaw_available:
-                if self.heading_hold_target_rad is None:
-                    self.heading_hold_target_rad = current_yaw_rad
-                    self.heading_integral_state = 0.0
-                    if self.debug_logging:
-                        self.get_logger().info(
-                            'Heading hold latched reference yaw '
-                            f'{math.degrees(self.heading_hold_target_rad):.1f} deg, '
-                            'quaternion '
-                            f'{self._format_quaternion(self._heading_reference_quaternion())}.'
-                        )
-                step = compute_heading_hold_pid(
-                    target_yaw_rad=self.heading_hold_target_rad,
-                    current_yaw_rad=current_yaw_rad,
-                    current_yaw_rate_rps=current_yaw_rate_rps,
-                    integral_state_rad=self.heading_integral_state,
-                    control_dt_sec=1.0 / self.control_rate_hz,
-                    kp=self.yaw_kp,
-                    ki=self.yaw_ki,
-                    kd=self.yaw_kd,
-                    deadband_rad=self.yaw_deadband_rad,
-                    integral_limit=self.yaw_integrator_limit,
-                    correction_limit=self.max_yaw_rate_rad_s * 0.3,
-                )
-                correction = step.correction
-                if step.integral_should_update:
-                    self.heading_integral_state = step.integral_candidate
-                self.last_heading_hold_mode = 'tracking'
-                self.last_heading_hold_reason = 'yaw_trusted'
-                self.last_heading_hold_step = step
-                self.last_heading_hold_correction_rad_s = correction
-            elif self.imu_yaw_valid:
-                self.last_heading_hold_mode = 'open_loop'
-                self.last_heading_hold_reason = 'yaw_untrusted'
-                self._warn_unusable_yaw_estimate()
-            else:
-                self.last_heading_hold_mode = 'open_loop'
-                self.last_heading_hold_reason = 'yaw_missing'
-                self._warn_unusable_yaw_estimate()
-
-        if not yaw_command_zero:
-            self._reset_heading_hold_state('intentional_yaw_command')
-            return linear_x, linear_y, yaw_rate
-
-        if not self.use_imu or (self.yaw_kp <= 0.0 and self.yaw_ki <= 0.0):
-            self._reset_heading_hold_state('heading_hold_disabled')
-            return linear_x, linear_y, 0.0
-
-        if not self.heading_estimate_is_fresh():
-            self._reset_heading_hold_state('heading_stale')
-            self._warn_missing_yaw_estimate()
-            return linear_x, linear_y, 0.0
-
-        if not self.imu_heading_trusted:
-            self._reset_heading_hold_state('heading_untrusted')
-            self._warn_missing_yaw_estimate()
-            return linear_x, linear_y, 0.0
-
-        if self.heading_hold_target_rad is None:
-            self.heading_hold_target_rad = self.imu_yaw_rad
-            self.heading_integral_state = 0.0
-
-        raw_yaw_error = normalize_angle(self.heading_hold_target_rad - self.imu_yaw_rad)
-        deadbanded_yaw_error = apply_angular_deadband(raw_yaw_error, self.yaw_deadband_rad)
-
-        proportional_term = self.yaw_kp * deadbanded_yaw_error
-        integral_candidate = clamp(
-            self.heading_integral_state + deadbanded_yaw_error * (1.0 / self.control_rate_hz),
-            -self.yaw_integrator_limit,
-            self.yaw_integrator_limit,
-        )
-        correction_limit = self.heading_hold_max_correction_rad_s()
-        unsaturated_correction = proportional_term + self.yaw_ki * integral_candidate
-        saturated_correction = clamp(
-            unsaturated_correction,
-            -correction_limit,
-            correction_limit,
-        )
-
-        if self.yaw_ki > 0.0:
-            correction_is_saturated = not math.isclose(
-                unsaturated_correction,
-                saturated_correction,
-                rel_tol=0.0,
-                abs_tol=1e-9,
-            )
-        else:
-            self._reset_heading_hold_state()
-            self.last_heading_hold_reason = 'heading_hold_disabled'
-
+        elif abs(linear_x) > 1e-6 or abs(linear_y) > 1e-6:
+            self.last_heading_hold_mode = 'open_loop'
+            self.last_heading_hold_reason = 'pass_through_translation'
         return linear_x, linear_y, yaw_rate
-
-    def _reset_heading_hold_state(self):
-        self.heading_hold_target_rad = None
-        self.heading_integral_state = 0.0
-        self.heading_hold_grace_until_monotonic = 0.0
 
     def _active_yaw_estimate(self):
         if self.imu_yaw_valid and self.imu_yaw_trusted:

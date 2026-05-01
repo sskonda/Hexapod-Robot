@@ -1,6 +1,6 @@
 /locomotion:
   ros__parameters:
-    use_imu: true
+    use_imu: false
     balance_gain: 0.0
     gait: tripod
     control_rate_hz: 50.0

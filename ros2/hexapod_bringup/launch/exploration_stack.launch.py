@@ -28,6 +28,7 @@ def generate_launch_description():
     map_frame = LaunchConfiguration('map_frame')
     use_sim_time = LaunchConfiguration('use_sim_time')
     lidar_serial_port = LaunchConfiguration('lidar_serial_port')
+    locomotion_use_imu = LaunchConfiguration('locomotion_use_imu')
     locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
     locomotion_debug_logging = LaunchConfiguration('locomotion_debug_logging')
     locomotion_publish_yaw_hold_diagnostics = LaunchConfiguration(
@@ -200,6 +201,11 @@ def generate_launch_description():
             'lidar_serial_port',
             default_value='/dev/ttyUSB0',
             description='Serial device for the RPLIDAR A1 USB adapter.',
+        ),
+        DeclareLaunchArgument(
+            'locomotion_use_imu',
+            default_value='false',
+            description='Enable IMU-based correction inside locomotion.',
         ),
         DeclareLaunchArgument(
             'locomotion_use_imu_for_odom',
@@ -544,6 +550,7 @@ def generate_launch_description():
                 'use_sim_time': use_sim_time,
                 'map_frame': map_frame,
                 'lidar_serial_port': lidar_serial_port,
+                'locomotion_use_imu': locomotion_use_imu,
                 'locomotion_use_imu_for_odom': locomotion_use_imu_for_odom,
                 'locomotion_debug_logging': locomotion_debug_logging,
                 'locomotion_publish_yaw_hold_diagnostics': (

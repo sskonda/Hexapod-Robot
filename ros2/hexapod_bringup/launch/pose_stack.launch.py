@@ -25,6 +25,7 @@ def generate_launch_description():
     enable_slam_toolbox = LaunchConfiguration('enable_slam_toolbox')
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
+    locomotion_use_imu = LaunchConfiguration('locomotion_use_imu')
     locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
     locomotion_debug_logging = LaunchConfiguration('locomotion_debug_logging')
     locomotion_publish_yaw_hold_diagnostics = LaunchConfiguration(
@@ -120,6 +121,11 @@ def generate_launch_description():
             'apply_offsets',
             default_value='true',
             description='Apply saved servo calibration offsets.',
+        ),
+        DeclareLaunchArgument(
+            'locomotion_use_imu',
+            default_value='false',
+            description='Enable IMU-based correction inside locomotion.',
         ),
         DeclareLaunchArgument(
             'locomotion_use_imu_for_odom',
@@ -226,6 +232,7 @@ def generate_launch_description():
                 'enable_slam_toolbox': enable_slam_toolbox,
                 'locomotion_odom_topic': 'odom',
                 'locomotion_publish_odom_tf': 'true',
+                'locomotion_use_imu': locomotion_use_imu,
                 'locomotion_use_imu_for_odom': locomotion_use_imu_for_odom,
                 'locomotion_debug_logging': locomotion_debug_logging,
                 'locomotion_publish_yaw_hold_diagnostics': (

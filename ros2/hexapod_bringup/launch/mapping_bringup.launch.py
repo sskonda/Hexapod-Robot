@@ -98,6 +98,7 @@ def generate_launch_description():
     laser_yaw = LaunchConfiguration('laser_yaw')
     locomotion_odom_topic = LaunchConfiguration('locomotion_odom_topic')
     locomotion_publish_odom_tf = LaunchConfiguration('locomotion_publish_odom_tf')
+    locomotion_use_imu = LaunchConfiguration('locomotion_use_imu')
     locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
     locomotion_debug_logging = LaunchConfiguration('locomotion_debug_logging')
     locomotion_publish_yaw_hold_diagnostics = LaunchConfiguration(
@@ -289,6 +290,14 @@ def generate_launch_description():
             description='Whether locomotion publishes odom->base_link TF directly.',
         ),
         DeclareLaunchArgument(
+            'locomotion_use_imu',
+            default_value='false',
+            description=(
+                'Enable IMU subscription and IMU-based balance / yaw correction in '
+                'locomotion.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'locomotion_use_imu_for_odom',
             default_value='false',
             description=(
@@ -386,6 +395,7 @@ def generate_launch_description():
                 'odom_frame_id': odom_frame,
                 'base_frame_id': base_frame,
                 'publish_odom_tf': locomotion_publish_odom_tf,
+                'use_imu': locomotion_use_imu,
                 'use_imu_for_odom': locomotion_use_imu_for_odom,
                 'locomotion_debug_logging': locomotion_debug_logging,
                 'locomotion_publish_yaw_hold_diagnostics': (
