@@ -248,7 +248,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'camera_framerate',
-            default_value='30.0',
+            default_value='10.0',
             description='Camera frame rate.',
         ),
         DeclareLaunchArgument(

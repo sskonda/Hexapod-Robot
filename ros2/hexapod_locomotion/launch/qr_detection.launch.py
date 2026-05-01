@@ -18,6 +18,7 @@ def generate_launch_description():
     text_topic = LaunchConfiguration('text_topic')
     output_image_topic = LaunchConfiguration('output_image_topic')
     republish_same_text = LaunchConfiguration('republish_same_text')
+    processing_fps = LaunchConfiguration('processing_fps')
     output_image_width = LaunchConfiguration('output_image_width')
     output_image_height = LaunchConfiguration('output_image_height')
     output_image_grayscale = LaunchConfiguration('output_image_grayscale')
@@ -55,7 +56,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'framerate',
-            default_value='30.0',
+            default_value='10.0',
             description='Camera frame rate.',
         ),
         DeclareLaunchArgument(
@@ -77,6 +78,11 @@ def generate_launch_description():
             'republish_same_text',
             default_value='false',
             description='When true, publish repeated detections of the same QR text.',
+        ),
+        DeclareLaunchArgument(
+            'processing_fps',
+            default_value='10.0',
+            description='Maximum QR processing rate.',
         ),
         DeclareLaunchArgument(
             'output_image_width',
@@ -120,6 +126,10 @@ def generate_launch_description():
                 'republish_same_text': ParameterValue(
                     republish_same_text,
                     value_type=bool,
+                ),
+                'processing_fps': ParameterValue(
+                    processing_fps,
+                    value_type=float,
                 ),
                 'output_image_width': ParameterValue(
                     output_image_width,

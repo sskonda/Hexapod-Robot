@@ -2,6 +2,7 @@
 
 """Decode QR codes from a camera image stream and publish their text."""
 
+import time
 from typing import List, Sequence, Tuple
 
 import cv2
@@ -27,6 +28,7 @@ class QrCodeDetectorNode(Node):
         self.declare_parameter('qos_depth', 10)
         self.declare_parameter('log_throttle_sec', 2.0)
         self.declare_parameter('republish_same_text', False)
+        self.declare_parameter('processing_fps', 10.0)
         self.declare_parameter('output_image_width', 320)
         self.declare_parameter('output_image_height', 240)
         self.declare_parameter('output_image_grayscale', True)
@@ -40,6 +42,13 @@ class QrCodeDetectorNode(Node):
             self.get_parameter('publish_annotated_image').value
         )
         self.republish_same_text = bool(self.get_parameter('republish_same_text').value)
+        self.processing_fps = max(
+            0.0,
+            float(self.get_parameter('processing_fps').value),
+        )
+        self.processing_period_sec = (
+            0.0 if self.processing_fps <= 0.0 else 1.0 / self.processing_fps
+        )
         self.output_image_width = max(
             1,
             int(self.get_parameter('output_image_width').value),
@@ -56,6 +65,7 @@ class QrCodeDetectorNode(Node):
         )
         self.last_log_ns = -self.log_throttle_ns
         self.last_published_texts = set()
+        self.last_processed_monotonic = 0.0
 
         self.bridge = CvBridge()
         self.detector = cv2.QRCodeDetector()
@@ -83,6 +93,15 @@ class QrCodeDetectorNode(Node):
             )
 
     def image_callback(self, msg):
+        now = time.monotonic()
+        if (
+            self.processing_period_sec > 0.0
+            and now - self.last_processed_monotonic < self.processing_period_sec
+        ):
+            return
+
+        self.last_processed_monotonic = now
+
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as exc:
