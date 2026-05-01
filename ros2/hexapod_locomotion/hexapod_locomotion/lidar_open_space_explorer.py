@@ -189,6 +189,8 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('frontier_clearance_weight', 1.0)
         self.declare_parameter('frontier_path_cost_weight', 0.45)
         self.declare_parameter('frontier_heading_change_weight', 0.25)
+        self.declare_parameter('frontier_rear_goal_penalty', 4.0)
+        self.declare_parameter('frontier_rear_reject_angle_deg', 115.0)
         self.declare_parameter('tiny_frontier_score_penalty', 0.20)
         self.declare_parameter('suppress_only_after_motion_failure', True)
         self.declare_parameter('frontier_failure_memory_enabled', True)
@@ -477,6 +479,13 @@ class LidarOpenSpaceExplorer(Node):
             0.0,
             float(self.get_parameter('frontier_heading_change_weight').value),
         )
+        self.frontier_rear_goal_penalty = max(
+            0.0,
+            float(self.get_parameter('frontier_rear_goal_penalty').value),
+        )
+        self.frontier_rear_reject_angle_rad = math.radians(
+            max(90.0, min(179.0, float(self.get_parameter('frontier_rear_reject_angle_deg').value)))
+        )
         self.tiny_frontier_score_penalty = max(
             0.0,
             float(self.get_parameter('tiny_frontier_score_penalty').value),
@@ -671,6 +680,12 @@ class LidarOpenSpaceExplorer(Node):
                 self.frontier_path_cost_weight = max(0.0, float(parameter.value))
             elif parameter.name == 'frontier_heading_change_weight':
                 self.frontier_heading_change_weight = max(0.0, float(parameter.value))
+            elif parameter.name == 'frontier_rear_goal_penalty':
+                self.frontier_rear_goal_penalty = max(0.0, float(parameter.value))
+            elif parameter.name == 'frontier_rear_reject_angle_deg':
+                self.frontier_rear_reject_angle_rad = math.radians(
+                    max(90.0, min(179.0, float(parameter.value)))
+                )
             elif parameter.name == 'tiny_frontier_score_penalty':
                 self.tiny_frontier_score_penalty = max(0.0, float(parameter.value))
             elif parameter.name == 'suppress_only_after_motion_failure':
@@ -941,17 +956,13 @@ class LidarOpenSpaceExplorer(Node):
         map_age_sec = (self.get_clock().now() - self.latest_map_time).nanoseconds * 1e-9
         if map_age_sec > self.map_timeout_sec:
             self.log_delay_reason(
-                f'holding because /map is stale ({map_age_sec:.2f}s old)'
+                f'/map is stale ({map_age_sec:.2f}s old); using scan-reactive motion'
             )
-            wait_sec = self.frontier_wait_elapsed_sec('stale_map')
             self.get_logger().warn(
-                f'Map timeout ({map_age_sec:.2f}s old). Holding position.',
+                f'Map timeout ({map_age_sec:.2f}s old). Using scan-reactive fallback.',
                 throttle_duration_sec=2.0,
             )
-            if self.reactive_fallback and wait_sec >= self.frontier_wait_before_reactive_sec:
-                self.log_delay_reason(
-                    f'/map has been stale for {wait_sec:.1f}s; falling back to scan-reactive motion'
-                )
+            if self.reactive_fallback:
                 return None
             return cmd
 
@@ -987,7 +998,7 @@ class LidarOpenSpaceExplorer(Node):
             if waypoint is None:
                 self.clear_current_frontier()
                 self.clear_target_markers()
-                return cmd
+                return None
 
             self.publish_frontier_markers(waypoint)
 
@@ -1023,6 +1034,17 @@ class LidarOpenSpaceExplorer(Node):
                 continue
 
             body_angle = math.atan2(body_y, body_x)
+            if (
+                not self.reverse_allowed
+                and abs(body_angle) > self.frontier_rear_reject_angle_rad
+            ):
+                self.log_delay_reason(
+                    'frontier viewpoint is behind robot while reverse is disabled; suppressing current target'
+                )
+                self.suppress_current_frontier('requires_reverse')
+                self.publish_suppressed_markers()
+                return None
+
             if not self.bug_active and self.frontier_progress_timed_out(distance_m):
                 if self.bug_recovery_enabled:
                     self.get_logger().info(
@@ -1040,7 +1062,7 @@ class LidarOpenSpaceExplorer(Node):
                 )
                 self.suppress_current_frontier('no_progress')
                 self.publish_suppressed_markers()
-                return cmd
+                return None
 
             scan_clearance = self.min_scan_range_near_body_angle(
                 body_angle,
@@ -1067,7 +1089,7 @@ class LidarOpenSpaceExplorer(Node):
                 )
                 self.suppress_current_frontier('scan_blocked')
                 self.publish_suppressed_markers()
-                return cmd
+                return None
 
             if self.bug_active:
                 if self.frontier_progress_timed_out(distance_m):
@@ -1076,7 +1098,7 @@ class LidarOpenSpaceExplorer(Node):
                     )
                     self.suppress_current_frontier('bug_no_progress')
                     self.publish_suppressed_markers()
-                    return cmd
+                    return None
                 bug_cmd = self.bug_recovery_command(body_angle)
                 if bug_cmd is not None:
                     self.log_delay_reason(
@@ -1089,7 +1111,7 @@ class LidarOpenSpaceExplorer(Node):
                     )
                     self.suppress_current_frontier('bug_timeout')
                     self.publish_suppressed_markers()
-                    return cmd
+                    return None
 
             if self.side_clearance_is_too_close():
                 if self.bug_recovery_enabled:
@@ -1103,7 +1125,7 @@ class LidarOpenSpaceExplorer(Node):
                         )
                         self.suppress_current_frontier('bug_timeout')
                         self.publish_suppressed_markers()
-                        return cmd
+                        return None
                 guard_cmd = self.wall_clearance_guard_command()
                 if guard_cmd is not None:
                     self.log_delay_reason('side clearance guard is moving away from wall')
@@ -1130,7 +1152,7 @@ class LidarOpenSpaceExplorer(Node):
                         )
                         self.suppress_current_frontier('requires_reverse')
                         self.publish_suppressed_markers()
-                        return cmd
+                        return None
             else:
                 cmd.linear.x = speed * max(0.0, math.cos(body_angle))
                 cmd.angular.z = clamp(
@@ -1143,7 +1165,7 @@ class LidarOpenSpaceExplorer(Node):
             self.clear_delay_reason()
             return cmd
 
-        return cmd
+        return None
 
     def side_clearance_is_too_close(self) -> bool:
         left_clearance, right_clearance = self.side_clearances()
@@ -1584,7 +1606,8 @@ class LidarOpenSpaceExplorer(Node):
             f'path={self.current_frontier.path_length_m:.2f} m, '
             f'score={self.current_frontier.score:.2f}, '
             f'searched={self.current_frontier.searched_cells} cells, '
-            f'waypoints={len(self.current_frontier.path)}.'
+            f'waypoints={len(self.current_frontier.path)}, '
+            f'active_waypoint=({self.current_frontier.path[0][0]:.2f}, {self.current_frontier.path[0][1]:.2f}).'
         )
 
     def advance_frontier_waypoint(self) -> bool:
@@ -2114,6 +2137,10 @@ class LidarOpenSpaceExplorer(Node):
             dx = target_world[0] - transform.transform.translation.x
             dy = target_world[1] - transform.transform.translation.y
             heading_change = abs(normalize_angle(math.atan2(dy, dx) - robot_yaw))
+            rear_penalty = 0.0
+            if heading_change > math.pi / 2.0:
+                rear_fraction = (heading_change - math.pi / 2.0) / (math.pi / 2.0)
+                rear_penalty = self.frontier_rear_goal_penalty * rear_fraction
             path_length_m = path_cost_cells[target_index] * grid.info.resolution
             clearance_m = planner.clearance_m[target_index]
             area_cells = len(component)
@@ -2130,6 +2157,7 @@ class LidarOpenSpaceExplorer(Node):
                 + self.visible_unknown_weight * min(candidate.unknown_visible_cells, 80)
                 - self.frontier_path_cost_weight * path_length_m
                 - self.frontier_heading_change_weight * heading_change
+                - rear_penalty
                 - tiny_penalty
             )
             if score > best_score:
