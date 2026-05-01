@@ -156,17 +156,17 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_obstacle_stop_distance_m',
-            default_value='0.30',
+            default_value='0.24',
             description='Stop/turn if the selected direction is closer than this.',
         ),
         DeclareLaunchArgument(
             'explorer_obstacle_slow_distance_m',
-            default_value='0.70',
+            default_value='0.50',
             description='Start slowing below this selected-direction clearance.',
         ),
         DeclareLaunchArgument(
             'explorer_desired_clearance_m',
-            default_value='0.55',
+            default_value='0.40',
             description='Range threshold used to compute angular clearance.',
         ),
         DeclareLaunchArgument(
@@ -206,7 +206,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_frontier_min_clearance_m',
-            default_value='0.25',
+            default_value='0.15',
             description='Minimum map clearance from occupied cells for frontier goals and traversed cells.',
         ),
         DeclareLaunchArgument(

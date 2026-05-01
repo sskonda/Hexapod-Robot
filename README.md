@@ -140,8 +140,9 @@ Useful tuning knobs:
 ros2 launch hexapod_bringup exploration_stack.launch.py \
   strategy:=bfs \
   explorer_max_speed_mps:=0.025 \
-  explorer_obstacle_stop_distance_m:=0.35 \
-  explorer_desired_clearance_m:=0.65
+  explorer_frontier_min_clearance_m:=0.15 \
+  explorer_obstacle_stop_distance_m:=0.24 \
+  explorer_desired_clearance_m:=0.40
 ```
 
 Use `explorer_mode:=reactive` to ignore `/map` and return to the simpler

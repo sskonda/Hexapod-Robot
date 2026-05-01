@@ -97,10 +97,10 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('turn_gain', 0.8)
         self.declare_parameter('crab_motion', True)
 
-        self.declare_parameter('obstacle_stop_distance_m', 0.28)
-        self.declare_parameter('obstacle_slow_distance_m', 0.65)
-        self.declare_parameter('desired_clearance_m', 0.55)
-        self.declare_parameter('minimum_direction_range_m', 0.35)
+        self.declare_parameter('obstacle_stop_distance_m', 0.24)
+        self.declare_parameter('obstacle_slow_distance_m', 0.50)
+        self.declare_parameter('desired_clearance_m', 0.40)
+        self.declare_parameter('minimum_direction_range_m', 0.25)
         self.declare_parameter('max_usable_range_m', 4.0)
 
         self.declare_parameter('candidate_angle_min_deg', -150.0)
@@ -114,7 +114,7 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('frontier_replan_period_sec', 2.0)
         self.declare_parameter('frontier_goal_tolerance_m', 0.18)
         self.declare_parameter('frontier_waypoint_spacing_m', 0.25)
-        self.declare_parameter('frontier_min_clearance_m', 0.25)
+        self.declare_parameter('frontier_min_clearance_m', 0.15)
         self.declare_parameter('frontier_free_threshold', 25)
         self.declare_parameter('frontier_occupied_threshold', 65)
         self.declare_parameter('frontier_failure_memory_enabled', False)
