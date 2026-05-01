@@ -74,6 +74,7 @@ def generate_launch_description():
         'explorer_bug_desired_wall_distance_m'
     )
     explorer_bug_release_clearance_m = LaunchConfiguration('explorer_bug_release_clearance_m')
+    explorer_bug_min_duration_sec = LaunchConfiguration('explorer_bug_min_duration_sec')
     explorer_bug_max_duration_sec = LaunchConfiguration('explorer_bug_max_duration_sec')
 
     return LaunchDescription([
@@ -273,6 +274,11 @@ def generate_launch_description():
             description='Direct waypoint clearance needed before leaving Bug recovery.',
         ),
         DeclareLaunchArgument(
+            'explorer_bug_min_duration_sec',
+            default_value='3.0',
+            description='Minimum time to stay in Bug recovery before direct-path release is allowed.',
+        ),
+        DeclareLaunchArgument(
             'explorer_bug_max_duration_sec',
             default_value='15.0',
             description='Maximum time spent in Bug recovery before rejecting the current frontier path.',
@@ -336,6 +342,7 @@ def generate_launch_description():
                 'bug_forward_speed_mps': explorer_bug_forward_speed_mps,
                 'bug_desired_wall_distance_m': explorer_bug_desired_wall_distance_m,
                 'bug_release_clearance_m': explorer_bug_release_clearance_m,
+                'bug_min_duration_sec': explorer_bug_min_duration_sec,
                 'bug_max_duration_sec': explorer_bug_max_duration_sec,
             }],
         ),

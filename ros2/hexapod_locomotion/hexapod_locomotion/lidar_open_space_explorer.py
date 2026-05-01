@@ -130,6 +130,7 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('bug_desired_wall_distance_m', 0.32)
         self.declare_parameter('bug_release_clearance_m', 0.45)
         self.declare_parameter('bug_release_hold_sec', 1.0)
+        self.declare_parameter('bug_min_duration_sec', 3.0)
         self.declare_parameter('bug_max_duration_sec', 15.0)
         self.declare_parameter('bug_front_angle_deg', 30.0)
         self.declare_parameter('bug_side_angle_deg', 75.0)
@@ -308,6 +309,10 @@ class LidarOpenSpaceExplorer(Node):
             0.0,
             float(self.get_parameter('bug_release_hold_sec').value),
         )
+        self.bug_min_duration_sec = max(
+            0.0,
+            float(self.get_parameter('bug_min_duration_sec').value),
+        )
         self.bug_max_duration_sec = max(
             0.0,
             float(self.get_parameter('bug_max_duration_sec').value),
@@ -421,6 +426,8 @@ class LidarOpenSpaceExplorer(Node):
                 )
             elif parameter.name == 'bug_release_hold_sec':
                 self.bug_release_hold_sec = max(0.0, float(parameter.value))
+            elif parameter.name == 'bug_min_duration_sec':
+                self.bug_min_duration_sec = max(0.0, float(parameter.value))
             elif parameter.name == 'bug_max_duration_sec':
                 self.bug_max_duration_sec = max(0.0, float(parameter.value))
             elif parameter.name == 'bug_front_angle_deg':
@@ -699,7 +706,9 @@ class LidarOpenSpaceExplorer(Node):
                 self.stop_bug_recovery()
                 return None
 
-        if self.direct_path_released(target_body_angle_rad):
+        if self.bug_minimum_duration_elapsed() and self.direct_path_released(
+            target_body_angle_rad
+        ):
             self.stop_bug_recovery()
             return None
 
@@ -760,6 +769,9 @@ class LidarOpenSpaceExplorer(Node):
         self.bug_active = False
         self.bug_clear_since_sec = None
 
+    def bug_minimum_duration_elapsed(self) -> bool:
+        return (self.now_sec() - self.bug_started_at_sec) >= self.bug_min_duration_sec
+
     def select_bug_wall_side(self, target_body_angle_rad: float) -> int:
         if self.bug_wall_side_mode == 'left':
             return 1
@@ -804,6 +816,16 @@ class LidarOpenSpaceExplorer(Node):
 
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
+        if self.bug_active:
+            node_color = (0.45, 0.24, 0.08, 0.95)
+            line_color = (0.55, 0.30, 0.10, 0.85)
+            active_color = (0.70, 0.38, 0.12, 1.0)
+            goal_color = (0.36, 0.18, 0.06, 0.95)
+        else:
+            node_color = (0.15, 0.45, 1.0, 0.9)
+            line_color = (0.1, 0.7, 1.0, 0.75)
+            active_color = (0.0, 1.0, 0.2, 1.0)
+            goal_color = (1.0, 0.75, 0.0, 0.95)
 
         remaining_path = self.current_frontier.path[self.current_path_index:]
         if remaining_path:
@@ -811,19 +833,13 @@ class LidarOpenSpaceExplorer(Node):
             path_nodes.scale.x = self.target_marker_scale_m * 0.65
             path_nodes.scale.y = self.target_marker_scale_m * 0.65
             path_nodes.scale.z = self.target_marker_scale_m * 0.65
-            path_nodes.color.r = 0.15
-            path_nodes.color.g = 0.45
-            path_nodes.color.b = 1.0
-            path_nodes.color.a = 0.9
+            self.set_marker_color(path_nodes, node_color)
             path_nodes.points = [self.point_from_xy(x_m, y_m) for x_m, y_m in remaining_path]
             markers.markers.append(path_nodes)
 
             path_line = self.make_marker('frontier_path', 2, Marker.LINE_STRIP, now)
             path_line.scale.x = max(0.02, self.target_marker_scale_m * 0.25)
-            path_line.color.r = 0.1
-            path_line.color.g = 0.7
-            path_line.color.b = 1.0
-            path_line.color.a = 0.75
+            self.set_marker_color(path_line, line_color)
             path_line.points = [self.point_from_xy(x_m, y_m) for x_m, y_m in remaining_path]
             markers.markers.append(path_line)
 
@@ -832,10 +848,7 @@ class LidarOpenSpaceExplorer(Node):
         active.scale.x = self.target_marker_scale_m
         active.scale.y = self.target_marker_scale_m
         active.scale.z = self.target_marker_scale_m
-        active.color.r = 0.0
-        active.color.g = 1.0
-        active.color.b = 0.2
-        active.color.a = 1.0
+        self.set_marker_color(active, active_color)
         markers.markers.append(active)
 
         final = self.make_marker('frontier_goal', 4, Marker.CUBE, now)
@@ -846,10 +859,7 @@ class LidarOpenSpaceExplorer(Node):
         final.scale.x = self.target_marker_scale_m * 1.25
         final.scale.y = self.target_marker_scale_m * 1.25
         final.scale.z = self.target_marker_scale_m * 0.45
-        final.color.r = 1.0
-        final.color.g = 0.75
-        final.color.b = 0.0
-        final.color.a = 0.95
+        self.set_marker_color(final, goal_color)
         markers.markers.append(final)
 
         if self.frontier_failure_memory_enabled and self.suppressed_frontiers:
@@ -869,6 +879,12 @@ class LidarOpenSpaceExplorer(Node):
 
         self.marker_pub.publish(markers)
 
+    def set_marker_color(self, marker: Marker, color: tuple[float, float, float, float]):
+        marker.color.r = color[0]
+        marker.color.g = color[1]
+        marker.color.b = color[2]
+        marker.color.a = color[3]
+
     def make_marker(self, namespace: str, marker_id: int, marker_type: int, stamp):
         marker = Marker()
         marker.header.frame_id = self.map_frame
@@ -878,7 +894,9 @@ class LidarOpenSpaceExplorer(Node):
         marker.type = marker_type
         marker.action = Marker.ADD
         marker.pose.orientation.w = 1.0
-        marker.lifetime.sec = 2
+        # Keep targets visible in RViz until the explorer replaces or clears them.
+        marker.lifetime.sec = 0
+        marker.lifetime.nanosec = 0
         return marker
 
     def clear_target_markers(self):
