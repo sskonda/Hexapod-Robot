@@ -123,6 +123,16 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('frontier_blocked_clearance_margin_m', 0.05)
         self.declare_parameter('publish_target_markers', True)
         self.declare_parameter('target_marker_scale_m', 0.12)
+        self.declare_parameter('bug_recovery_enabled', True)
+        self.declare_parameter('bug_wall_side', 'auto')
+        self.declare_parameter('bug_forward_speed_mps', 0.012)
+        self.declare_parameter('bug_lateral_gain', 0.8)
+        self.declare_parameter('bug_desired_wall_distance_m', 0.32)
+        self.declare_parameter('bug_release_clearance_m', 0.45)
+        self.declare_parameter('bug_release_hold_sec', 1.0)
+        self.declare_parameter('bug_max_duration_sec', 15.0)
+        self.declare_parameter('bug_front_angle_deg', 30.0)
+        self.declare_parameter('bug_side_angle_deg', 75.0)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.map_topic = str(self.get_parameter('map_topic').value)
@@ -139,6 +149,10 @@ class LidarOpenSpaceExplorer(Node):
         self.current_path_index = 0
         self.last_frontier_plan_time = None
         self.suppressed_frontiers = []
+        self.bug_active = False
+        self.bug_wall_side = 1
+        self.bug_started_at_sec = 0.0
+        self.bug_clear_since_sec = None
 
         self._load_parameters()
 
@@ -271,6 +285,39 @@ class LidarOpenSpaceExplorer(Node):
             0.02,
             float(self.get_parameter('target_marker_scale_m').value),
         )
+        self.bug_recovery_enabled = as_bool(
+            self.get_parameter('bug_recovery_enabled').value
+        )
+        self.bug_wall_side_mode = self.normalized_bug_wall_side(
+            str(self.get_parameter('bug_wall_side').value)
+        )
+        self.bug_forward_speed_mps = max(
+            0.0,
+            float(self.get_parameter('bug_forward_speed_mps').value),
+        )
+        self.bug_lateral_gain = max(0.0, float(self.get_parameter('bug_lateral_gain').value))
+        self.bug_desired_wall_distance_m = max(
+            self.obstacle_stop_distance_m,
+            float(self.get_parameter('bug_desired_wall_distance_m').value),
+        )
+        self.bug_release_clearance_m = max(
+            self.obstacle_stop_distance_m,
+            float(self.get_parameter('bug_release_clearance_m').value),
+        )
+        self.bug_release_hold_sec = max(
+            0.0,
+            float(self.get_parameter('bug_release_hold_sec').value),
+        )
+        self.bug_max_duration_sec = max(
+            0.0,
+            float(self.get_parameter('bug_max_duration_sec').value),
+        )
+        self.bug_front_angle_rad = math.radians(
+            max(1.0, float(self.get_parameter('bug_front_angle_deg').value))
+        )
+        self.bug_side_angle_rad = math.radians(
+            max(10.0, min(120.0, float(self.get_parameter('bug_side_angle_deg').value)))
+        )
 
     def normalized_mode(self, value: str) -> str:
         mode = value.strip().lower()
@@ -291,6 +338,16 @@ class LidarOpenSpaceExplorer(Node):
             )
             return 'bfs'
         return strategy
+
+    def normalized_bug_wall_side(self, value: str) -> str:
+        side = value.strip().lower()
+        if side not in ('auto', 'left', 'right'):
+            self.get_logger().warn(
+                f'Unsupported bug_wall_side "{value}". Falling back to auto.',
+                throttle_duration_sec=2.0,
+            )
+            return 'auto'
+        return side
 
     def parameter_update_callback(self, parameters):
         for parameter in parameters:
@@ -342,6 +399,36 @@ class LidarOpenSpaceExplorer(Node):
                     self.clear_target_markers()
             elif parameter.name == 'target_marker_scale_m':
                 self.target_marker_scale_m = max(0.02, float(parameter.value))
+            elif parameter.name == 'bug_recovery_enabled':
+                self.bug_recovery_enabled = as_bool(parameter.value)
+                if not self.bug_recovery_enabled:
+                    self.stop_bug_recovery()
+            elif parameter.name == 'bug_wall_side':
+                self.bug_wall_side_mode = self.normalized_bug_wall_side(str(parameter.value))
+            elif parameter.name == 'bug_forward_speed_mps':
+                self.bug_forward_speed_mps = max(0.0, float(parameter.value))
+            elif parameter.name == 'bug_lateral_gain':
+                self.bug_lateral_gain = max(0.0, float(parameter.value))
+            elif parameter.name == 'bug_desired_wall_distance_m':
+                self.bug_desired_wall_distance_m = max(
+                    self.obstacle_stop_distance_m,
+                    float(parameter.value),
+                )
+            elif parameter.name == 'bug_release_clearance_m':
+                self.bug_release_clearance_m = max(
+                    self.obstacle_stop_distance_m,
+                    float(parameter.value),
+                )
+            elif parameter.name == 'bug_release_hold_sec':
+                self.bug_release_hold_sec = max(0.0, float(parameter.value))
+            elif parameter.name == 'bug_max_duration_sec':
+                self.bug_max_duration_sec = max(0.0, float(parameter.value))
+            elif parameter.name == 'bug_front_angle_deg':
+                self.bug_front_angle_rad = math.radians(max(1.0, float(parameter.value)))
+            elif parameter.name == 'bug_side_angle_deg':
+                self.bug_side_angle_rad = math.radians(
+                    max(10.0, min(120.0, float(parameter.value)))
+                )
             if parameter.name == 'base_frame':
                 self.base_frame = str(parameter.value)
             elif parameter.name == 'enabled':
@@ -553,9 +640,18 @@ class LidarOpenSpaceExplorer(Node):
                     and scan_clearance < self.obstacle_stop_distance_m
                 )
             if blocked:
+                if self.bug_recovery_enabled:
+                    bug_cmd = self.bug_recovery_command(body_angle)
+                    if bug_cmd is not None:
+                        return bug_cmd
                 self.suppress_current_frontier('scan_blocked')
                 self.clear_target_markers()
                 return cmd
+
+            if self.bug_active:
+                bug_cmd = self.bug_recovery_command(body_angle)
+                if bug_cmd is not None:
+                    return bug_cmd
 
             speed = self.speed_for_clearance(
                 scan_clearance if scan_clearance is not None else self.obstacle_slow_distance_m
@@ -585,6 +681,122 @@ class LidarOpenSpaceExplorer(Node):
             return cmd
 
         return cmd
+
+    def bug_recovery_command(self, target_body_angle_rad: float):
+        if self.latest_scan is None:
+            return None
+
+        if not self.bug_active:
+            self.start_bug_recovery(target_body_angle_rad)
+
+        if self.bug_max_duration_sec > 0.0:
+            age_sec = self.now_sec() - self.bug_started_at_sec
+            if age_sec > self.bug_max_duration_sec:
+                self.get_logger().info(
+                    'Bug recovery timed out; rejecting current frontier path.',
+                    throttle_duration_sec=2.0,
+                )
+                self.stop_bug_recovery()
+                return None
+
+        if self.direct_path_released(target_body_angle_rad):
+            self.stop_bug_recovery()
+            return None
+
+        cmd = Twist()
+        front_clearance = self.min_scan_range_near_body_angle(0.0, self.bug_front_angle_rad)
+        side_angle = self.bug_wall_side * self.bug_side_angle_rad
+        side_clearance = self.min_scan_range_near_body_angle(side_angle, self.direction_window_rad)
+
+        forward_speed = min(self.bug_forward_speed_mps, self.max_speed_mps)
+        if front_clearance is not None and front_clearance < self.obstacle_stop_distance_m:
+            forward_speed = 0.0
+
+        if side_clearance is None:
+            lateral_speed = self.bug_wall_side * self.max_lateral_speed_mps
+        else:
+            wall_error_m = side_clearance - self.bug_desired_wall_distance_m
+            lateral_speed = self.bug_wall_side * self.bug_lateral_gain * wall_error_m
+            lateral_speed = clamp(
+                lateral_speed,
+                -self.max_lateral_speed_mps,
+                self.max_lateral_speed_mps,
+            )
+
+        target_bias = clamp(
+            math.sin(target_body_angle_rad) * self.max_lateral_speed_mps * 0.35,
+            -self.max_lateral_speed_mps * 0.35,
+            self.max_lateral_speed_mps * 0.35,
+        )
+        cmd.linear.x = forward_speed
+        cmd.linear.y = clamp(
+            lateral_speed + target_bias,
+            -self.max_lateral_speed_mps,
+            self.max_lateral_speed_mps,
+        )
+
+        if not self.crab_motion:
+            cmd.angular.z = clamp(
+                self.bug_wall_side * self.max_turn_rate_rad_s,
+                -self.max_turn_rate_rad_s,
+                self.max_turn_rate_rad_s,
+            )
+            cmd.linear.y = 0.0
+
+        return cmd
+
+    def start_bug_recovery(self, target_body_angle_rad: float):
+        self.bug_active = True
+        self.bug_started_at_sec = self.now_sec()
+        self.bug_clear_since_sec = None
+        self.bug_wall_side = self.select_bug_wall_side(target_body_angle_rad)
+        side_name = 'left' if self.bug_wall_side > 0 else 'right'
+        self.get_logger().info(
+            f'Bug recovery started, following {side_name} wall.',
+            throttle_duration_sec=2.0,
+        )
+
+    def stop_bug_recovery(self):
+        self.bug_active = False
+        self.bug_clear_since_sec = None
+
+    def select_bug_wall_side(self, target_body_angle_rad: float) -> int:
+        if self.bug_wall_side_mode == 'left':
+            return 1
+        if self.bug_wall_side_mode == 'right':
+            return -1
+
+        left_clearance = self.min_scan_range_near_body_angle(
+            self.bug_side_angle_rad,
+            self.direction_window_rad,
+        )
+        right_clearance = self.min_scan_range_near_body_angle(
+            -self.bug_side_angle_rad,
+            self.direction_window_rad,
+        )
+        left = left_clearance if left_clearance is not None else self.max_usable_range_m
+        right = right_clearance if right_clearance is not None else self.max_usable_range_m
+        if abs(left - right) > 0.05:
+            return 1 if left > right else -1
+        return 1 if target_body_angle_rad >= 0.0 else -1
+
+    def direct_path_released(self, target_body_angle_rad: float) -> bool:
+        clearance = self.min_scan_range_near_body_angle(
+            target_body_angle_rad,
+            self.direction_window_rad,
+        )
+        if clearance is None or clearance < self.bug_release_clearance_m:
+            self.bug_clear_since_sec = None
+            return False
+
+        if self.bug_release_hold_sec <= 0.0:
+            return True
+
+        now_sec = self.now_sec()
+        if self.bug_clear_since_sec is None:
+            self.bug_clear_since_sec = now_sec
+            return False
+        return (now_sec - self.bug_clear_since_sec) >= self.bug_release_hold_sec
 
     def publish_frontier_markers(self, active_waypoint: tuple[float, float]):
         if not self.publish_target_markers or self.current_frontier is None:
@@ -687,6 +899,7 @@ class LidarOpenSpaceExplorer(Node):
 
     def plan_frontier_target(self):
         self.prune_suppressed_frontiers()
+        self.stop_bug_recovery()
         self.current_frontier = self.find_frontier_target()
         self.current_path_index = 0
         self.last_frontier_plan_time = self.get_clock().now()
@@ -708,6 +921,7 @@ class LidarOpenSpaceExplorer(Node):
         return True
 
     def clear_current_frontier(self):
+        self.stop_bug_recovery()
         self.current_frontier = None
         self.current_path_index = 0
         self.last_frontier_plan_time = self.get_clock().now()

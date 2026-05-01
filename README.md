@@ -134,6 +134,11 @@ The current frontier path and active local target are published as RViz markers
 on `/explorer/targets`. Add a `MarkerArray` display in RViz to see the blue
 waypoint nodes, green active target, and yellow final frontier goal.
 
+When a direct waypoint is blocked by live LiDAR, the explorer can use a simple
+Bug-style recovery to follow the obstacle boundary and resume the frontier path
+once the direct route opens again. This is enabled by default with
+`explorer_bug_recovery_enabled:=true`.
+
 Useful tuning knobs:
 
 ```bash
@@ -142,7 +147,8 @@ ros2 launch hexapod_bringup exploration_stack.launch.py \
   explorer_max_speed_mps:=0.025 \
   explorer_frontier_min_clearance_m:=0.15 \
   explorer_obstacle_stop_distance_m:=0.24 \
-  explorer_desired_clearance_m:=0.40
+  explorer_desired_clearance_m:=0.40 \
+  explorer_bug_wall_side:=auto
 ```
 
 Use `explorer_mode:=reactive` to ignore `/map` and return to the simpler

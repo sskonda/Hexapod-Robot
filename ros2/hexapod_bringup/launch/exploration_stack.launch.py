@@ -67,6 +67,14 @@ def generate_launch_description():
     )
     explorer_publish_target_markers = LaunchConfiguration('explorer_publish_target_markers')
     explorer_target_marker_scale_m = LaunchConfiguration('explorer_target_marker_scale_m')
+    explorer_bug_recovery_enabled = LaunchConfiguration('explorer_bug_recovery_enabled')
+    explorer_bug_wall_side = LaunchConfiguration('explorer_bug_wall_side')
+    explorer_bug_forward_speed_mps = LaunchConfiguration('explorer_bug_forward_speed_mps')
+    explorer_bug_desired_wall_distance_m = LaunchConfiguration(
+        'explorer_bug_desired_wall_distance_m'
+    )
+    explorer_bug_release_clearance_m = LaunchConfiguration('explorer_bug_release_clearance_m')
+    explorer_bug_max_duration_sec = LaunchConfiguration('explorer_bug_max_duration_sec')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -239,6 +247,36 @@ def generate_launch_description():
             default_value='0.12',
             description='Marker size for RViz frontier target nodes.',
         ),
+        DeclareLaunchArgument(
+            'explorer_bug_recovery_enabled',
+            default_value='true',
+            description='Use simple Bug-style wall following when the direct frontier waypoint is blocked.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_bug_wall_side',
+            default_value='auto',
+            description='Bug wall-follow side: "auto", "left", or "right".',
+        ),
+        DeclareLaunchArgument(
+            'explorer_bug_forward_speed_mps',
+            default_value='0.012',
+            description='Forward speed while circumnavigating an obstacle in Bug recovery.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_bug_desired_wall_distance_m',
+            default_value='0.32',
+            description='Approximate side distance to hold from the followed wall during Bug recovery.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_bug_release_clearance_m',
+            default_value='0.45',
+            description='Direct waypoint clearance needed before leaving Bug recovery.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_bug_max_duration_sec',
+            default_value='15.0',
+            description='Maximum time spent in Bug recovery before rejecting the current frontier path.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(pose_stack_launch)),
             launch_arguments={
@@ -293,6 +331,12 @@ def generate_launch_description():
                 ),
                 'publish_target_markers': explorer_publish_target_markers,
                 'target_marker_scale_m': explorer_target_marker_scale_m,
+                'bug_recovery_enabled': explorer_bug_recovery_enabled,
+                'bug_wall_side': explorer_bug_wall_side,
+                'bug_forward_speed_mps': explorer_bug_forward_speed_mps,
+                'bug_desired_wall_distance_m': explorer_bug_desired_wall_distance_m,
+                'bug_release_clearance_m': explorer_bug_release_clearance_m,
+                'bug_max_duration_sec': explorer_bug_max_duration_sec,
             }],
         ),
     ])
