@@ -108,6 +108,12 @@ def generate_launch_description():
     explorer_frontier_standoff_distance_m = LaunchConfiguration(
         'explorer_frontier_standoff_distance_m'
     )
+    frontier_rear_reject_angle_deg = LaunchConfiguration(
+        'frontier_rear_reject_angle_deg'
+    )
+    explorer_frontier_rear_reject_angle_deg = LaunchConfiguration(
+        'explorer_frontier_rear_reject_angle_deg'
+    )
     explorer_max_projection_attempts_per_frontier = LaunchConfiguration(
         'explorer_max_projection_attempts_per_frontier'
     )
@@ -464,6 +470,16 @@ def generate_launch_description():
             description='Preferred distance back into known free space from a frontier boundary.',
         ),
         DeclareLaunchArgument(
+            'frontier_rear_reject_angle_deg',
+            default_value='115.0',
+            description='Compatibility alias for explorer_frontier_rear_reject_angle_deg.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_rear_reject_angle_deg',
+            default_value=frontier_rear_reject_angle_deg,
+            description='Body-frame angle beyond which frontier waypoints are treated as behind the robot.',
+        ),
+        DeclareLaunchArgument(
             'explorer_max_projection_attempts_per_frontier',
             default_value='50',
             description='Maximum known-free viewpoint candidates to try for each frontier cluster.',
@@ -671,6 +687,9 @@ def generate_launch_description():
                     explorer_frontier_goal_projection_radius_m
                 ),
                 'frontier_standoff_distance_m': explorer_frontier_standoff_distance_m,
+                'frontier_rear_reject_angle_deg': (
+                    explorer_frontier_rear_reject_angle_deg
+                ),
                 'max_projection_attempts_per_frontier': (
                     explorer_max_projection_attempts_per_frontier
                 ),

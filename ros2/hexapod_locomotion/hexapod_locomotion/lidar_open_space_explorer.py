@@ -1094,11 +1094,18 @@ class LidarOpenSpaceExplorer(Node):
 
         if self.exploration_mode == 'frontier':
             frontier_cmd = self.frontier_control()
-            if frontier_cmd is not None:
+            if frontier_cmd is not None and self.cmd_is_nonzero(frontier_cmd):
                 self.publish_cmd(frontier_cmd)
                 return
-            self.log_delay_reason(
-                'No map frontier accepted; using best LiDAR heading this cycle.'
+            if frontier_cmd is not None:
+                self.get_logger().info(
+                    'Frontier returned a zero command; using simple LiDAR heading.',
+                    throttle_duration_sec=4.0,
+                )
+            self.log_delay_reason('using_reactive_heading')
+            self.get_logger().info(
+                'No frontier selected; using simple LiDAR heading. reason=using_reactive_heading',
+                throttle_duration_sec=4.0,
             )
 
         best = self.choose_best_direction(self.latest_scan)
@@ -1196,7 +1203,7 @@ class LidarOpenSpaceExplorer(Node):
                     f'no /map for {wait_sec:.1f}s; falling back to scan-reactive motion'
                 )
                 return None
-            return cmd
+            return None
 
         map_age_sec = self.map_age_sec()
         if map_age_sec > self.map_timeout_sec:
@@ -1239,7 +1246,7 @@ class LidarOpenSpaceExplorer(Node):
                         'using scan-reactive fallback'
                     )
                     return None
-                return cmd
+                return None
 
             if self.last_frontier_search_error == 'tf_unavailable':
                 self.pause_frontier_progress('tf_unavailable')
@@ -1255,7 +1262,7 @@ class LidarOpenSpaceExplorer(Node):
                     )
                     return None
                 self.log_delay_reason('waiting for TF pose transform from map to robot body')
-                return cmd
+                return None
 
             self.pause_frontier_progress('no_current_frontier')
             self.log_delay_reason(
@@ -1301,7 +1308,7 @@ class LidarOpenSpaceExplorer(Node):
                         f'pose TF unavailable for {wait_sec:.1f}s; falling back to scan-reactive motion'
                     )
                     return None
-                return cmd
+                return None
 
             if not map_is_stale:
                 self.clear_frontier_wait()
@@ -1378,7 +1385,7 @@ class LidarOpenSpaceExplorer(Node):
                         and stale_map_wait_sec >= self.frontier_wait_before_reactive_sec
                     ):
                         return None
-                    return cmd
+                    return None
                 if self.bug_recovery_enabled:
                     self.log_delay_reason('frontier path blocked; trying Bug recovery')
                     bug_cmd = self.bug_recovery_command(body_angle)
@@ -1564,7 +1571,7 @@ class LidarOpenSpaceExplorer(Node):
                 and stale_map_wait_sec >= self.frontier_wait_before_reactive_sec
             ):
                 return None
-            return cmd
+            return None
 
         return None
 
@@ -2581,6 +2588,7 @@ class LidarOpenSpaceExplorer(Node):
             transform.transform.translation.y,
         )
         if start is None:
+            self.last_frontier_search_error = 'robot_pose_outside_map'
             return None
 
         strict_planner = self.build_planner_grid(grid)
@@ -2593,6 +2601,7 @@ class LidarOpenSpaceExplorer(Node):
         )
         if strict_target is not None:
             return strict_target
+        strict_error = self.last_frontier_search_error
 
         relaxed_clearance_m = max(0.01, self.obstacle_stop_distance_m * 0.5)
         relaxed_planner = self.build_planner_grid(
@@ -2612,7 +2621,20 @@ class LidarOpenSpaceExplorer(Node):
                 'Using relaxed frontier target because no strict target was available.',
                 throttle_duration_sec=2.0,
             )
-        return relaxed_target
+            if relaxed_target.unknown_visible_cells < self.unknown_visibility_min_cells:
+                self.get_logger().info(
+                    'Frontier selection diagnostic: only_low_info_candidates_selected_relaxed.',
+                    throttle_duration_sec=2.0,
+                )
+            return relaxed_target
+
+        if not self.last_frontier_search_error:
+            self.last_frontier_search_error = strict_error or 'all_paths_failed'
+        self.get_logger().info(
+            f'Frontier selection returned None: {self.last_frontier_search_error}.',
+            throttle_duration_sec=3.0,
+        )
+        return None
 
     def find_frontier_target_in_grid(
         self,
@@ -2664,6 +2686,11 @@ class LidarOpenSpaceExplorer(Node):
             min_cluster_size=1 if relaxed else self.frontier_min_area_cells,
             debug_tiny=not relaxed,
         )
+        if not frontier_components:
+            self.last_frontier_search_error = (
+                'no_frontier_cells' if relaxed else 'only_tiny_frontiers'
+            )
+            return None
         frontier_components.sort(
             key=lambda component: self.component_distance_sq_to_grid_cell(
                 component,
@@ -2761,12 +2788,6 @@ class LidarOpenSpaceExplorer(Node):
             area_cells = len(component)
             unknown_region_cells = self.count_adjacent_unknown_region_cells(component, planner)
             information_area_cells = max(area_cells, unknown_region_cells)
-            if candidate.unknown_visible_cells < self.unknown_visibility_min_cells:
-                self.log_frontier_candidate_note(
-                    grid,
-                    component,
-                    'low_information_gain_but_kept',
-                )
             score = (
                 3.0 * path_length_m
                 - 0.01 * min(candidate.unknown_visible_cells, 500)
@@ -2776,6 +2797,12 @@ class LidarOpenSpaceExplorer(Node):
                 + rear_penalty
             )
             if score < best_score:
+                if candidate.unknown_visible_cells < self.unknown_visibility_min_cells:
+                    self.log_frontier_candidate_note(
+                        grid,
+                        component,
+                        'low_information_gain_but_kept',
+                    )
                 best_score = score
                 best_target = FrontierTarget(
                     x_m=target_world[0],
@@ -2793,10 +2820,7 @@ class LidarOpenSpaceExplorer(Node):
                 )
 
         if best_target is None and rejected_count:
-            self.get_logger().info(
-                f'Rejected {rejected_count} frontier cluster(s) as debug-only; no safe viewpoint found.',
-                throttle_duration_sec=2.0,
-            )
+            self.last_frontier_search_error = 'all_paths_failed'
         return best_target
 
     def build_planner_grid(
@@ -3168,12 +3192,6 @@ class LidarOpenSpaceExplorer(Node):
                 no_path_count += 1
                 continue
             unknown_visible = self.count_visible_unknown_cells(grid, planner, index)
-            if unknown_visible < self.unknown_visibility_min_cells:
-                self.log_frontier_candidate_note(
-                    grid,
-                    component,
-                    'low_information_gain_but_kept',
-                )
             standoff_penalty = abs(distance_to_frontier_cells - standoff_cells)
             path_length_m = effective_cost * planner.resolution
             score = (
