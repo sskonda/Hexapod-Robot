@@ -347,7 +347,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_side_stop_distance_m',
-            default_value='0.38',
+            default_value='0.20',
             description='Minimum allowed left/right wall clearance before sliding away.',
         ),
         DeclareLaunchArgument(
@@ -412,12 +412,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_path_clearance_m',
-            default_value='0.40',
+            default_value='0.22',
             description='Required clearance for traversed BFS/DFS path cells.',
         ),
         DeclareLaunchArgument(
             'explorer_goal_clearance_m',
-            default_value='0.33',
+            default_value='0.20',
             description='Softer clearance for final known-free viewpoint goals near doorways.',
         ),
         DeclareLaunchArgument(
