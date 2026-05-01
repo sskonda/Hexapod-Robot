@@ -57,8 +57,6 @@ class DirectionScore:
 class FrontierTarget:
     x_m: float
     y_m: float
-    info_x_m: float
-    info_y_m: float
     grid_x: int
     grid_y: int
     searched_cells: int
@@ -106,19 +104,11 @@ class PlannerGrid:
 class ViewpointCandidate:
     index: int
     parent_index: int
-    distance_to_frontier_m: float
+    distance_to_frontier_cells: float
     path_length_m: float
     clearance_m: float
     unknown_visible_cells: int
     score: float
-
-
-@dataclass(frozen=True)
-class FrontierDebugPoint:
-    x_m: float
-    y_m: float
-    reason: str = ''
-    score: float = 0.0
 
 
 class LidarOpenSpaceExplorer(Node):
@@ -184,11 +174,6 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('max_projection_attempts_per_frontier', 50)
         self.declare_parameter('unknown_visibility_radius_m', 1.20)
         self.declare_parameter('unknown_visibility_min_cells', 1)
-        self.declare_parameter('visible_unknown_weight', 0.08)
-        self.declare_parameter('frontier_area_weight', 0.05)
-        self.declare_parameter('clearance_weight', 2.0)
-        self.declare_parameter('path_cost_weight', 0.75)
-        self.declare_parameter('standoff_error_weight', 0.35)
         self.declare_parameter('suppress_only_after_motion_failure', True)
         self.declare_parameter('frontier_failure_memory_enabled', True)
         self.declare_parameter('frontier_suppression_duration_sec', 5.0)
@@ -235,8 +220,6 @@ class LidarOpenSpaceExplorer(Node):
         self.suppressed_frontiers = []
         self.rejected_frontiers = []
         self.recent_frontier_paths = []
-        self.frontier_info_candidates_debug = []
-        self.accepted_viewpoints_debug = []
         self.bug_active = False
         self.bug_wall_side = 1
         self.bug_started_at_sec = 0.0
@@ -444,26 +427,6 @@ class LidarOpenSpaceExplorer(Node):
         self.unknown_visibility_min_cells = max(
             0,
             int(self.get_parameter('unknown_visibility_min_cells').value),
-        )
-        self.visible_unknown_weight = max(
-            0.0,
-            float(self.get_parameter('visible_unknown_weight').value),
-        )
-        self.frontier_area_weight = max(
-            0.0,
-            float(self.get_parameter('frontier_area_weight').value),
-        )
-        self.clearance_weight = max(
-            0.0,
-            float(self.get_parameter('clearance_weight').value),
-        )
-        self.path_cost_weight = max(
-            0.0,
-            float(self.get_parameter('path_cost_weight').value),
-        )
-        self.standoff_error_weight = max(
-            0.0,
-            float(self.get_parameter('standoff_error_weight').value),
         )
         self.suppress_only_after_motion_failure = as_bool(
             self.get_parameter('suppress_only_after_motion_failure').value
@@ -1298,7 +1261,6 @@ class LidarOpenSpaceExplorer(Node):
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
         markers.markers.append(self.delete_all_marker())
-        self.append_frontier_candidate_markers(markers, now)
         if self.bug_active:
             node_color = (0.45, 0.24, 0.08, 0.95)
             line_color = (0.55, 0.30, 0.10, 0.85)
@@ -1326,7 +1288,7 @@ class LidarOpenSpaceExplorer(Node):
             path_line.points = [self.point_from_xy(x_m, y_m) for x_m, y_m in remaining_path]
             markers.markers.append(path_line)
 
-        active = self.make_marker('path_waypoint_active', 3, Marker.SPHERE, now)
+        active = self.make_marker('active_target', 3, Marker.SPHERE, now)
         active.pose.position = self.point_from_xy(active_waypoint[0], active_waypoint[1])
         active.scale.x = self.target_marker_scale_m
         active.scale.y = self.target_marker_scale_m
@@ -1334,7 +1296,7 @@ class LidarOpenSpaceExplorer(Node):
         self.set_marker_color(active, active_color)
         markers.markers.append(active)
 
-        final = self.make_marker('selected_final_target', 4, Marker.CUBE, now)
+        final = self.make_marker('frontier_goal', 4, Marker.CUBE, now)
         final.pose.position = self.point_from_xy(
             self.current_frontier.x_m,
             self.current_frontier.y_m,
@@ -1345,16 +1307,16 @@ class LidarOpenSpaceExplorer(Node):
         self.set_marker_color(final, goal_color)
         markers.markers.append(final)
 
-        info_target = self.make_marker('selected_info_target', 7, Marker.CYLINDER, now)
-        info_target.pose.position = self.point_from_xy(
-            self.current_frontier.info_x_m,
-            self.current_frontier.info_y_m,
+        viewpoint = self.make_marker('reachable_viewpoint', 7, Marker.CYLINDER, now)
+        viewpoint.pose.position = self.point_from_xy(
+            self.current_frontier.x_m,
+            self.current_frontier.y_m,
         )
-        info_target.scale.x = self.target_marker_scale_m * 1.7
-        info_target.scale.y = self.target_marker_scale_m * 1.7
-        info_target.scale.z = self.target_marker_scale_m * 0.25
-        self.set_marker_color(info_target, (0.0, 0.85, 1.0, 0.75))
-        markers.markers.append(info_target)
+        viewpoint.scale.x = self.target_marker_scale_m * 1.7
+        viewpoint.scale.y = self.target_marker_scale_m * 1.7
+        viewpoint.scale.z = self.target_marker_scale_m * 0.25
+        self.set_marker_color(viewpoint, (0.0, 0.85, 1.0, 0.75))
+        markers.markers.append(viewpoint)
 
         self.append_frontier_memory_markers(markers, now)
 
@@ -1397,7 +1359,6 @@ class LidarOpenSpaceExplorer(Node):
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
         markers.markers.append(self.delete_all_marker())
-        self.append_frontier_candidate_markers(markers, now)
         self.append_frontier_memory_markers(markers, now)
         self.marker_pub.publish(markers)
 
@@ -1408,7 +1369,6 @@ class LidarOpenSpaceExplorer(Node):
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
         markers.markers.append(self.delete_all_marker())
-        self.append_frontier_candidate_markers(markers, now)
         self.append_frontier_memory_markers(markers, now)
 
         robot_pose = self.robot_pose_in_map()
@@ -1441,36 +1401,6 @@ class LidarOpenSpaceExplorer(Node):
             markers.markers.append(target)
 
         self.marker_pub.publish(markers)
-
-    def append_frontier_candidate_markers(self, markers: MarkerArray, now):
-        if self.frontier_info_candidates_debug:
-            info = self.make_marker('frontier_info_candidates', 10, Marker.SPHERE_LIST, now)
-            info.scale.x = self.target_marker_scale_m * 0.6
-            info.scale.y = self.target_marker_scale_m * 0.6
-            info.scale.z = self.target_marker_scale_m * 0.6
-            self.set_marker_color(info, (0.95, 0.2, 1.0, 0.7))
-            info.points = [
-                self.point_from_xy(candidate.x_m, candidate.y_m)
-                for candidate in self.frontier_info_candidates_debug
-            ]
-            markers.markers.append(info)
-
-        if self.accepted_viewpoints_debug:
-            viewpoints = self.make_marker(
-                'accepted_viewpoint_goals',
-                11,
-                Marker.CUBE_LIST,
-                now,
-            )
-            viewpoints.scale.x = self.target_marker_scale_m * 0.5
-            viewpoints.scale.y = self.target_marker_scale_m * 0.5
-            viewpoints.scale.z = self.target_marker_scale_m * 0.5
-            self.set_marker_color(viewpoints, (0.0, 0.9, 0.95, 0.75))
-            viewpoints.points = [
-                self.point_from_xy(candidate.x_m, candidate.y_m)
-                for candidate in self.accepted_viewpoints_debug
-            ]
-            markers.markers.append(viewpoints)
 
     def append_frontier_memory_markers(self, markers: MarkerArray, now):
         if self.suppressed_frontiers:
@@ -1535,10 +1465,8 @@ class LidarOpenSpaceExplorer(Node):
         self.current_path_index = 0
         self.reset_frontier_progress()
         self.get_logger().info(
-            f'New {self.search_strategy.upper()} frontier viewpoint: '
+            f'New {self.search_strategy.upper()} frontier target: '
             f'({self.current_frontier.x_m:.2f}, {self.current_frontier.y_m:.2f}) '
-            f'for info target ({self.current_frontier.info_x_m:.2f}, '
-            f'{self.current_frontier.info_y_m:.2f}), '
             f'area={self.current_frontier.frontier_area_cells} cells, '
             f'clearance={self.current_frontier.clearance_m:.2f} m, '
             f'visible_unknown={self.current_frontier.unknown_visible_cells}, '
@@ -2026,8 +1954,6 @@ class LidarOpenSpaceExplorer(Node):
         best_target = None
         best_score = -math.inf
         rejected_count = 0
-        self.frontier_info_candidates_debug = []
-        self.accepted_viewpoints_debug = []
         robot_yaw = quaternion_to_yaw(
             transform.transform.rotation.x,
             transform.transform.rotation.y,
@@ -2037,40 +1963,19 @@ class LidarOpenSpaceExplorer(Node):
 
         for component in frontier_components:
             component_center = self.component_center_world(grid, component)
-            area_cells = len(component)
-            self.frontier_info_candidates_debug.append(
-                FrontierDebugPoint(
-                    x_m=component_center[0],
-                    y_m=component_center[1],
-                    score=float(area_cells),
-                )
-            )
             if self.frontier_is_suppressed(component_center[0], component_center[1]):
-                self.add_rejected_frontier_debug(grid, component, 'suppressed_memory')
                 continue
 
-            candidate, reject_reason, candidate_debug_points = self.project_frontier_component_to_goal(
+            candidate, reject_reason = self.project_frontier_component_to_goal(
                 grid,
                 planner,
                 component,
                 visited,
                 path_cost_cells,
             )
-            self.accepted_viewpoints_debug.extend(candidate_debug_points)
             if candidate is None:
                 rejected_count += 1
                 self.add_rejected_frontier_debug(grid, component, reject_reason)
-                if (
-                    self.frontier_failure_memory_enabled
-                    and self.frontier_suppression_duration_sec > 0.0
-                    and self.frontier_suppression_radius_m > 0.0
-                ):
-                    self.add_suppressed_frontier_area(
-                        component_center[0],
-                        component_center[1],
-                        self.now_sec() + self.frontier_suppression_duration_sec,
-                        reject_reason,
-                    )
                 continue
             target_index = candidate.index
             if candidate.parent_index >= 0 and parent[target_index] < 0:
@@ -2083,14 +1988,13 @@ class LidarOpenSpaceExplorer(Node):
             path = self.reconstruct_world_path(grid, parent, start_index, target_index)
             if not path or not self.path_indices_are_safe(grid, planner, parent, start_index, target_index):
                 rejected_count += 1
-                self.add_rejected_frontier_debug(grid, component, 'path_clearance_failed')
+                self.add_rejected_frontier_debug(grid, component, 'unsafe_path')
                 continue
             if self.frontier_path_is_suppressed(path):
-                self.add_rejected_frontier_debug(grid, component, 'suppressed_memory')
                 continue
             if self.frontier_path_recently_tried(path):
                 rejected_count += 1
-                self.add_rejected_frontier_debug(grid, component, 'recent_path_overlap')
+                self.add_rejected_frontier_debug(grid, component, 'recent_path')
                 continue
 
             target_x = target_index % width
@@ -2101,22 +2005,19 @@ class LidarOpenSpaceExplorer(Node):
             heading_change = abs(normalize_angle(math.atan2(dy, dx) - robot_yaw))
             path_length_m = path_cost_cells[target_index] * grid.info.resolution
             clearance_m = planner.clearance_m[target_index]
+            area_cells = len(component)
             score = (
-                self.visible_unknown_weight * candidate.unknown_visible_cells
-                + self.frontier_area_weight * area_cells
-                + self.clearance_weight * clearance_m
-                - self.path_cost_weight * path_length_m
-                - self.standoff_error_weight
-                * abs(candidate.distance_to_frontier_m - self.frontier_standoff_distance_m)
-                - 0.10 * heading_change
+                0.05 * area_cells
+                + 2.0 * min(clearance_m, 1.0)
+                + 0.08 * min(candidate.unknown_visible_cells, 50)
+                - 0.75 * path_length_m
+                - 0.35 * heading_change
             )
             if score > best_score:
                 best_score = score
                 best_target = FrontierTarget(
                     x_m=target_world[0],
                     y_m=target_world[1],
-                    info_x_m=component_center[0],
-                    info_y_m=component_center[1],
                     grid_x=target_x,
                     grid_y=target_y,
                     searched_cells=searched,
@@ -2298,11 +2199,6 @@ class LidarOpenSpaceExplorer(Node):
             self.frontier_standoff_distance_m / planner.resolution,
         )
         candidate_distances = {}
-        rejection_counts = {
-            'goal_clearance_failed': 0,
-            'path_clearance_failed': 0,
-            'low_visible_unknown': 0,
-        }
         for frontier_index in component:
             fx = frontier_index % width
             fy = frontier_index // width
@@ -2317,7 +2213,6 @@ class LidarOpenSpaceExplorer(Node):
                         continue
                     index = self.grid_index(nx, ny, width)
                     if not planner.goal_safe[index]:
-                        rejection_counts['goal_clearance_failed'] += 1
                         continue
                     candidate_distances[index] = min(
                         candidate_distances.get(index, math.inf),
@@ -2325,7 +2220,7 @@ class LidarOpenSpaceExplorer(Node):
                     )
 
         if not candidate_distances:
-            return None, 'goal_clearance_failed', []
+            return None, 'rejected: no safe projected viewpoint'
 
         candidates = []
         min_standoff_cells = max(1.0, standoff_cells * 0.25)
@@ -2334,7 +2229,6 @@ class LidarOpenSpaceExplorer(Node):
                 continue
             parent_index = self.reachable_goal_parent(index, planner, reachable)
             if parent_index < 0:
-                rejection_counts['path_clearance_failed'] += 1
                 continue
             effective_cost = path_cost_cells[index]
             if not math.isfinite(effective_cost):
@@ -2344,27 +2238,23 @@ class LidarOpenSpaceExplorer(Node):
                     width,
                 )
             if not math.isfinite(effective_cost):
-                rejection_counts['path_clearance_failed'] += 1
                 continue
             unknown_visible = self.count_visible_unknown_cells(grid, planner, index)
             if unknown_visible < self.unknown_visibility_min_cells:
-                rejection_counts['low_visible_unknown'] += 1
                 continue
-            distance_to_frontier_m = distance_to_frontier_cells * planner.resolution
+            standoff_penalty = abs(distance_to_frontier_cells - standoff_cells)
             path_length_m = effective_cost * planner.resolution
             score = (
-                self.visible_unknown_weight * unknown_visible
-                + self.frontier_area_weight * len(component)
-                + self.clearance_weight * planner.clearance_m[index]
-                - self.path_cost_weight * path_length_m
-                - self.standoff_error_weight
-                * abs(distance_to_frontier_m - self.frontier_standoff_distance_m)
+                0.18 * min(unknown_visible, 80)
+                + 2.0 * min(planner.clearance_m[index], 1.0)
+                - 0.50 * path_length_m
+                - 0.25 * standoff_penalty * planner.resolution
             )
             candidates.append(
                 ViewpointCandidate(
                     index=index,
                     parent_index=parent_index,
-                    distance_to_frontier_m=distance_to_frontier_m,
+                    distance_to_frontier_cells=distance_to_frontier_cells,
                     path_length_m=path_length_m,
                     clearance_m=planner.clearance_m[index],
                     unknown_visible_cells=unknown_visible,
@@ -2373,36 +2263,13 @@ class LidarOpenSpaceExplorer(Node):
             )
 
         if not candidates:
-            nonzero_reasons = [
-                reason for reason, count in rejection_counts.items() if count > 0
-            ]
-            if len(nonzero_reasons) > 1:
-                dominant_reason = 'no_projected_viewpoint'
-            elif len(nonzero_reasons) == 1:
-                dominant_reason = nonzero_reasons[0]
-            else:
-                dominant_reason = 'no_projected_viewpoint'
-            return None, dominant_reason, []
+            return None, 'rejected: no path or low information gain'
 
         candidates.sort(key=lambda item: item.score, reverse=True)
-        candidate_debug_points = []
         for candidate in candidates[: self.max_projection_attempts_per_frontier]:
-            world_x, world_y = self.grid_to_world(
-                grid,
-                candidate.index % width,
-                candidate.index // width,
-            )
-            candidate_debug_points.append(
-                FrontierDebugPoint(
-                    x_m=world_x,
-                    y_m=world_y,
-                    score=candidate.score,
-                )
-            )
-        if not candidate_debug_points:
-            return None, 'no_projected_viewpoint', []
+            return candidate, 'ok'
 
-        return candidates[0], 'ok', candidate_debug_points
+        return None, 'rejected: projection attempts exhausted'
 
     def reachable_goal_parent(
         self,
