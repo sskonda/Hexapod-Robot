@@ -47,6 +47,7 @@ def generate_launch_description():
     qr_image_topic = LaunchConfiguration('qr_image_topic')
     qr_show_rqt = LaunchConfiguration('qr_show_rqt')
     qr_republish_same_text = LaunchConfiguration('qr_republish_same_text')
+    qr_publish_annotated_image = LaunchConfiguration('qr_publish_annotated_image')
     qr_marker_topic = LaunchConfiguration('qr_marker_topic')
     qr_marker_state_topic = LaunchConfiguration('qr_marker_state_topic')
     cam_angle = LaunchConfiguration('cam_angle')
@@ -55,6 +56,8 @@ def generate_launch_description():
     explorer_mode = LaunchConfiguration('explorer_mode')
     strategy = LaunchConfiguration('strategy')
     explorer_reactive_fallback = LaunchConfiguration('explorer_reactive_fallback')
+    explorer_map_timeout_sec = LaunchConfiguration('explorer_map_timeout_sec')
+    explorer_scan_timeout_sec = LaunchConfiguration('explorer_scan_timeout_sec')
     explorer_max_speed_mps = LaunchConfiguration('explorer_max_speed_mps')
     explorer_min_speed_mps = LaunchConfiguration('explorer_min_speed_mps')
     explorer_obstacle_stop_distance_m = LaunchConfiguration(
@@ -291,6 +294,11 @@ def generate_launch_description():
             description='When true, publish repeated detections of the same QR text.',
         ),
         DeclareLaunchArgument(
+            'qr_publish_annotated_image',
+            default_value='false',
+            description='Publish annotated QR debug images. Disabled by default to reduce camera load.',
+        ),
+        DeclareLaunchArgument(
             'qr_marker_topic',
             default_value='/qr_code/markers',
             description='MarkerArray topic used for QR wall markers in the map frame.',
@@ -324,6 +332,16 @@ def generate_launch_description():
             'explorer_reactive_fallback',
             default_value='true',
             description='Fall back to scan-reactive motion when no usable frontier target is available.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_map_timeout_sec',
+            default_value='60.0',
+            description='Maximum age of /map before global replanning is considered stale. Stale maps pause replanning but should not suppress active frontiers.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_scan_timeout_sec',
+            default_value='2.0',
+            description='Maximum age of /scan before the explorer stops for obstacle safety.',
         ),
         DeclareLaunchArgument(
             'explorer_max_speed_mps',
@@ -588,6 +606,7 @@ def generate_launch_description():
                 'output_image_topic': qr_image_topic,
                 'show_rqt': qr_show_rqt,
                 'republish_same_text': qr_republish_same_text,
+                'publish_annotated_image': qr_publish_annotated_image,
             }.items(),
         ),
         Node(
@@ -622,6 +641,8 @@ def generate_launch_description():
                 'exploration_mode': explorer_mode,
                 'search_strategy': strategy,
                 'reactive_fallback': explorer_reactive_fallback,
+                'map_timeout_sec': explorer_map_timeout_sec,
+                'scan_timeout_sec': explorer_scan_timeout_sec,
                 'use_tf_for_scan_frame': explorer_use_tf_for_scan_frame,
                 'scan_yaw_offset_deg': explorer_scan_yaw_offset_deg,
                 'frontier_wait_before_reactive_sec': (

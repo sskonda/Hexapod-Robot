@@ -18,6 +18,7 @@ def generate_launch_description():
     text_topic = LaunchConfiguration('text_topic')
     output_image_topic = LaunchConfiguration('output_image_topic')
     republish_same_text = LaunchConfiguration('republish_same_text')
+    publish_annotated_image = LaunchConfiguration('publish_annotated_image')
     processing_fps = LaunchConfiguration('processing_fps')
     output_image_width = LaunchConfiguration('output_image_width')
     output_image_height = LaunchConfiguration('output_image_height')
@@ -80,6 +81,11 @@ def generate_launch_description():
             description='When true, publish repeated detections of the same QR text.',
         ),
         DeclareLaunchArgument(
+            'publish_annotated_image',
+            default_value='false',
+            description='Publish annotated QR debug images.',
+        ),
+        DeclareLaunchArgument(
             'processing_fps',
             default_value='10.0',
             description='Maximum QR processing rate.',
@@ -122,7 +128,10 @@ def generate_launch_description():
                 'image_topic': image_topic,
                 'text_topic': text_topic,
                 'annotated_image_topic': output_image_topic,
-                'publish_annotated_image': True,
+                'publish_annotated_image': ParameterValue(
+                    publish_annotated_image,
+                    value_type=bool,
+                ),
                 'republish_same_text': ParameterValue(
                     republish_same_text,
                     value_type=bool,
