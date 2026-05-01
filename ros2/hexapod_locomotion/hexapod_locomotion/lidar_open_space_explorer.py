@@ -61,6 +61,7 @@ class FrontierTarget:
     grid_y: int
     searched_cells: int
     path: tuple[tuple[float, float], ...]
+    target_reason: str = 'frontier'
     frontier_cells: tuple[int, ...] = ()
     frontier_area_cells: int = 0
     clearance_m: float = 0.0
@@ -173,8 +174,12 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('max_projection_attempts_per_frontier', 50)
         self.declare_parameter('unknown_visibility_radius_m', 1.20)
         self.declare_parameter('unknown_visibility_min_cells', 1)
+        self.declare_parameter('visited_radius_m', 0.25)
+        self.declare_parameter('unvisited_goal_min_distance_m', 0.35)
+        self.declare_parameter('unvisited_goal_max_distance_m', 3.0)
+        self.declare_parameter('unvisited_goal_tolerance_m', 0.18)
         self.declare_parameter('suppress_only_after_motion_failure', True)
-        self.declare_parameter('frontier_failure_memory_enabled', True)
+        self.declare_parameter('frontier_failure_memory_enabled', False)
         self.declare_parameter('frontier_suppression_duration_sec', 45.0)
         self.declare_parameter('frontier_suppression_radius_m', 0.45)
         self.declare_parameter('frontier_blocked_clearance_margin_m', 0.05)
@@ -217,6 +222,8 @@ class LidarOpenSpaceExplorer(Node):
         self.suppressed_frontiers = []
         self.rejected_frontiers = []
         self.recent_frontier_paths = []
+        self.visited_cells = bytearray()
+        self.visited_map_signature = None
         self.bug_active = False
         self.bug_wall_side = 1
         self.bug_started_at_sec = 0.0
@@ -390,6 +397,22 @@ class LidarOpenSpaceExplorer(Node):
         self.unknown_visibility_min_cells = max(
             0,
             int(self.get_parameter('unknown_visibility_min_cells').value),
+        )
+        self.visited_radius_m = max(
+            0.0,
+            float(self.get_parameter('visited_radius_m').value),
+        )
+        self.unvisited_goal_min_distance_m = max(
+            0.0,
+            float(self.get_parameter('unvisited_goal_min_distance_m').value),
+        )
+        self.unvisited_goal_max_distance_m = max(
+            self.unvisited_goal_min_distance_m,
+            float(self.get_parameter('unvisited_goal_max_distance_m').value),
+        )
+        self.unvisited_goal_tolerance_m = max(
+            0.03,
+            float(self.get_parameter('unvisited_goal_tolerance_m').value),
         )
         self.suppress_only_after_motion_failure = as_bool(
             self.get_parameter('suppress_only_after_motion_failure').value
@@ -567,6 +590,21 @@ class LidarOpenSpaceExplorer(Node):
                 )
             elif parameter.name == 'unknown_visibility_min_cells':
                 self.unknown_visibility_min_cells = max(0, int(parameter.value))
+            elif parameter.name == 'visited_radius_m':
+                self.visited_radius_m = max(0.0, float(parameter.value))
+            elif parameter.name == 'unvisited_goal_min_distance_m':
+                self.unvisited_goal_min_distance_m = max(0.0, float(parameter.value))
+                self.unvisited_goal_max_distance_m = max(
+                    self.unvisited_goal_min_distance_m,
+                    self.unvisited_goal_max_distance_m,
+                )
+            elif parameter.name == 'unvisited_goal_max_distance_m':
+                self.unvisited_goal_max_distance_m = max(
+                    self.unvisited_goal_min_distance_m,
+                    float(parameter.value),
+                )
+            elif parameter.name == 'unvisited_goal_tolerance_m':
+                self.unvisited_goal_tolerance_m = max(0.03, float(parameter.value))
             elif parameter.name == 'suppress_only_after_motion_failure':
                 self.suppress_only_after_motion_failure = as_bool(parameter.value)
             elif parameter.name == 'frontier_failure_memory_enabled':
@@ -718,6 +756,8 @@ class LidarOpenSpaceExplorer(Node):
     def map_callback(self, msg: OccupancyGrid):
         self.latest_map = msg
         self.latest_map_time = self.get_clock().now()
+        if self.ensure_visited_grid(msg):
+            self.clear_current_frontier()
 
     def control_loop(self):
         cmd = Twist()
@@ -740,12 +780,13 @@ class LidarOpenSpaceExplorer(Node):
 
         if self.exploration_mode == 'frontier':
             frontier_cmd = self.frontier_control()
-            if frontier_cmd is not None:
+            if frontier_cmd is not None and self.cmd_is_nonzero(frontier_cmd):
                 self.cmd_pub.publish(frontier_cmd)
                 return
-            if not self.reactive_fallback:
-                self.cmd_pub.publish(cmd)
-                return
+            self.get_logger().info(
+                'No map target; using simple LiDAR heading.',
+                throttle_duration_sec=4.0,
+            )
 
         best = self.choose_best_direction(self.latest_scan)
         if best is None:
@@ -805,38 +846,35 @@ class LidarOpenSpaceExplorer(Node):
             )
             return None
 
+        robot_pose = self.robot_pose_in_map()
+        if robot_pose is not None:
+            self.mark_visited_around(self.latest_map, robot_pose[0], robot_pose[1])
+
         map_age_sec = (self.get_clock().now() - self.latest_map_time).nanoseconds * 1e-9
         if map_age_sec > self.map_timeout_sec:
             self.get_logger().warn(
-                f'Map timeout ({map_age_sec:.2f}s old). Holding position.',
+                f'Map timeout ({map_age_sec:.2f}s old). Using scan-reactive fallback.',
                 throttle_duration_sec=2.0,
             )
-            return cmd
+            return None
 
         if self.current_frontier is None and self.frontier_replan_due():
             self.plan_frontier_target()
 
         if self.current_frontier is None:
-            if self.reactive_fallback:
-                self.get_logger().info(
-                    'No reachable frontier found. Using scan-reactive fallback.',
-                    throttle_duration_sec=4.0,
-                )
-                self.publish_suppressed_markers()
-                return None
             self.get_logger().info(
-                'No reachable frontier found. Exploration appears complete or blocked.',
+                'No map target found. Using scan-reactive fallback.',
                 throttle_duration_sec=4.0,
             )
             self.publish_suppressed_markers()
-            return cmd
+            return None
 
         while self.current_frontier is not None:
             waypoint = self.active_frontier_waypoint()
             if waypoint is None:
                 self.clear_current_frontier()
                 self.clear_target_markers()
-                return cmd
+                return None
 
             self.publish_frontier_markers(waypoint)
 
@@ -846,68 +884,45 @@ class LidarOpenSpaceExplorer(Node):
 
             body_x, body_y = body_vector
             distance_m = math.hypot(body_x, body_y)
-            if distance_m < self.frontier_goal_tolerance_m:
+            if distance_m < self.active_target_goal_tolerance():
                 if self.advance_frontier_waypoint():
                     continue
                 self.get_logger().info(
-                    'Reached frontier viewpoint; clearing target and replanning.',
+                    'Reached map target; clearing target and replanning.',
                     throttle_duration_sec=2.0,
                 )
-                self.remember_current_frontier_path('reached')
                 self.clear_current_frontier()
                 self.plan_frontier_target()
                 self.publish_suppressed_markers()
                 continue
 
             body_angle = math.atan2(body_y, body_x)
-            if not self.bug_active and self.frontier_progress_timed_out(distance_m):
-                if self.bug_recovery_enabled:
-                    self.get_logger().info(
-                        'No progress toward current frontier waypoint; trying Bug recovery.',
-                        throttle_duration_sec=2.0,
-                    )
-                    bug_cmd = self.bug_recovery_command(body_angle)
-                    if bug_cmd is not None:
-                        return bug_cmd
-                self.suppress_current_frontier('no_progress')
-                self.publish_suppressed_markers()
-                return cmd
+            if not self.reverse_allowed and abs(body_angle) > math.pi / 2.0:
+                return self.turn_toward_target_command(body_angle)
 
             scan_clearance = self.min_scan_range_near_body_angle(
                 body_angle,
                 self.direction_window_rad,
             )
-            if self.frontier_failure_memory_enabled:
-                blocked = scan_clearance is not None and scan_clearance <= (
-                    self.obstacle_stop_distance_m
-                    + self.frontier_blocked_clearance_margin_m
+            if scan_clearance is not None and scan_clearance < self.obstacle_stop_distance_m:
+                self.get_logger().warn(
+                    'Map target direction is blocked by scan; using simple LiDAR heading.',
+                    throttle_duration_sec=2.0,
                 )
-            else:
-                blocked = (
-                    scan_clearance is not None
-                    and scan_clearance < self.obstacle_stop_distance_m
-                )
-            if blocked:
-                if self.bug_recovery_enabled:
-                    bug_cmd = self.bug_recovery_command(body_angle)
-                    if bug_cmd is not None:
-                        return bug_cmd
-                self.suppress_current_frontier('scan_blocked')
-                self.publish_suppressed_markers()
-                return cmd
+                return None
 
             if self.bug_active:
                 if self.frontier_progress_timed_out(distance_m):
                     self.suppress_current_frontier('bug_no_progress')
                     self.publish_suppressed_markers()
-                    return cmd
+                    return None
                 bug_cmd = self.bug_recovery_command(body_angle)
                 if bug_cmd is not None:
                     return bug_cmd
                 if self.bug_timed_out:
                     self.suppress_current_frontier('bug_timeout')
                     self.publish_suppressed_markers()
-                    return cmd
+                    return None
 
             if self.side_clearance_is_too_close():
                 if self.bug_recovery_enabled:
@@ -917,7 +932,7 @@ class LidarOpenSpaceExplorer(Node):
                     if self.bug_timed_out:
                         self.suppress_current_frontier('bug_timeout')
                         self.publish_suppressed_markers()
-                        return cmd
+                        return None
                 guard_cmd = self.wall_clearance_guard_command()
                 if guard_cmd is not None:
                     return guard_cmd
@@ -938,9 +953,7 @@ class LidarOpenSpaceExplorer(Node):
                     if abs(cmd.linear.y) < max(0.004, self.min_speed_mps * 0.5):
                         if self.advance_frontier_waypoint():
                             continue
-                        self.suppress_current_frontier('requires_reverse')
-                        self.publish_suppressed_markers()
-                        return cmd
+                        return self.turn_toward_target_command(body_angle)
             else:
                 cmd.linear.x = speed * max(0.0, math.cos(body_angle))
                 cmd.angular.z = clamp(
@@ -949,8 +962,26 @@ class LidarOpenSpaceExplorer(Node):
                     self.max_turn_rate_rad_s,
                 )
 
+            if self.cmd_is_nonzero(cmd) and self.frontier_progress_timed_out(distance_m):
+                self.suppress_current_frontier('no_progress')
+                self.publish_suppressed_markers()
+                return None
+
             return cmd
 
+        return None
+
+    def turn_toward_target_command(self, body_angle_rad: float) -> Twist:
+        cmd = Twist()
+        turn = clamp(
+            self.turn_gain * normalize_angle(body_angle_rad),
+            -self.max_turn_rate_rad_s,
+            self.max_turn_rate_rad_s,
+        )
+        min_turn = min(self.max_turn_rate_rad_s, max(0.03, self.max_turn_rate_rad_s * 0.35))
+        if abs(turn) < min_turn:
+            turn = math.copysign(min_turn, body_angle_rad if abs(body_angle_rad) > 1e-6 else 1.0)
+        cmd.angular.z = turn
         return cmd
 
     def side_clearance_is_too_close(self) -> bool:
@@ -1139,15 +1170,25 @@ class LidarOpenSpaceExplorer(Node):
         markers = MarkerArray()
         markers.markers.append(self.delete_all_marker())
         if self.bug_active:
-            node_color = (0.45, 0.24, 0.08, 0.95)
-            line_color = (0.55, 0.30, 0.10, 0.85)
-            active_color = (0.70, 0.38, 0.12, 1.0)
-            goal_color = (0.36, 0.18, 0.06, 0.95)
+            node_color = (1.0, 0.10, 0.10, 0.95)
+            line_color = (1.0, 0.20, 0.20, 0.85)
+            active_color = (1.0, 0.0, 0.0, 1.0)
+            goal_color = (0.85, 0.0, 0.0, 0.95)
+        elif self.current_frontier.target_reason == 'unvisited_seen_free':
+            node_color = (0.10, 0.35, 1.0, 0.90)
+            line_color = (0.10, 0.45, 1.0, 0.80)
+            active_color = (0.0, 0.30, 1.0, 1.0)
+            goal_color = (0.0, 0.20, 0.95, 0.95)
+        elif self.current_frontier.target_reason == 'frontier':
+            node_color = (0.10, 0.80, 0.20, 0.90)
+            line_color = (0.0, 0.75, 0.20, 0.80)
+            active_color = (0.0, 1.0, 0.25, 1.0)
+            goal_color = (0.0, 0.75, 0.10, 0.95)
         else:
-            node_color = (0.15, 0.45, 1.0, 0.9)
-            line_color = (0.1, 0.7, 1.0, 0.75)
-            active_color = (0.0, 1.0, 0.2, 1.0)
-            goal_color = (1.0, 0.75, 0.0, 0.95)
+            node_color = (1.0, 0.10, 0.10, 0.90)
+            line_color = (1.0, 0.20, 0.20, 0.80)
+            active_color = (1.0, 0.0, 0.0, 1.0)
+            goal_color = (0.85, 0.0, 0.0, 0.95)
 
         remaining_path = self.current_frontier.path[self.current_path_index:]
         if remaining_path:
@@ -1192,7 +1233,7 @@ class LidarOpenSpaceExplorer(Node):
         viewpoint.scale.x = self.target_marker_scale_m * 1.7
         viewpoint.scale.y = self.target_marker_scale_m * 1.7
         viewpoint.scale.z = self.target_marker_scale_m * 0.25
-        self.set_marker_color(viewpoint, (0.0, 0.85, 1.0, 0.75))
+        self.set_marker_color(viewpoint, goal_color)
         markers.markers.append(viewpoint)
 
         self.append_frontier_memory_markers(markers, now)
@@ -1262,7 +1303,7 @@ class LidarOpenSpaceExplorer(Node):
 
             heading = self.make_marker('reactive_heading', 8, Marker.LINE_STRIP, now)
             heading.scale.x = max(0.02, self.target_marker_scale_m * 0.25)
-            self.set_marker_color(heading, (0.65, 0.9, 1.0, 0.9))
+            self.set_marker_color(heading, (1.0, 0.10, 0.10, 0.90))
             heading.points = [
                 self.point_from_xy(robot_x, robot_y),
                 self.point_from_xy(target_x, target_y),
@@ -1274,7 +1315,7 @@ class LidarOpenSpaceExplorer(Node):
             target.scale.x = self.target_marker_scale_m
             target.scale.y = self.target_marker_scale_m
             target.scale.z = self.target_marker_scale_m
-            self.set_marker_color(target, (0.0, 0.95, 1.0, 0.95))
+            self.set_marker_color(target, (1.0, 0.0, 0.0, 0.95))
             markers.markers.append(target)
 
         self.marker_pub.publish(markers)
@@ -1342,13 +1383,11 @@ class LidarOpenSpaceExplorer(Node):
         self.current_path_index = 0
         self.reset_frontier_progress()
         self.get_logger().info(
-            f'New {self.search_strategy.upper()} frontier target: '
+            f'New BFS target: reason={self.current_frontier.target_reason} '
             f'({self.current_frontier.x_m:.2f}, {self.current_frontier.y_m:.2f}) '
-            f'area={self.current_frontier.frontier_area_cells} cells, '
             f'clearance={self.current_frontier.clearance_m:.2f} m, '
-            f'visible_unknown={self.current_frontier.unknown_visible_cells}, '
+            f'adjacent_unknown={self.current_frontier.unknown_visible_cells}, '
             f'path={self.current_frontier.path_length_m:.2f} m, '
-            f'score={self.current_frontier.score:.2f}, '
             f'searched={self.current_frontier.searched_cells} cells, '
             f'waypoints={len(self.current_frontier.path)}.'
         )
@@ -1401,10 +1440,8 @@ class LidarOpenSpaceExplorer(Node):
 
         motion_failure_reasons = {
             'no_progress',
-            'scan_blocked',
             'bug_no_progress',
             'bug_timeout',
-            'requires_reverse',
         }
         if (
             self.suppress_only_after_motion_failure
@@ -1535,6 +1572,70 @@ class LidarOpenSpaceExplorer(Node):
 
     def now_sec(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
+
+    def cmd_is_nonzero(self, cmd: Twist | None) -> bool:
+        if cmd is None:
+            return False
+        return any(
+            abs(value) > 1e-6
+            for value in (
+                cmd.linear.x,
+                cmd.linear.y,
+                cmd.angular.z,
+            )
+        )
+
+    def active_target_goal_tolerance(self) -> float:
+        if (
+            self.current_frontier is not None
+            and self.current_frontier.target_reason == 'unvisited_seen_free'
+        ):
+            return self.unvisited_goal_tolerance_m
+        return self.frontier_goal_tolerance_m
+
+    def map_geometry_signature(self, grid: OccupancyGrid):
+        origin = grid.info.origin
+        return (
+            grid.info.width,
+            grid.info.height,
+            grid.info.resolution,
+            origin.position.x,
+            origin.position.y,
+            origin.position.z,
+            origin.orientation.x,
+            origin.orientation.y,
+            origin.orientation.z,
+            origin.orientation.w,
+        )
+
+    def ensure_visited_grid(self, grid: OccupancyGrid) -> bool:
+        signature = self.map_geometry_signature(grid)
+        cell_count = grid.info.width * grid.info.height
+        if self.visited_map_signature == signature and len(self.visited_cells) == cell_count:
+            return False
+        self.visited_map_signature = signature
+        self.visited_cells = bytearray(cell_count)
+        return True
+
+    def mark_visited_around(self, grid: OccupancyGrid, x_m: float, y_m: float):
+        self.ensure_visited_grid(grid)
+        center = self.world_to_grid(grid, x_m, y_m)
+        if center is None or grid.info.resolution <= 0.0:
+            return
+        radius_cells = max(0, int(math.ceil(self.visited_radius_m / grid.info.resolution)))
+        radius_sq = radius_cells * radius_cells
+        for y_value in range(
+            max(0, center[1] - radius_cells),
+            min(grid.info.height, center[1] + radius_cells + 1),
+        ):
+            for x_value in range(
+                max(0, center[0] - radius_cells),
+                min(grid.info.width, center[0] + radius_cells + 1),
+            ):
+                dx = x_value - center[0]
+                dy = y_value - center[1]
+                if dx * dx + dy * dy <= radius_sq:
+                    self.visited_cells[self.grid_index(x_value, y_value, grid.info.width)] = 1
 
     def prune_suppressed_frontiers(self):
         now_sec = self.now_sec()
@@ -1783,12 +1884,11 @@ class LidarOpenSpaceExplorer(Node):
             )
             return None
 
+        robot_x = transform.transform.translation.x
+        robot_y = transform.transform.translation.y
+        self.mark_visited_around(grid, robot_x, robot_y)
         planner = self.build_planner_grid(grid)
-        start = self.world_to_grid(
-            grid,
-            transform.transform.translation.x,
-            transform.transform.translation.y,
-        )
+        start = self.world_to_grid(grid, robot_x, robot_y)
         if start is None:
             return None
 
@@ -1805,114 +1905,77 @@ class LidarOpenSpaceExplorer(Node):
                 return None
             start_index = self.grid_index(nearest[0], nearest[1], width)
 
-        visited = bytearray(width * height)
+        bfs_visited = bytearray(width * height)
         parent = [-1] * (width * height)
         path_cost_cells = [math.inf] * (width * height)
         pending = deque([start_index])
-        visited[start_index] = 1
+        bfs_visited[start_index] = 1
         parent[start_index] = start_index
         path_cost_cells[start_index] = 0.0
         searched = 0
+        frontier_index = -1
+        unvisited_index = -1
 
         while pending:
-            current = pending.popleft() if self.search_strategy == 'bfs' else pending.pop()
+            current = pending.popleft()
             searched += 1
 
+            path_length_m = path_cost_cells[current] * grid.info.resolution
+            if current != start_index:
+                if self.is_frontier_cell(grid, planner, current):
+                    frontier_index = current
+                    break
+                if (
+                    unvisited_index < 0
+                    and not self.visited_cells[current]
+                    and path_length_m >= self.unvisited_goal_min_distance_m
+                    and path_length_m <= self.unvisited_goal_max_distance_m
+                ):
+                    unvisited_index = current
+
             for neighbor in self.safe_neighbor_indices(current, planner):
-                if visited[neighbor]:
+                if bfs_visited[neighbor]:
                     continue
-                visited[neighbor] = 1
+                bfs_visited[neighbor] = 1
                 parent[neighbor] = current
                 step_cost = self.grid_step_cost(current, neighbor, width)
                 path_cost_cells[neighbor] = path_cost_cells[current] + step_cost
                 pending.append(neighbor)
 
-        frontier_components = self.connected_frontier_components(grid, planner)
-        best_target = None
-        best_score = -math.inf
-        rejected_count = 0
-        robot_yaw = quaternion_to_yaw(
-            transform.transform.rotation.x,
-            transform.transform.rotation.y,
-            transform.transform.rotation.z,
-            transform.transform.rotation.w,
+        if frontier_index >= 0:
+            target_index = frontier_index
+            target_reason = 'frontier'
+        elif unvisited_index >= 0:
+            target_index = unvisited_index
+            target_reason = 'unvisited_seen_free'
+        else:
+            return None
+
+        path = self.reconstruct_world_path(grid, parent, start_index, target_index)
+        if not path:
+            return None
+
+        target_x = target_index % width
+        target_y = target_index // width
+        target_world = self.grid_to_world(grid, target_x, target_y)
+        unknown_neighbors = self.count_unknown_neighbors(grid, target_index)
+        path_length_m = path_cost_cells[target_index] * grid.info.resolution
+        frontier_cells = (target_index,) if target_reason == 'frontier' else ()
+        return FrontierTarget(
+            x_m=target_world[0],
+            y_m=target_world[1],
+            grid_x=target_x,
+            grid_y=target_y,
+            searched_cells=searched,
+            path=path,
+            target_reason=target_reason,
+            frontier_cells=frontier_cells,
+            frontier_area_cells=1 if target_reason == 'frontier' else 0,
+            clearance_m=planner.clearance_m[target_index],
+            path_length_m=path_length_m,
+            unknown_visible_cells=unknown_neighbors,
+            score=-path_length_m,
         )
-
-        for component in frontier_components:
-            component_center = self.component_center_world(grid, component)
-            if self.frontier_is_suppressed(component_center[0], component_center[1]):
-                continue
-
-            candidate, reject_reason = self.project_frontier_component_to_goal(
-                grid,
-                planner,
-                component,
-                visited,
-                path_cost_cells,
-            )
-            if candidate is None:
-                rejected_count += 1
-                self.add_rejected_frontier_debug(grid, component, reject_reason)
-                continue
-            target_index = candidate.index
-            if candidate.parent_index >= 0 and parent[target_index] < 0:
-                parent[target_index] = candidate.parent_index
-                path_cost_cells[target_index] = (
-                    path_cost_cells[candidate.parent_index]
-                    + self.grid_step_cost(candidate.parent_index, target_index, width)
-                )
-
-            path = self.reconstruct_world_path(grid, parent, start_index, target_index)
-            if not path or not self.path_indices_are_safe(grid, planner, parent, start_index, target_index):
-                rejected_count += 1
-                self.add_rejected_frontier_debug(grid, component, 'unsafe_path')
-                continue
-            if self.frontier_path_is_suppressed(path):
-                continue
-            if self.frontier_path_recently_tried(path):
-                rejected_count += 1
-                self.add_rejected_frontier_debug(grid, component, 'recent_path')
-                continue
-
-            target_x = target_index % width
-            target_y = target_index // width
-            target_world = self.grid_to_world(grid, target_x, target_y)
-            dx = target_world[0] - transform.transform.translation.x
-            dy = target_world[1] - transform.transform.translation.y
-            heading_change = abs(normalize_angle(math.atan2(dy, dx) - robot_yaw))
-            path_length_m = path_cost_cells[target_index] * grid.info.resolution
-            clearance_m = planner.clearance_m[target_index]
-            area_cells = len(component)
-            score = (
-                0.05 * area_cells
-                + 2.0 * min(clearance_m, 1.0)
-                + 0.08 * min(candidate.unknown_visible_cells, 50)
-                - 0.75 * path_length_m
-                - 0.35 * heading_change
-            )
-            if score > best_score:
-                best_score = score
-                best_target = FrontierTarget(
-                    x_m=target_world[0],
-                    y_m=target_world[1],
-                    grid_x=target_x,
-                    grid_y=target_y,
-                    searched_cells=searched,
-                    path=path,
-                    frontier_cells=tuple(component),
-                    frontier_area_cells=area_cells,
-                    clearance_m=clearance_m,
-                    path_length_m=path_length_m,
-                    unknown_visible_cells=candidate.unknown_visible_cells,
-                    score=score,
-                )
-
-        if best_target is None and rejected_count:
-            self.get_logger().info(
-                f'Rejected {rejected_count} frontier cluster(s) as debug-only; no safe viewpoint found.',
-                throttle_duration_sec=2.0,
-            )
-        return best_target
 
     def build_planner_grid(self, grid: OccupancyGrid) -> PlannerGrid:
         width = grid.info.width
@@ -2380,7 +2443,7 @@ class LidarOpenSpaceExplorer(Node):
         return tuple(waypoints)
 
     def is_frontier_cell(self, grid: OccupancyGrid, planner: PlannerGrid, index: int) -> bool:
-        if not planner.free[index]:
+        if not planner.safe[index]:
             return False
         width = planner.width
         height = planner.height
@@ -2388,6 +2451,13 @@ class LidarOpenSpaceExplorer(Node):
             if grid.data[neighbor] < 0:
                 return True
         return False
+
+    def count_unknown_neighbors(self, grid: OccupancyGrid, index: int) -> int:
+        count = 0
+        for neighbor in self.cardinal_neighbor_indices(index, grid.info.width, grid.info.height):
+            if grid.data[neighbor] < 0:
+                count += 1
+        return count
 
     def safe_neighbor_indices(self, index: int, planner: PlannerGrid):
         width = planner.width
