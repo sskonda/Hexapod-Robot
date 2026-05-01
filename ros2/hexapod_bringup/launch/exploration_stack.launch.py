@@ -200,7 +200,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_frontier_replan_period_sec',
-            default_value='2.0',
+            default_value='5.0',
             description='How often to re-run BFS/DFS frontier selection.',
         ),
         DeclareLaunchArgument(

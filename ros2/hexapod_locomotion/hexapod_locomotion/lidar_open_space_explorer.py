@@ -111,7 +111,7 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('distance_weight', 1.0)
         self.declare_parameter('clearance_angle_weight', 1.4)
         self.declare_parameter('reverse_allowed', False)
-        self.declare_parameter('frontier_replan_period_sec', 2.0)
+        self.declare_parameter('frontier_replan_period_sec', 5.0)
         self.declare_parameter('frontier_goal_tolerance_m', 0.18)
         self.declare_parameter('frontier_waypoint_spacing_m', 0.25)
         self.declare_parameter('frontier_min_clearance_m', 0.15)
@@ -598,10 +598,17 @@ class LidarOpenSpaceExplorer(Node):
             )
             return cmd
 
-        if self.frontier_replan_due():
+        if not self.bug_active and self.frontier_replan_due():
             self.plan_frontier_target()
 
         if self.current_frontier is None:
+            if self.reactive_fallback:
+                self.get_logger().info(
+                    'No reachable frontier found. Using scan-reactive fallback.',
+                    throttle_duration_sec=4.0,
+                )
+                self.clear_target_markers()
+                return None
             self.get_logger().info(
                 'No reachable frontier found. Exploration appears complete or blocked.',
                 throttle_duration_sec=4.0,
@@ -917,17 +924,25 @@ class LidarOpenSpaceExplorer(Node):
 
     def plan_frontier_target(self):
         self.prune_suppressed_frontiers()
-        self.stop_bug_recovery()
-        self.current_frontier = self.find_frontier_target()
-        self.current_path_index = 0
+        candidate = self.find_frontier_target()
         self.last_frontier_plan_time = self.get_clock().now()
-        if self.current_frontier is not None:
-            self.get_logger().info(
-                f'New {self.search_strategy.upper()} frontier target: '
-                f'({self.current_frontier.x_m:.2f}, {self.current_frontier.y_m:.2f}) '
-                f'after searching {self.current_frontier.searched_cells} cells '
-                f'with {len(self.current_frontier.path)} waypoints.'
-            )
+        if candidate is None:
+            if self.current_frontier is not None:
+                self.get_logger().info(
+                    'No new reachable frontier found; keeping current target for recovery.',
+                    throttle_duration_sec=4.0,
+                )
+            return
+
+        self.stop_bug_recovery()
+        self.current_frontier = candidate
+        self.current_path_index = 0
+        self.get_logger().info(
+            f'New {self.search_strategy.upper()} frontier target: '
+            f'({self.current_frontier.x_m:.2f}, {self.current_frontier.y_m:.2f}) '
+            f'after searching {self.current_frontier.searched_cells} cells '
+            f'with {len(self.current_frontier.path)} waypoints.'
+        )
 
     def advance_frontier_waypoint(self) -> bool:
         if self.current_frontier is None:
@@ -1479,7 +1494,11 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.cmd_pub.publish(Twist())
+        try:
+            if rclpy.ok():
+                node.cmd_pub.publish(Twist())
+        except Exception:
+            pass
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
