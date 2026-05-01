@@ -66,6 +66,7 @@ def generate_launch_description():
     bno055_init_retry_period_sec = LaunchConfiguration('bno055_init_retry_period_sec')
     imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
     imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
+    show_imu_data = LaunchConfiguration('show_imu_data')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -284,6 +285,11 @@ def generate_launch_description():
             description='Publish startup-relative IMU orientation before settle completes so heading hold can react immediately.',
         ),
         DeclareLaunchArgument(
+            'show_imu_data',
+            default_value='true',
+            description='When false, suppress routine BNO055 IMU status logs while still publishing IMU topics.',
+        ),
+        DeclareLaunchArgument(
             'imu_x',
             default_value='0.0',
             description='X offset of the IMU from base_link in metres (forward +).',
@@ -355,6 +361,7 @@ def generate_launch_description():
                 'init_retry_period_sec': bno055_init_retry_period_sec,
                 'zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
                 'publish_orientation_during_startup': imu_publish_orientation_during_startup,
+                'show_imu_data': show_imu_data,
             }]
         ),
         Node(

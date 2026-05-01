@@ -41,6 +41,7 @@ def generate_launch_description():
     imu_pitch = LaunchConfiguration('imu_pitch')
     imu_yaw = LaunchConfiguration('imu_yaw')
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
+    show_imu_data = LaunchConfiguration('show_imu_data')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -199,6 +200,11 @@ def generate_launch_description():
             default_value='15.0',
             description='Still time required before BNO055 yaw is trusted.',
         ),
+        DeclareLaunchArgument(
+            'show_imu_data',
+            default_value='true',
+            description='When false, suppress routine BNO055 IMU status logs while still publishing IMU topics.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(mapping_bringup_launch)),
             launch_arguments={
@@ -235,6 +241,7 @@ def generate_launch_description():
                 'imu_pitch': imu_pitch,
                 'imu_yaw': imu_yaw,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
+                'show_imu_data': show_imu_data,
             }.items(),
         ),
     ])

@@ -23,6 +23,7 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     lidar_serial_port = LaunchConfiguration('lidar_serial_port')
     locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
+    show_imu_data = LaunchConfiguration('show_imu_data')
 
     explorer_enabled = LaunchConfiguration('explorer_enabled')
     explorer_mode = LaunchConfiguration('explorer_mode')
@@ -36,6 +37,7 @@ def generate_launch_description():
     explorer_obstacle_slow_distance_m = LaunchConfiguration(
         'explorer_obstacle_slow_distance_m'
     )
+    explorer_side_stop_distance_m = LaunchConfiguration('explorer_side_stop_distance_m')
     explorer_desired_clearance_m = LaunchConfiguration('explorer_desired_clearance_m')
     explorer_crab_motion = LaunchConfiguration('explorer_crab_motion')
     explorer_reverse_allowed = LaunchConfiguration('explorer_reverse_allowed')
@@ -134,6 +136,11 @@ def generate_launch_description():
             description='Pass through to pose_stack.launch.py.',
         ),
         DeclareLaunchArgument(
+            'show_imu_data',
+            default_value='true',
+            description='When false, suppress routine BNO055 IMU status logs while still publishing IMU topics.',
+        ),
+        DeclareLaunchArgument(
             'explorer_enabled',
             default_value='true',
             description='When false, explorer publishes stop commands only.',
@@ -165,17 +172,22 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_obstacle_stop_distance_m',
-            default_value='0.24',
+            default_value='0.30',
             description='Stop/turn if the selected direction is closer than this.',
         ),
         DeclareLaunchArgument(
             'explorer_obstacle_slow_distance_m',
-            default_value='0.50',
+            default_value='0.60',
             description='Start slowing below this selected-direction clearance.',
         ),
         DeclareLaunchArgument(
+            'explorer_side_stop_distance_m',
+            default_value='0.38',
+            description='Minimum allowed left/right wall clearance before sliding away.',
+        ),
+        DeclareLaunchArgument(
             'explorer_desired_clearance_m',
-            default_value='0.40',
+            default_value='0.45',
             description='Range threshold used to compute angular clearance.',
         ),
         DeclareLaunchArgument(
@@ -265,12 +277,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_bug_desired_wall_distance_m',
-            default_value='0.32',
+            default_value='0.40',
             description='Approximate side distance to hold from the followed wall during Bug recovery.',
         ),
         DeclareLaunchArgument(
             'explorer_bug_release_clearance_m',
-            default_value='0.45',
+            default_value='0.55',
             description='Direct waypoint clearance needed before leaving Bug recovery.',
         ),
         DeclareLaunchArgument(
@@ -294,6 +306,7 @@ def generate_launch_description():
                 'map_frame': map_frame,
                 'lidar_serial_port': lidar_serial_port,
                 'locomotion_use_imu_for_odom': locomotion_use_imu_for_odom,
+                'show_imu_data': show_imu_data,
             }.items(),
         ),
         Node(
@@ -318,6 +331,7 @@ def generate_launch_description():
                 'min_speed_mps': explorer_min_speed_mps,
                 'obstacle_stop_distance_m': explorer_obstacle_stop_distance_m,
                 'obstacle_slow_distance_m': explorer_obstacle_slow_distance_m,
+                'side_stop_distance_m': explorer_side_stop_distance_m,
                 'desired_clearance_m': explorer_desired_clearance_m,
                 'crab_motion': explorer_crab_motion,
                 'reverse_allowed': explorer_reverse_allowed,

@@ -97,10 +97,13 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('turn_gain', 0.8)
         self.declare_parameter('crab_motion', True)
 
-        self.declare_parameter('obstacle_stop_distance_m', 0.24)
-        self.declare_parameter('obstacle_slow_distance_m', 0.50)
-        self.declare_parameter('desired_clearance_m', 0.40)
-        self.declare_parameter('minimum_direction_range_m', 0.25)
+        self.declare_parameter('obstacle_stop_distance_m', 0.30)
+        self.declare_parameter('obstacle_slow_distance_m', 0.60)
+        self.declare_parameter('side_stop_distance_m', 0.38)
+        self.declare_parameter('side_check_angle_deg', 85.0)
+        self.declare_parameter('side_check_window_deg', 28.0)
+        self.declare_parameter('desired_clearance_m', 0.45)
+        self.declare_parameter('minimum_direction_range_m', 0.32)
         self.declare_parameter('max_usable_range_m', 4.0)
 
         self.declare_parameter('candidate_angle_min_deg', -150.0)
@@ -127,8 +130,8 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('bug_wall_side', 'auto')
         self.declare_parameter('bug_forward_speed_mps', 0.012)
         self.declare_parameter('bug_lateral_gain', 0.8)
-        self.declare_parameter('bug_desired_wall_distance_m', 0.32)
-        self.declare_parameter('bug_release_clearance_m', 0.45)
+        self.declare_parameter('bug_desired_wall_distance_m', 0.40)
+        self.declare_parameter('bug_release_clearance_m', 0.55)
         self.declare_parameter('bug_release_hold_sec', 1.0)
         self.declare_parameter('bug_min_duration_sec', 3.0)
         self.declare_parameter('bug_max_duration_sec', 15.0)
@@ -210,6 +213,16 @@ class LidarOpenSpaceExplorer(Node):
         self.obstacle_slow_distance_m = max(
             self.obstacle_stop_distance_m + 0.01,
             float(self.get_parameter('obstacle_slow_distance_m').value),
+        )
+        self.side_stop_distance_m = max(
+            self.obstacle_stop_distance_m,
+            float(self.get_parameter('side_stop_distance_m').value),
+        )
+        self.side_check_angle_rad = math.radians(
+            max(5.0, min(120.0, float(self.get_parameter('side_check_angle_deg').value)))
+        )
+        self.side_check_window_rad = math.radians(
+            max(1.0, min(60.0, float(self.get_parameter('side_check_window_deg').value)))
         )
         self.desired_clearance_m = max(
             self.obstacle_stop_distance_m,
@@ -463,6 +476,19 @@ class LidarOpenSpaceExplorer(Node):
                     self.obstacle_stop_distance_m + 0.01,
                     float(parameter.value),
                 )
+            elif parameter.name == 'side_stop_distance_m':
+                self.side_stop_distance_m = max(
+                    self.obstacle_stop_distance_m,
+                    float(parameter.value),
+                )
+            elif parameter.name == 'side_check_angle_deg':
+                self.side_check_angle_rad = math.radians(
+                    max(5.0, min(120.0, float(parameter.value)))
+                )
+            elif parameter.name == 'side_check_window_deg':
+                self.side_check_window_rad = math.radians(
+                    max(1.0, min(60.0, float(parameter.value)))
+                )
             elif parameter.name == 'desired_clearance_m':
                 self.desired_clearance_m = max(
                     self.obstacle_stop_distance_m,
@@ -567,6 +593,10 @@ class LidarOpenSpaceExplorer(Node):
             )
             if not self.reverse_allowed and cmd.linear.x < 0.0:
                 cmd.linear.x = 0.0
+            guard_cmd = self.wall_clearance_guard_command()
+            if guard_cmd is not None:
+                self.cmd_pub.publish(guard_cmd)
+                return
             cmd.angular.z = 0.0
         else:
             turn = clamp(
@@ -667,6 +697,15 @@ class LidarOpenSpaceExplorer(Node):
                 if bug_cmd is not None:
                     return bug_cmd
 
+            if self.side_clearance_is_too_close():
+                if self.bug_recovery_enabled:
+                    bug_cmd = self.bug_recovery_command(body_angle)
+                    if bug_cmd is not None:
+                        return bug_cmd
+                guard_cmd = self.wall_clearance_guard_command()
+                if guard_cmd is not None:
+                    return guard_cmd
+
             speed = self.speed_for_clearance(
                 scan_clearance if scan_clearance is not None else self.obstacle_slow_distance_m
             )
@@ -679,11 +718,13 @@ class LidarOpenSpaceExplorer(Node):
                     self.max_lateral_speed_mps,
                 )
                 if not self.reverse_allowed and cmd.linear.x < 0.0:
-                    if self.advance_frontier_waypoint():
-                        continue
-                    self.suppress_current_frontier('requires_reverse')
-                    self.clear_target_markers()
-                    return cmd
+                    cmd.linear.x = 0.0
+                    if abs(cmd.linear.y) < max(0.004, self.min_speed_mps * 0.5):
+                        if self.advance_frontier_waypoint():
+                            continue
+                        self.suppress_current_frontier('requires_reverse')
+                        self.clear_target_markers()
+                        return cmd
             else:
                 cmd.linear.x = speed * max(0.0, math.cos(body_angle))
                 cmd.angular.z = clamp(
@@ -695,6 +736,60 @@ class LidarOpenSpaceExplorer(Node):
             return cmd
 
         return cmd
+
+    def side_clearance_is_too_close(self) -> bool:
+        left_clearance, right_clearance = self.side_clearances()
+        return (
+            left_clearance is not None and left_clearance < self.side_stop_distance_m
+        ) or (
+            right_clearance is not None and right_clearance < self.side_stop_distance_m
+        )
+
+    def wall_clearance_guard_command(self):
+        left_clearance, right_clearance = self.side_clearances()
+        close_sides = [
+            (left_clearance, -1.0),
+            (right_clearance, 1.0),
+        ]
+        close_sides = [
+            (clearance, away_direction)
+            for clearance, away_direction in close_sides
+            if clearance is not None and clearance < self.side_stop_distance_m
+        ]
+        if not close_sides:
+            return None
+
+        clearance, away_direction = min(close_sides, key=lambda item: item[0])
+        deficit = self.side_stop_distance_m - clearance
+        lateral_speed = clamp(
+            self.min_speed_mps + deficit,
+            self.min_speed_mps,
+            self.max_lateral_speed_mps,
+        )
+
+        cmd = Twist()
+        if self.crab_motion:
+            cmd.linear.x = 0.0
+            cmd.linear.y = away_direction * lateral_speed
+        else:
+            cmd.angular.z = away_direction * self.max_turn_rate_rad_s
+        self.get_logger().warn(
+            f'Side clearance {clearance:.2f} m is below {self.side_stop_distance_m:.2f} m; '
+            'moving away from wall.',
+            throttle_duration_sec=2.0,
+        )
+        return cmd
+
+    def side_clearances(self):
+        left_clearance = self.min_scan_range_near_body_angle(
+            self.side_check_angle_rad,
+            self.side_check_window_rad,
+        )
+        right_clearance = self.min_scan_range_near_body_angle(
+            -self.side_check_angle_rad,
+            self.side_check_window_rad,
+        )
+        return left_clearance, right_clearance
 
     def bug_recovery_command(self, target_body_angle_rad: float):
         if self.latest_scan is None:

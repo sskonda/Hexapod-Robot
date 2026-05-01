@@ -58,6 +58,14 @@ def quaternion_is_valid(quaternion):
     )
 
 
+def as_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
 def calibration_is_fully_calibrated(calibration):
     return (
         calibration is not None
@@ -506,6 +514,7 @@ class BNO055Publisher(Node):
         self.declare_parameter('imu_startup_gyro_still_tolerance_rad_s', 0.12)
         self.declare_parameter('imu_startup_motion_grace_sec', 0.5)
         self.declare_parameter('imu_startup_status_log_interval_sec', 2.0)
+        self.declare_parameter('show_imu_data', True)
         self.declare_parameter('diagnostic_topic', '/imu/yaw_diagnostics')
 
         self.frame_id = str(self.get_parameter('frame_id').value)
@@ -626,6 +635,7 @@ class BNO055Publisher(Node):
             0.5,
             float(self.get_parameter('imu_startup_status_log_interval_sec').value),
         )
+        self.show_imu_data = as_bool(self.get_parameter('show_imu_data').value)
         self.diagnostic_topic = str(self.get_parameter('diagnostic_topic').value)
         self.last_warning_text = ''
         self.last_measurement_monotonic = None
@@ -678,39 +688,42 @@ class BNO055Publisher(Node):
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self.publish_measurements)
 
         calibration = self._read_calibration_status_cached(time.monotonic(), force=True)
-        self.get_logger().info(
-            f'BNO055 publisher started on {self.topic}, {self.mag_topic}, and '
-            f'{self.diagnostic_topic} '
-            f'from {self.uart_port} @ {self.baud_rate} baud, mode {self.mode_name}'
-        )
-        if self.mode_name != self.requested_mode_name.strip().upper():
-            self.get_logger().warn(
-                f'Interpreting BNO055 mode "{self.requested_mode_name}" as "{self.mode_name}".'
+        if self.show_imu_data:
+            self.get_logger().info(
+                f'BNO055 publisher started on {self.topic}, {self.mag_topic}, and '
+                f'{self.diagnostic_topic} '
+                f'from {self.uart_port} @ {self.baud_rate} baud, mode {self.mode_name}'
             )
-        if self.use_fused_orientation:
+        if self.mode_name != self.requested_mode_name.strip().upper():
+            if self.show_imu_data:
+                self.get_logger().warn(
+                    f'Interpreting BNO055 mode "{self.requested_mode_name}" as "{self.mode_name}".'
+                )
+        if self.use_fused_orientation and self.show_imu_data:
             self.get_logger().info(
                 'Using the BNO055 fused orientation quaternion for /imu/data_raw orientation.'
             )
-        else:
+        elif self.show_imu_data:
             self.get_logger().warn(
                 f'BNO055 mode {self.mode_name} does not provide fused orientation. '
                 'Falling back to local accel/gyro/magnetometer yaw fusion.'
             )
-        self.get_logger().info(
-            'Initial calibration status '
-            f'(sys={calibration[0]}, gyro={calibration[1]}, accel={calibration[2]}, mag={calibration[3]})'
-        )
+        if self.show_imu_data:
+            self.get_logger().info(
+                'Initial calibration status '
+                f'(sys={calibration[0]}, gyro={calibration[1]}, accel={calibration[2]}, mag={calibration[3]})'
+            )
         if yaw_param_conflict:
             self.get_logger().warn(
                 'Both imu_yaw_filter_time_constant_sec and yaw_filter_time_constant_sec were set. '
                 'Using imu_yaw_filter_time_constant_sec.'
             )
-        if self.startup_still_time_sec > 0.0:
+        if self.startup_still_time_sec > 0.0 and self.show_imu_data:
             self.get_logger().info(
                 'IMU startup settle enabled: keep the robot still for '
                 f'{self.startup_still_time_sec:.1f} s before yaw heading hold activates.'
             )
-        if self.use_fused_orientation:
+        if self.use_fused_orientation and self.show_imu_data:
             self.get_logger().info(
                 'Fused yaw trust requires '
                 f'gyro>={self.min_gyro_calibration_for_fused_yaw}, '
@@ -724,17 +737,18 @@ class BNO055Publisher(Node):
                     'Once fused yaw is locked, temporary SYS calibration drops will be ignored '
                     'as long as gyro, accel, and mag stay above their yaw thresholds.'
                 )
-        elif self.min_mag_calibration_for_yaw > 0:
+        elif self.min_mag_calibration_for_yaw > 0 and self.show_imu_data:
             self.get_logger().info(
                 'Magnetometer yaw correction requires mag calibration >= '
                 f'{self.min_mag_calibration_for_yaw}; below that, yaw will be gyro-only.'
             )
-        self.get_logger().info(
-            'Yaw trust gating: '
-            f'accel tolerance {self.accel_heading_tolerance_m_s2:.2f} m/s^2, '
-            f'mag norm tolerance {self.mag_norm_tolerance_ratio:.2f}, '
-            f'mag jump reject {math.degrees(self.mag_yaw_jump_reject_rad):.1f} deg.'
-        )
+        if self.show_imu_data:
+            self.get_logger().info(
+                'Yaw trust gating: '
+                f'accel tolerance {self.accel_heading_tolerance_m_s2:.2f} m/s^2, '
+                f'mag norm tolerance {self.mag_norm_tolerance_ratio:.2f}, '
+                f'mag jump reject {math.degrees(self.mag_yaw_jump_reject_rad):.1f} deg.'
+            )
 
     def parameter_update_callback(self, parameters):
         changed_fields = []
@@ -904,8 +918,13 @@ class BNO055Publisher(Node):
                 changed_fields.append(
                     f'imu_max_gyro_bias_rad_s={self.max_gyro_bias_rad_s:.3f}'
                 )
+            elif parameter.name == 'show_imu_data':
+                self.show_imu_data = as_bool(parameter.value)
+                changed_fields.append(
+                    f'show_imu_data={str(self.show_imu_data).lower()}'
+                )
 
-        if changed_fields:
+        if changed_fields and self.show_imu_data:
             self.get_logger().info(
                 'Updated BNO055 yaw tuning: ' + ', '.join(changed_fields)
             )
@@ -1014,11 +1033,12 @@ class BNO055Publisher(Node):
                 self.fused_yaw_reference_locked = True
 
         if startup_ready and not self.startup_settle_logged:
-            self.get_logger().info(
-                'IMU startup settle complete; yaw heading hold may activate once yaw is trusted. '
-                f'Calibration status (sys={calibration[0]}, gyro={calibration[1]}, '
-                f'accel={calibration[2]}, mag={calibration[3]}).'
-            )
+            if self.show_imu_data:
+                self.get_logger().info(
+                    'IMU startup settle complete; yaw heading hold may activate once yaw is trusted. '
+                    f'Calibration status (sys={calibration[0]}, gyro={calibration[1]}, '
+                    f'accel={calibration[2]}, mag={calibration[3]}).'
+                )
             self.startup_settle_logged = True
 
         self.last_orientation_published = False
@@ -1344,6 +1364,9 @@ class BNO055Publisher(Node):
         calibration=None,
         innovation_rad=0.0,
     ):
+        if not self.show_imu_data:
+            return
+
         mode_key = f'{yaw_source}:{yaw_reason}'
         if mode_key == self.last_yaw_mode_key:
             return
@@ -1387,7 +1410,7 @@ class BNO055Publisher(Node):
         )
 
     def _log_startup_status(self, measurement_time, accel, gyro):
-        if self.startup_still_gate.ready:
+        if self.startup_still_gate.ready or not self.show_imu_data:
             return
 
         if (
@@ -1408,6 +1431,8 @@ class BNO055Publisher(Node):
         )
 
     def _warn_throttled(self, text):
+        if not self.show_imu_data:
+            return
         if text == self.last_warning_text:
             return
         self.last_warning_text = text

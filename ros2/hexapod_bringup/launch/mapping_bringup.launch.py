@@ -108,6 +108,7 @@ def generate_launch_description():
         'imu_max_trusted_yaw_covariance_rad2'
     )
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
+    show_imu_data = LaunchConfiguration('show_imu_data')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -327,6 +328,11 @@ def generate_launch_description():
             description='Continuous still time required before IMU yaw heading hold activates.',
         ),
         DeclareLaunchArgument(
+            'show_imu_data',
+            default_value='true',
+            description='When false, suppress routine BNO055 IMU status logs while still publishing IMU topics.',
+        ),
+        DeclareLaunchArgument(
             'imu_x',
             default_value='0.0',
             description='X offset of the IMU from base_link in metres.',
@@ -374,6 +380,7 @@ def generate_launch_description():
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'imu_max_trusted_yaw_covariance_rad2': imu_max_trusted_yaw_covariance_rad2,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
+                'show_imu_data': show_imu_data,
                 'imu_x': imu_x,
                 'imu_y': imu_y,
                 'imu_z': imu_z,
