@@ -9,6 +9,10 @@ from dataclasses import dataclass
 STANDARD_GRAVITY_M_S2 = 9.80665
 
 
+def clamp(value: float, low: float, high: float) -> float:
+    return max(float(low), min(float(high), float(value)))
+
+
 def normalize_angle(angle_rad: float) -> float:
     return math.atan2(math.sin(float(angle_rad)), math.cos(float(angle_rad)))
 
