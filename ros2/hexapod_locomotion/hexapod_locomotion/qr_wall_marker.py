@@ -45,6 +45,7 @@ class QrWallMarkerNode(Node):
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('scan_timeout_sec', 0.75)
         self.declare_parameter('front_search_half_width_deg', 8.0)
+        self.declare_parameter('front_direction_offset_deg', 90.0)
         self.declare_parameter('marker_size_m', 0.12)
         self.declare_parameter('marker_height_m', 0.18)
         self.declare_parameter('label_height_m', 0.34)
@@ -59,6 +60,9 @@ class QrWallMarkerNode(Node):
         self.scan_timeout_sec = max(0.05, float(self.get_parameter('scan_timeout_sec').value))
         self.front_search_half_width_rad = math.radians(
             max(0.0, float(self.get_parameter('front_search_half_width_deg').value))
+        )
+        self.front_direction_offset_rad = math.radians(
+            float(self.get_parameter('front_direction_offset_deg').value)
         )
         self.marker_size_m = max(0.02, float(self.get_parameter('marker_size_m').value))
         self.marker_height_m = max(0.02, float(self.get_parameter('marker_height_m').value))
@@ -156,7 +160,7 @@ class QrWallMarkerNode(Node):
             rotation.z,
             rotation.w,
         )
-        desired_scan_angle = -scan_to_base_yaw
+        desired_scan_angle = -scan_to_base_yaw + self.front_direction_offset_rad
         measurement = self.find_front_measurement(scan, desired_scan_angle)
         if measurement is None:
             return None

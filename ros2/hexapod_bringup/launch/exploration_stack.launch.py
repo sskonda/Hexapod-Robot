@@ -48,6 +48,7 @@ def generate_launch_description():
     qr_republish_same_text = LaunchConfiguration('qr_republish_same_text')
     qr_marker_topic = LaunchConfiguration('qr_marker_topic')
     qr_marker_state_topic = LaunchConfiguration('qr_marker_state_topic')
+    qr_marker_front_offset_deg = LaunchConfiguration('qr_marker_front_offset_deg')
 
     explorer_enabled = LaunchConfiguration('explorer_enabled')
     explorer_mode = LaunchConfiguration('explorer_mode')
@@ -296,6 +297,11 @@ def generate_launch_description():
             description='JSON string topic containing the remembered QR marker map coordinates.',
         ),
         DeclareLaunchArgument(
+            'qr_marker_front_offset_deg',
+            default_value='90.0',
+            description='Extra rotation applied when projecting the front-wall QR marker from the LiDAR scan.',
+        ),
+        DeclareLaunchArgument(
             'explorer_enabled',
             default_value='true',
             description='When false, explorer publishes stop commands only.',
@@ -457,7 +463,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_frontier_suppression_duration_sec',
-            default_value='45.0',
+            default_value='5.0',
             description='How long to avoid a frontier after reaching it or rejecting its current path.',
         ),
         DeclareLaunchArgument(
@@ -472,7 +478,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_frontier_progress_timeout_sec',
-            default_value='10.0',
+            default_value='5.0',
             description='Seconds without getting closer to a waypoint before Bug recovery or suppression.',
         ),
         DeclareLaunchArgument(
@@ -588,6 +594,7 @@ def generate_launch_description():
                 'marker_state_topic': qr_marker_state_topic,
                 'base_frame': base_frame,
                 'map_frame': map_frame,
+                'front_direction_offset_deg': qr_marker_front_offset_deg,
             }],
         ),
         Node(
