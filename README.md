@@ -107,7 +107,37 @@ RPLIDAR A1 defaults passed into `rplidar_ros`:
 - `lidar_angle_compensate:=true`
 - `lidar_scan_mode:=Sensitivity`
 
-### 2. Core Locomotion Stack
+### 2. Basic LiDAR Open-Space Exploration
+
+Use this to run the full pose + mapping stack plus a simple reactive explorer:
+
+```bash
+ros2 launch hexapod_bringup exploration_stack.launch.py
+```
+
+The launch defaults to `servo_dry_run:=true`, so the first run should publish
+commands without moving the robot. When `/scan`, `/map`, and `/cmd_vel` look
+reasonable, run real motion explicitly:
+
+```bash
+ros2 launch hexapod_bringup exploration_stack.launch.py servo_dry_run:=false
+```
+
+The explorer subscribes to `/scan`, scores candidate LiDAR directions by
+range and angular clearance, and publishes slow `cmd_vel` commands toward the
+most open direction. It is a basic reactive wanderer, not full Nav2-style
+frontier exploration.
+
+Useful tuning knobs:
+
+```bash
+ros2 launch hexapod_bringup exploration_stack.launch.py \
+  explorer_max_speed_mps:=0.025 \
+  explorer_obstacle_stop_distance_m:=0.35 \
+  explorer_desired_clearance_m:=0.65
+```
+
+### 3. Core Locomotion Stack
 
 Use this to bring up IMU publishing, locomotion, and the servo driver:
 
@@ -124,7 +154,7 @@ Notes:
 - The default BNO055 UART recovery settings are `imu_read_retry_count:=3`, `imu_retry_backoff_sec:=0.01`, and `imu_yaw_filter_time_constant_sec:=0.5`.
 - Standalone core mode publishes `odom` and `odom -> base_link` directly by default.
 
-### 3. Servo Calibration
+### 4. Servo Calibration
 
 There is a calibration launch file:
 
@@ -139,7 +169,7 @@ Current behavior:
 - the `calibration` node itself still attempts hardware access unless you change its `dry_run` parameter, but it falls back to dry-run if hardware init fails
 - the calibration file used by the locomotion stack is `ros2/hexapod_locomotion/config/servo_calibration.yaml`
 
-### 4. Scripted Motion Tests
+### 5. Scripted Motion Tests
 
 The path planner is useful for bench testing the gait controller with simple commanded motion:
 
@@ -154,7 +184,7 @@ Supported path types in the current code:
 
 This is still open-loop motion driven by `cmd_vel`.
 
-### 5. SLAM-Only Or Lower-Level Debugging
+### 6. SLAM-Only Or Lower-Level Debugging
 
 For normal robot use, prefer `pose_stack.launch.py`. If you want to debug the pieces separately, use this split.
 
@@ -221,12 +251,13 @@ Current interfaces used by the main ROS 2 nodes:
 - `odom`: locomotion odometry in the current mapping stack
 - `/scan`: lidar input for `slam_toolbox`
 - `/map`: occupancy grid produced by `slam_toolbox`
+- `lidar_open_space_explorer`: optional reactive explorer that consumes `/scan` and publishes `cmd_vel`
 - `map`, `odom`, `base_link`, `laser`: frames expected by the mapping stack
 
 ## Current Limitations
 
 - X/Y odometry still starts from commanded gait motion and is only an approximation.
 - BNO055 fused yaw depends on calibration, magnetic environment, and frame conventions.
-- There is no active autonomous exploration or scan-safety layer in source after removing the old custom SLAM package.
+- The open-space explorer is reactive only: it does not do frontier selection, global planning, recovery behaviors, or full collision checking.
 - `slam_toolbox` can correct map-level drift through lidar scan matching, but it still needs a sane local `odom -> base_link` transform.
 - Hardware-specific nodes depend on Linux UART/I2C/GPIO access and will not behave like a full robot bringup on a desktop machine without those devices.

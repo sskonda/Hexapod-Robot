@@ -27,6 +27,7 @@ setup(
             'bno055_publisher = hexapod_locomotion.bno055_publisher:main',
             'locomotion = hexapod_locomotion.locomotion:main',
             'crab_path_follower = hexapod_locomotion.crab_path_follower:main',
+            'lidar_open_space_explorer = hexapod_locomotion.lidar_open_space_explorer:main',
             'path_plan = hexapod_locomotion.path_plan:main',
             'servo_driver = hexapod_locomotion.servo_driver:main',
             'calibration = hexapod_locomotion.calibration:main',
