@@ -132,23 +132,27 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('use_tf_for_scan_frame', True)
         self.declare_parameter('scan_yaw_offset_deg', 0.0)
 
-        self.declare_parameter('max_speed_mps', 0.04)
-        self.declare_parameter('min_speed_mps', 0.015)
-        self.declare_parameter('max_lateral_speed_mps', 0.035)
-        self.declare_parameter('max_turn_rate_rad_s', 0.18)
-        self.declare_parameter('turn_gain', 0.8)
+        # Conservative defaults for live SLAM on a walking hexapod.
+        # Fast yaw/forward motion near walls makes scan matching and odometry
+        # disagree, so keep motion slow and predictable by default.
+        self.declare_parameter('max_speed_mps', 0.018)
+        self.declare_parameter('min_speed_mps', 0.008)
+        self.declare_parameter('max_lateral_speed_mps', 0.012)
+        self.declare_parameter('max_turn_rate_rad_s', 0.040)
+        self.declare_parameter('turn_gain', 0.30)
         self.declare_parameter('crab_motion', True)
 
-        self.declare_parameter('obstacle_stop_distance_m', 0.30)
-        self.declare_parameter('obstacle_slow_distance_m', 0.60)
-        self.declare_parameter('side_stop_distance_m', 0.38)
+        self.declare_parameter('obstacle_stop_distance_m', 0.40)
+        self.declare_parameter('obstacle_slow_distance_m', 0.70)
+        self.declare_parameter('side_stop_distance_m', 0.45)
         self.declare_parameter('side_check_angle_deg', 85.0)
         self.declare_parameter('side_check_window_deg', 28.0)
-        self.declare_parameter('wall_escape_enter_distance_m', 0.32)
-        self.declare_parameter('wall_escape_exit_distance_m', 0.42)
-        self.declare_parameter('wall_escape_lateral_speed_mps', 0.025)
-        self.declare_parameter('wall_escape_turn_rate_rad_s', 0.10)
-        self.declare_parameter('wall_escape_max_duration_sec', 4.0)
+        self.declare_parameter('wall_escape_enter_distance_m', 0.45)
+        self.declare_parameter('wall_escape_exit_distance_m', 0.60)
+        self.declare_parameter('wall_escape_exit_hold_sec', 0.75)
+        self.declare_parameter('wall_escape_lateral_speed_mps', 0.012)
+        self.declare_parameter('wall_escape_turn_rate_rad_s', 0.020)
+        self.declare_parameter('wall_escape_max_duration_sec', 5.0)
         self.declare_parameter('desired_clearance_m', 0.45)
         self.declare_parameter('minimum_direction_range_m', 0.32)
         self.declare_parameter('max_usable_range_m', 4.0)
@@ -237,6 +241,7 @@ class LidarOpenSpaceExplorer(Node):
         self.wall_escape_active = False
         self.wall_escape_side = 0
         self.wall_escape_started_sec = 0.0
+        self.wall_escape_clear_since_sec = None
 
         self._load_parameters()
 
@@ -323,6 +328,10 @@ class LidarOpenSpaceExplorer(Node):
         self.wall_escape_max_duration_sec = max(
             0.0,
             float(self.get_parameter('wall_escape_max_duration_sec').value),
+        )
+        self.wall_escape_exit_hold_sec = max(
+            0.0,
+            float(self.get_parameter('wall_escape_exit_hold_sec').value),
         )
         self.desired_clearance_m = max(
             self.obstacle_stop_distance_m,
@@ -755,6 +764,8 @@ class LidarOpenSpaceExplorer(Node):
                 self.wall_escape_turn_rate_rad_s = max(0.0, float(parameter.value))
             elif parameter.name == 'wall_escape_max_duration_sec':
                 self.wall_escape_max_duration_sec = max(0.0, float(parameter.value))
+            elif parameter.name == 'wall_escape_exit_hold_sec':
+                self.wall_escape_exit_hold_sec = max(0.0, float(parameter.value))
             elif parameter.name == 'desired_clearance_m':
                 self.desired_clearance_m = max(
                     self.obstacle_stop_distance_m,
@@ -1041,23 +1052,68 @@ class LidarOpenSpaceExplorer(Node):
         return cmd
 
     def wall_escape_command(self):
+        """Return a high-priority scan-only safety command, or None.
+
+        This function intentionally uses only the latest LaserScan-derived front
+        and side clearances.  It runs before frontier/path following in
+        control_loop(), so physical collision avoidance always overrides the map
+        planner.
+        """
         left_clearance, right_clearance = self.side_clearances()
         front_clearance = self.min_scan_range_near_body_angle(
             0.0,
             self.direction_window_rad,
         )
         now_sec = self.now_sec()
+
+        front_too_close = (
+            front_clearance is not None
+            and front_clearance < self.obstacle_stop_distance_m
+        )
         side_too_close = self.side_clearance_below(
             left_clearance,
             right_clearance,
             self.wall_escape_enter_distance_m,
         )
-        front_too_close = (
-            front_clearance is not None
-            and front_clearance < self.obstacle_stop_distance_m
+        side_close_with_front_blocked = (
+            front_too_close
+            and self.side_clearance_below(
+                left_clearance,
+                right_clearance,
+                self.wall_escape_exit_distance_m,
+            )
         )
 
         if self.wall_escape_active:
+            selected_side_clearance = self.clearance_for_wall_side(
+                self.wall_escape_side,
+                left_clearance,
+                right_clearance,
+            )
+            opposite_side = -self.wall_escape_side
+            opposite_clearance = self.clearance_for_wall_side(
+                opposite_side,
+                left_clearance,
+                right_clearance,
+            )
+
+            # Keep the same wall side to avoid left/right oscillation.  Only
+            # switch if the opposite side becomes substantially closer.
+            if (
+                self.wall_escape_side != 0
+                and selected_side_clearance is not None
+                and opposite_clearance is not None
+                and opposite_clearance + 0.15 < selected_side_clearance
+            ):
+                self.wall_escape_side = opposite_side
+                self.wall_escape_clear_since_sec = None
+                self.get_logger().warn(
+                    'Wall escape switching sides: '
+                    f'opposite wall is closer by at least 0.15 m; now avoiding '
+                    f'{self.wall_side_name(self.wall_escape_side)} wall.',
+                    throttle_duration_sec=1.0,
+                )
+
             restored = self.side_clearance_above(
                 left_clearance,
                 right_clearance,
@@ -1067,31 +1123,60 @@ class LidarOpenSpaceExplorer(Node):
                 self.wall_escape_max_duration_sec > 0.0
                 and now_sec - self.wall_escape_started_sec >= self.wall_escape_max_duration_sec
             )
-            if restored or timed_out:
+
+            if restored:
+                if self.wall_escape_clear_since_sec is None:
+                    self.wall_escape_clear_since_sec = now_sec
+                clear_long_enough = (
+                    now_sec - self.wall_escape_clear_since_sec
+                ) >= self.wall_escape_exit_hold_sec
+            else:
+                self.wall_escape_clear_since_sec = None
+                clear_long_enough = False
+
+            if timed_out or clear_long_enough:
+                old_side = self.wall_escape_side
                 self.wall_escape_active = False
                 self.wall_escape_side = 0
+                self.wall_escape_clear_since_sec = None
                 self.reset_frontier_progress()
-                if restored:
+                if timed_out:
                     self.get_logger().info(
-                        'Exiting wall escape: side clearance restored',
+                        'Exiting wall escape: max duration reached.',
                         throttle_duration_sec=1.0,
                     )
                 else:
                     self.get_logger().info(
-                        'Exiting wall escape: max duration reached',
+                        'Exiting wall escape: side clearance restored and held.',
                         throttle_duration_sec=1.0,
                     )
-                if not side_too_close and not front_too_close:
+                # If the scan is still unsafe after clearing state, immediately
+                # continue with the safety behavior below instead of allowing a
+                # planner command through this cycle.
+                if not side_too_close and not side_close_with_front_blocked and not front_too_close:
                     return None
+                if side_too_close or side_close_with_front_blocked:
+                    self.wall_escape_side = old_side or self.closer_wall_side(
+                        left_clearance,
+                        right_clearance,
+                    )
+                    self.wall_escape_active = self.wall_escape_side != 0
+                    self.wall_escape_started_sec = now_sec
 
-        if not self.wall_escape_active and side_too_close:
+        if not self.wall_escape_active and (side_too_close or side_close_with_front_blocked):
             self.wall_escape_side = self.closer_wall_side(left_clearance, right_clearance)
             if self.wall_escape_side != 0:
                 self.wall_escape_active = True
                 self.wall_escape_started_sec = now_sec
+                self.wall_escape_clear_since_sec = None
+                self.reset_frontier_progress()
+                reason = 'side clearance low'
+                if side_close_with_front_blocked and not side_too_close:
+                    reason = 'front blocked with nearby side wall'
                 self.get_logger().warn(
                     'Entering wall escape: '
-                    f'wall on {self.wall_side_name(self.wall_escape_side)}, '
+                    f'{reason}; wall on {self.wall_side_name(self.wall_escape_side)}, '
+                    f'front_clearance={self.format_clearance(front_clearance)}, '
                     f'left_clearance={self.format_clearance(left_clearance)}, '
                     f'right_clearance={self.format_clearance(right_clearance)}',
                     throttle_duration_sec=1.0,
@@ -1103,13 +1188,16 @@ class LidarOpenSpaceExplorer(Node):
         if front_too_close:
             self.reset_frontier_progress()
             cmd = Twist()
+            cmd.linear.x = 0.0
+            cmd.linear.y = 0.0
             cmd.angular.z = self.front_escape_turn_direction(
                 left_clearance,
                 right_clearance,
-            ) * self.wall_escape_turn_rate_rad_s
+            ) * min(self.wall_escape_turn_rate_rad_s, self.max_turn_rate_rad_s)
             self.get_logger().warn(
                 f'Front clearance {front_clearance:.2f} m is below '
-                f'{self.obstacle_stop_distance_m:.2f} m; turning toward clearer side.',
+                f'{self.obstacle_stop_distance_m:.2f} m; stopping forward motion '
+                'and gently turning toward clearer side.',
                 throttle_duration_sec=2.0,
             )
             return cmd
@@ -1117,6 +1205,8 @@ class LidarOpenSpaceExplorer(Node):
         return None
 
     def wall_escape_cmd_for_side(self, wall_side: int) -> Twist:
+        # wall_side = +1 means wall on left; -1 means wall on right.
+        # Move laterally away from that side and add only a tiny yaw away from it.
         away_direction = -float(wall_side)
         cmd = Twist()
         cmd.linear.x = 0.0
@@ -1125,16 +1215,32 @@ class LidarOpenSpaceExplorer(Node):
                 self.wall_escape_lateral_speed_mps,
                 self.max_lateral_speed_mps,
             )
+        else:
+            cmd.linear.y = 0.0
         cmd.angular.z = away_direction * min(
             self.wall_escape_turn_rate_rad_s,
             self.max_turn_rate_rad_s,
         )
         self.reset_frontier_progress()
         self.get_logger().warn(
-            f'Wall escape active: moving away from {self.wall_side_name(wall_side)} wall',
+            f'Wall escape active: moving away from {self.wall_side_name(wall_side)} wall '
+            f'(linear.x={cmd.linear.x:.3f}, linear.y={cmd.linear.y:.3f}, '
+            f'angular.z={cmd.angular.z:.3f})',
             throttle_duration_sec=1.0,
         )
         return cmd
+
+    def clearance_for_wall_side(
+        self,
+        wall_side: int,
+        left_clearance: float | None,
+        right_clearance: float | None,
+    ):
+        if wall_side > 0:
+            return left_clearance
+        if wall_side < 0:
+            return right_clearance
+        return None
 
     def side_clearance_below(
         self,
