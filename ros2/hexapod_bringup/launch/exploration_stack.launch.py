@@ -52,6 +52,9 @@ def generate_launch_description():
     explorer_frontier_min_clearance_m = LaunchConfiguration(
         'explorer_frontier_min_clearance_m'
     )
+    explorer_frontier_failure_memory_enabled = LaunchConfiguration(
+        'explorer_frontier_failure_memory_enabled'
+    )
     explorer_frontier_suppression_duration_sec = LaunchConfiguration(
         'explorer_frontier_suppression_duration_sec'
     )
@@ -199,6 +202,11 @@ def generate_launch_description():
             description='Minimum map clearance from occupied cells for frontier goals and traversed cells.',
         ),
         DeclareLaunchArgument(
+            'explorer_frontier_failure_memory_enabled',
+            default_value='false',
+            description='Remember failed frontier paths and temporarily avoid repeating them.',
+        ),
+        DeclareLaunchArgument(
             'explorer_frontier_suppression_duration_sec',
             default_value='15.0',
             description='How long to avoid a frontier after reaching it or rejecting its current path.',
@@ -254,6 +262,9 @@ def generate_launch_description():
                 'frontier_goal_tolerance_m': explorer_frontier_goal_tolerance_m,
                 'frontier_waypoint_spacing_m': explorer_frontier_waypoint_spacing_m,
                 'frontier_min_clearance_m': explorer_frontier_min_clearance_m,
+                'frontier_failure_memory_enabled': (
+                    explorer_frontier_failure_memory_enabled
+                ),
                 'frontier_suppression_duration_sec': (
                     explorer_frontier_suppression_duration_sec
                 ),

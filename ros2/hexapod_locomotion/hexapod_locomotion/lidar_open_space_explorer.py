@@ -115,6 +115,7 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('frontier_min_clearance_m', 0.25)
         self.declare_parameter('frontier_free_threshold', 25)
         self.declare_parameter('frontier_occupied_threshold', 65)
+        self.declare_parameter('frontier_failure_memory_enabled', False)
         self.declare_parameter('frontier_suppression_duration_sec', 15.0)
         self.declare_parameter('frontier_suppression_radius_m', 0.60)
         self.declare_parameter('frontier_blocked_clearance_margin_m', 0.05)
@@ -242,6 +243,9 @@ class LidarOpenSpaceExplorer(Node):
         self.frontier_occupied_threshold = int(
             self.get_parameter('frontier_occupied_threshold').value
         )
+        self.frontier_failure_memory_enabled = as_bool(
+            self.get_parameter('frontier_failure_memory_enabled').value
+        )
         self.frontier_suppression_duration_sec = max(
             0.0,
             float(self.get_parameter('frontier_suppression_duration_sec').value),
@@ -306,6 +310,10 @@ class LidarOpenSpaceExplorer(Node):
                 self.frontier_free_threshold = int(parameter.value)
             elif parameter.name == 'frontier_occupied_threshold':
                 self.frontier_occupied_threshold = int(parameter.value)
+            elif parameter.name == 'frontier_failure_memory_enabled':
+                self.frontier_failure_memory_enabled = as_bool(parameter.value)
+                if not self.frontier_failure_memory_enabled:
+                    self.suppressed_frontiers = []
             elif parameter.name == 'frontier_suppression_duration_sec':
                 self.frontier_suppression_duration_sec = max(0.0, float(parameter.value))
             elif parameter.name == 'frontier_suppression_radius_m':
@@ -509,11 +517,17 @@ class LidarOpenSpaceExplorer(Node):
                 body_angle,
                 self.direction_window_rad,
             )
-            blocked_clearance_m = (
-                self.obstacle_stop_distance_m
-                + self.frontier_blocked_clearance_margin_m
-            )
-            if scan_clearance is not None and scan_clearance <= blocked_clearance_m:
+            if self.frontier_failure_memory_enabled:
+                blocked = scan_clearance is not None and scan_clearance <= (
+                    self.obstacle_stop_distance_m
+                    + self.frontier_blocked_clearance_margin_m
+                )
+            else:
+                blocked = (
+                    scan_clearance is not None
+                    and scan_clearance < self.obstacle_stop_distance_m
+                )
+            if blocked:
                 self.suppress_current_frontier('scan_blocked')
                 return cmd
 
@@ -575,6 +589,10 @@ class LidarOpenSpaceExplorer(Node):
     def suppress_current_frontier(self, reason: str):
         frontier = self.current_frontier
         if frontier is None:
+            self.clear_current_frontier()
+            return
+
+        if not self.frontier_failure_memory_enabled:
             self.clear_current_frontier()
             return
 
@@ -655,7 +673,11 @@ class LidarOpenSpaceExplorer(Node):
         ]
 
     def frontier_is_suppressed(self, x_m: float, y_m: float) -> bool:
-        if not self.suppressed_frontiers or self.frontier_suppression_radius_m <= 0.0:
+        if (
+            not self.frontier_failure_memory_enabled
+            or not self.suppressed_frontiers
+            or self.frontier_suppression_radius_m <= 0.0
+        ):
             return False
         radius_sq = self.frontier_suppression_radius_m * self.frontier_suppression_radius_m
         for frontier in self.suppressed_frontiers:
