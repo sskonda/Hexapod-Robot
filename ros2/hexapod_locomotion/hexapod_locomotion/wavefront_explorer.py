@@ -85,7 +85,7 @@ class WavefrontExplorer(Node):
         self.declare_parameter('planned_path_topic', '/explorer/planned_path')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('map_frame', 'map')
-        self.declare_parameter('use_sim_time', False)
+        #self.declare_parameter('use_sim_time', False)
         self.declare_parameter('enabled', True)
         self.declare_parameter('replan_period_sec', 3.0)
         self.declare_parameter('control_rate_hz', 10.0)
