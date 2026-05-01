@@ -13,7 +13,9 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
+from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
+from tf2_ros import Buffer, TransformException, TransformListener
 
 
 def clamp(value: float, min_value: float, max_value: float) -> float:
@@ -26,6 +28,12 @@ def as_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ('1', 'true', 'yes', 'on')
     return bool(value)
+
+
+def quaternion_to_yaw(x_value: float, y_value: float, z_value: float, w_value: float) -> float:
+    siny_cosp = 2.0 * (w_value * z_value + x_value * y_value)
+    cosy_cosp = 1.0 - 2.0 * (y_value * y_value + z_value * z_value)
+    return math.atan2(siny_cosp, cosy_cosp)
 
 
 @dataclass(frozen=True)
@@ -43,9 +51,12 @@ class LidarOpenSpaceExplorer(Node):
 
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel')
+        self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('cmd_vel_rate_hz', 10.0)
         self.declare_parameter('scan_timeout_sec', 0.75)
         self.declare_parameter('enabled', True)
+        self.declare_parameter('use_tf_for_scan_frame', True)
+        self.declare_parameter('scan_yaw_offset_deg', 0.0)
 
         self.declare_parameter('max_speed_mps', 0.04)
         self.declare_parameter('min_speed_mps', 0.015)
@@ -71,6 +82,7 @@ class LidarOpenSpaceExplorer(Node):
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
+        self.base_frame = str(self.get_parameter('base_frame').value)
         self.latest_scan = None
         self.latest_scan_time = None
         self.last_choice = None
@@ -78,6 +90,8 @@ class LidarOpenSpaceExplorer(Node):
         self._load_parameters()
 
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
         self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.create_timer(1.0 / self.cmd_vel_rate_hz, self.control_loop)
@@ -92,6 +106,10 @@ class LidarOpenSpaceExplorer(Node):
         self.cmd_vel_rate_hz = max(1.0, float(self.get_parameter('cmd_vel_rate_hz').value))
         self.scan_timeout_sec = max(0.1, float(self.get_parameter('scan_timeout_sec').value))
         self.enabled = as_bool(self.get_parameter('enabled').value)
+        self.use_tf_for_scan_frame = as_bool(self.get_parameter('use_tf_for_scan_frame').value)
+        self.scan_yaw_offset_rad = math.radians(
+            float(self.get_parameter('scan_yaw_offset_deg').value)
+        )
 
         self.max_speed_mps = max(0.0, float(self.get_parameter('max_speed_mps').value))
         self.min_speed_mps = max(0.0, float(self.get_parameter('min_speed_mps').value))
@@ -150,8 +168,14 @@ class LidarOpenSpaceExplorer(Node):
 
     def parameter_update_callback(self, parameters):
         for parameter in parameters:
-            if parameter.name == 'enabled':
+            if parameter.name == 'base_frame':
+                self.base_frame = str(parameter.value)
+            elif parameter.name == 'enabled':
                 self.enabled = as_bool(parameter.value)
+            elif parameter.name == 'use_tf_for_scan_frame':
+                self.use_tf_for_scan_frame = as_bool(parameter.value)
+            elif parameter.name == 'scan_yaw_offset_deg':
+                self.scan_yaw_offset_rad = math.radians(float(parameter.value))
             elif parameter.name == 'max_speed_mps':
                 self.max_speed_mps = max(0.0, float(parameter.value))
             elif parameter.name == 'min_speed_mps':
@@ -238,9 +262,10 @@ class LidarOpenSpaceExplorer(Node):
             self.cmd_pub.publish(cmd)
             return
 
+        body_angle_rad = self.scan_angle_to_body_angle(self.latest_scan, best.angle_rad)
         if best.min_range_m < self.obstacle_stop_distance_m:
             cmd.angular.z = clamp(
-                self.turn_gain * best.angle_rad,
+                self.turn_gain * body_angle_rad,
                 -self.max_turn_rate_rad_s,
                 self.max_turn_rate_rad_s,
             )
@@ -251,8 +276,8 @@ class LidarOpenSpaceExplorer(Node):
 
         speed = self.speed_for_clearance(best.min_range_m)
         if self.crab_motion:
-            cmd.linear.x = speed * math.cos(best.angle_rad)
-            cmd.linear.y = speed * math.sin(best.angle_rad)
+            cmd.linear.x = speed * math.cos(body_angle_rad)
+            cmd.linear.y = speed * math.sin(body_angle_rad)
             cmd.linear.y = clamp(
                 cmd.linear.y,
                 -self.max_lateral_speed_mps,
@@ -263,15 +288,41 @@ class LidarOpenSpaceExplorer(Node):
             cmd.angular.z = 0.0
         else:
             turn = clamp(
-                self.turn_gain * best.angle_rad,
+                self.turn_gain * body_angle_rad,
                 -self.max_turn_rate_rad_s,
                 self.max_turn_rate_rad_s,
             )
-            cmd.linear.x = speed * max(0.0, math.cos(best.angle_rad))
+            cmd.linear.x = speed * max(0.0, math.cos(body_angle_rad))
             cmd.angular.z = turn
 
         self.last_choice = best
         self.cmd_pub.publish(cmd)
+
+    def scan_angle_to_body_angle(self, scan: LaserScan, scan_angle_rad: float) -> float:
+        if not self.use_tf_for_scan_frame:
+            return scan_angle_rad + self.scan_yaw_offset_rad
+
+        scan_frame = scan.header.frame_id.strip()
+        if not scan_frame:
+            return scan_angle_rad + self.scan_yaw_offset_rad
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_frame,
+                scan_frame,
+                Time(),
+            )
+        except TransformException as exc:
+            self.get_logger().warn(
+                f'Could not transform {scan_frame} to {self.base_frame}: {exc}. '
+                'Using scan_yaw_offset_deg fallback.',
+                throttle_duration_sec=2.0,
+            )
+            return scan_angle_rad + self.scan_yaw_offset_rad
+
+        rotation = transform.transform.rotation
+        yaw_rad = quaternion_to_yaw(rotation.x, rotation.y, rotation.z, rotation.w)
+        return scan_angle_rad + yaw_rad
 
     def speed_for_clearance(self, clearance_m: float) -> float:
         if self.max_speed_mps <= 0.0:

@@ -16,6 +16,7 @@ def generate_launch_description():
     launch_lidar = LaunchConfiguration('launch_lidar')
     enable_slam_toolbox = LaunchConfiguration('enable_slam_toolbox')
     scan_topic = LaunchConfiguration('scan_topic')
+    base_frame = LaunchConfiguration('base_frame')
     use_sim_time = LaunchConfiguration('use_sim_time')
     lidar_serial_port = LaunchConfiguration('lidar_serial_port')
     locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
@@ -32,6 +33,8 @@ def generate_launch_description():
     explorer_desired_clearance_m = LaunchConfiguration('explorer_desired_clearance_m')
     explorer_crab_motion = LaunchConfiguration('explorer_crab_motion')
     explorer_reverse_allowed = LaunchConfiguration('explorer_reverse_allowed')
+    explorer_use_tf_for_scan_frame = LaunchConfiguration('explorer_use_tf_for_scan_frame')
+    explorer_scan_yaw_offset_deg = LaunchConfiguration('explorer_scan_yaw_offset_deg')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -53,6 +56,11 @@ def generate_launch_description():
             'scan_topic',
             default_value='/scan',
             description='LaserScan topic used by the explorer and slam_toolbox.',
+        ),
+        DeclareLaunchArgument(
+            'base_frame',
+            default_value='base_link',
+            description='Robot body frame used by the explorer for cmd_vel directions.',
         ),
         DeclareLaunchArgument(
             'use_sim_time',
@@ -109,6 +117,16 @@ def generate_launch_description():
             default_value='false',
             description='Allow the explorer to command negative linear.x.',
         ),
+        DeclareLaunchArgument(
+            'explorer_use_tf_for_scan_frame',
+            default_value='true',
+            description='Use TF to rotate scan directions into base_frame before publishing cmd_vel.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_scan_yaw_offset_deg',
+            default_value='0.0',
+            description='Fallback scan-to-body yaw offset if TF is unavailable.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(pose_stack_launch)),
             launch_arguments={
@@ -129,7 +147,10 @@ def generate_launch_description():
             parameters=[{
                 'scan_topic': scan_topic,
                 'cmd_vel_topic': 'cmd_vel',
+                'base_frame': base_frame,
                 'enabled': explorer_enabled,
+                'use_tf_for_scan_frame': explorer_use_tf_for_scan_frame,
+                'scan_yaw_offset_deg': explorer_scan_yaw_offset_deg,
                 'max_speed_mps': explorer_max_speed_mps,
                 'min_speed_mps': explorer_min_speed_mps,
                 'obstacle_stop_distance_m': explorer_obstacle_stop_distance_m,
