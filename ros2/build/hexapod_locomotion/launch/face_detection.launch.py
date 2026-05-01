@@ -1,1 +1,0 @@
-/home/sanat/Hexapod-Robot/ros2/hexapod_locomotion/launch/face_detection.launch.py

@@ -1,1 +1,0 @@
-/home/sanat/Hexapod-Robot/ros2/hexapod_slam/launch/slam.launch.py
