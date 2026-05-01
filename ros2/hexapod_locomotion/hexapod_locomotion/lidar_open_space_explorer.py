@@ -2299,6 +2299,7 @@ class LidarOpenSpaceExplorer(Node):
 
         visited = bytearray(width * height)
         components = []
+        tiny_components = []
         for index, is_frontier in enumerate(frontier):
             if not is_frontier or visited[index]:
                 continue
@@ -2315,7 +2316,16 @@ class LidarOpenSpaceExplorer(Node):
             if len(component) >= self.frontier_min_area_cells:
                 components.append(component)
             else:
+                tiny_components.append(component)
                 self.add_rejected_frontier_debug(grid, component, 'tiny_frontier')
+        if components:
+            return components
+        if tiny_components:
+            self.get_logger().info(
+                f'Only tiny frontier clusters are available; promoting {len(tiny_components)} tiny frontier(s) for exploration.',
+                throttle_duration_sec=2.0,
+            )
+            return tiny_components
         return components
 
     def project_frontier_component_to_goal(
