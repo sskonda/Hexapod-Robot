@@ -103,6 +103,7 @@ RPLIDAR A1 defaults passed into `rplidar_ros`:
 - `lidar_serial_port:=/dev/ttyUSB0`
 - `lidar_serial_baudrate:=115200`
 - `laser_frame:=laser`
+- `laser_yaw:=-1.5708` for the current sideways LiDAR mount
 - `lidar_inverted:=false`
 - `lidar_angle_compensate:=true`
 - `lidar_scan_mode:=Sensitivity`
@@ -208,7 +209,7 @@ Implement mapping around the standard 2D SLAM Toolbox data path:
 
 - Publish a clean `sensor_msgs/LaserScan` on `/scan`.
 - Ensure the scan `frame_id` matches the launch argument `laser_frame`, default `laser`.
-- Measure the lidar pose on the robot and pass it as `laser_x`, `laser_y`, `laser_z`, `laser_roll`, `laser_pitch`, and `laser_yaw`.
+- Measure the lidar pose on the robot and pass it as `laser_x`, `laser_y`, `laser_z`, `laser_roll`, `laser_pitch`, and `laser_yaw`. The current default `laser_yaw` is `-1.5708` radians because the LiDAR is mounted 90 degrees from `base_link`.
 - Keep exactly one local odometry owner for `odom -> base_link`. The current default owner is `locomotion`.
 - Let `slam_toolbox` own `map -> odom` and publish `/map`.
 - Drive slowly while mapping. The current gait odometry is approximate, so map quality will come mostly from lidar scan matching and loop closures.

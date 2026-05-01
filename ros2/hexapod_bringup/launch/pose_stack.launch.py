@@ -156,8 +156,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'laser_yaw',
-            default_value='0.0',
-            description='LiDAR yaw offset from base_link in radians.',
+            default_value='-1.5708',
+            description='LiDAR yaw offset from base_link in radians. Default is -90 deg for the current sideways mount.',
         ),
         DeclareLaunchArgument(
             'imu_frame',
