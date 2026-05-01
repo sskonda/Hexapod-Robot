@@ -111,6 +111,12 @@ class ViewpointCandidate:
     score: float
 
 
+@dataclass(frozen=True)
+class DebugPoint:
+    x_m: float
+    y_m: float
+
+
 class LidarOpenSpaceExplorer(Node):
     def __init__(self):
         super().__init__('lidar_open_space_explorer')
@@ -171,6 +177,7 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('min_frontier_cluster_size', 5)
         self.declare_parameter('frontier_goal_projection_radius_m', 0.90)
         self.declare_parameter('frontier_standoff_distance_m', 0.40)
+        self.declare_parameter('frontier_inward_projection_m', 0.25)
         self.declare_parameter('max_projection_attempts_per_frontier', 50)
         self.declare_parameter('unknown_visibility_radius_m', 1.20)
         self.declare_parameter('unknown_visibility_min_cells', 1)
@@ -220,6 +227,7 @@ class LidarOpenSpaceExplorer(Node):
         self.suppressed_frontiers = []
         self.rejected_frontiers = []
         self.recent_frontier_paths = []
+        self.candidate_viewpoints_debug = []
         self.bug_active = False
         self.bug_wall_side = 1
         self.bug_started_at_sec = 0.0
@@ -415,6 +423,10 @@ class LidarOpenSpaceExplorer(Node):
         self.frontier_standoff_distance_m = max(
             0.0,
             float(self.get_parameter('frontier_standoff_distance_m').value),
+        )
+        self.frontier_inward_projection_m = max(
+            0.0,
+            float(self.get_parameter('frontier_inward_projection_m').value),
         )
         self.max_projection_attempts_per_frontier = max(
             1,
@@ -1403,6 +1415,21 @@ class LidarOpenSpaceExplorer(Node):
         self.marker_pub.publish(markers)
 
     def append_frontier_memory_markers(self, markers: MarkerArray, now):
+        if self.candidate_viewpoints_debug:
+            candidate = self.make_marker('candidate_viewpoints', 12, Marker.SPHERE_LIST, now)
+            candidate.scale.x = self.target_marker_scale_m * 0.75
+            candidate.scale.y = self.target_marker_scale_m * 0.75
+            candidate.scale.z = self.target_marker_scale_m * 0.75
+            candidate.color.r = 0.10
+            candidate.color.g = 0.35
+            candidate.color.b = 1.0
+            candidate.color.a = 0.95
+            candidate.points = [
+                self.point_from_xy(point.x_m, point.y_m)
+                for point in self.candidate_viewpoints_debug
+            ]
+            markers.markers.append(candidate)
+
         if self.suppressed_frontiers:
             suppressed = self.make_marker('suppressed_frontiers', 5, Marker.SPHERE_LIST, now)
             suppressed.scale.x = self.target_marker_scale_m * 0.5
@@ -1420,13 +1447,13 @@ class LidarOpenSpaceExplorer(Node):
 
         if self.rejected_frontiers:
             rejected = self.make_marker('rejected_candidates', 6, Marker.CUBE_LIST, now)
-            rejected.scale.x = self.target_marker_scale_m * 0.45
-            rejected.scale.y = self.target_marker_scale_m * 0.45
-            rejected.scale.z = self.target_marker_scale_m * 0.45
+            rejected.scale.x = self.target_marker_scale_m * 0.7
+            rejected.scale.y = self.target_marker_scale_m * 0.7
+            rejected.scale.z = self.target_marker_scale_m * 0.7
             rejected.color.r = 1.0
-            rejected.color.g = 0.45
+            rejected.color.g = 0.0
             rejected.color.b = 0.0
-            rejected.color.a = 0.75
+            rejected.color.a = 0.95
             rejected.points = [
                 self.point_from_xy(frontier.x_m, frontier.y_m)
                 for frontier in self.rejected_frontiers
@@ -1450,6 +1477,7 @@ class LidarOpenSpaceExplorer(Node):
             return
 
         self.prune_suppressed_frontiers()
+        self.candidate_viewpoints_debug = []
         candidate = self.find_frontier_target()
         self.last_frontier_plan_time = self.get_clock().now()
         if candidate is None:
@@ -2194,6 +2222,10 @@ class LidarOpenSpaceExplorer(Node):
             1,
             int(math.ceil(self.frontier_goal_projection_radius_m / planner.resolution)),
         )
+        inward_projection_cells = max(
+            0,
+            int(round(self.frontier_inward_projection_m / planner.resolution)),
+        )
         standoff_cells = max(
             0.0,
             self.frontier_standoff_distance_m / planner.resolution,
@@ -2202,13 +2234,20 @@ class LidarOpenSpaceExplorer(Node):
         for frontier_index in component:
             fx = frontier_index % width
             fy = frontier_index // width
+            anchor_x, anchor_y = self.project_frontier_anchor_cell(
+                grid,
+                planner,
+                fx,
+                fy,
+                inward_projection_cells,
+            )
             for dy in range(-projection_cells, projection_cells + 1):
                 for dx in range(-projection_cells, projection_cells + 1):
                     distance_cells = math.hypot(dx, dy)
                     if distance_cells > projection_cells:
                         continue
-                    nx = fx + dx
-                    ny = fy + dy
+                    nx = anchor_x + dx
+                    ny = anchor_y + dy
                     if not (0 <= nx < planner.width and 0 <= ny < planner.height):
                         continue
                     index = self.grid_index(nx, ny, width)
@@ -2266,10 +2305,90 @@ class LidarOpenSpaceExplorer(Node):
             return None, 'rejected: no path or low information gain'
 
         candidates.sort(key=lambda item: item.score, reverse=True)
+        self.candidate_viewpoints_debug = []
+        for candidate in candidates[: self.max_projection_attempts_per_frontier]:
+            world_x, world_y = self.grid_to_world(
+                grid,
+                candidate.index % width,
+                candidate.index // width,
+            )
+            self.candidate_viewpoints_debug.append(DebugPoint(world_x, world_y))
         for candidate in candidates[: self.max_projection_attempts_per_frontier]:
             return candidate, 'ok'
 
         return None, 'rejected: projection attempts exhausted'
+
+    def project_frontier_anchor_cell(
+        self,
+        grid: OccupancyGrid,
+        planner: PlannerGrid,
+        frontier_x: int,
+        frontier_y: int,
+        inward_projection_cells: int,
+    ) -> tuple[int, int]:
+        if inward_projection_cells <= 0:
+            return frontier_x, frontier_y
+
+        unknown_dx = 0.0
+        unknown_dy = 0.0
+        width = planner.width
+        height = planner.height
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                nx = frontier_x + dx
+                ny = frontier_y + dy
+                if not (0 <= nx < width and 0 <= ny < height):
+                    continue
+                index = self.grid_index(nx, ny, width)
+                if grid.data[index] < 0:
+                    unknown_dx += dx
+                    unknown_dy += dy
+
+        if abs(unknown_dx) < 1e-6 and abs(unknown_dy) < 1e-6:
+            return frontier_x, frontier_y
+
+        magnitude = math.hypot(unknown_dx, unknown_dy)
+        inward_dx = -unknown_dx / magnitude
+        inward_dy = -unknown_dy / magnitude
+        anchor_x = int(round(frontier_x + inward_dx * inward_projection_cells))
+        anchor_y = int(round(frontier_y + inward_dy * inward_projection_cells))
+        anchor_x = max(0, min(width - 1, anchor_x))
+        anchor_y = max(0, min(height - 1, anchor_y))
+
+        anchor_index = self.grid_index(anchor_x, anchor_y, width)
+        if planner.goal_safe[anchor_index]:
+            return anchor_x, anchor_y
+
+        nearest = self.nearest_goal_safe_cell(planner, anchor_x, anchor_y)
+        if nearest is not None:
+            return nearest
+        return frontier_x, frontier_y
+
+    def nearest_goal_safe_cell(
+        self,
+        planner: PlannerGrid,
+        start_x: int,
+        start_y: int,
+    ) -> tuple[int, int] | None:
+        width = planner.width
+        height = planner.height
+        start_index = self.grid_index(start_x, start_y, width)
+        visited = bytearray(width * height)
+        pending = deque([start_index])
+        visited[start_index] = 1
+
+        while pending:
+            current = pending.popleft()
+            if planner.goal_safe[current]:
+                return current % width, current // width
+            for neighbor in self.cardinal_neighbor_indices(current, width, height):
+                if visited[neighbor]:
+                    continue
+                visited[neighbor] = 1
+                pending.append(neighbor)
+        return None
 
     def reachable_goal_parent(
         self,
