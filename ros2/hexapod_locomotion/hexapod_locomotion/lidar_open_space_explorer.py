@@ -80,6 +80,13 @@ class SuppressedFrontier:
     occupied_count: int = -1
 
 
+@dataclass(frozen=True)
+class RecentFrontierPath:
+    path: tuple[tuple[float, float], ...]
+    recorded_at_sec: float
+    reason: str
+
+
 @dataclass
 class PlannerGrid:
     width: int
@@ -173,9 +180,12 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('frontier_blocked_clearance_margin_m', 0.05)
         self.declare_parameter('frontier_progress_timeout_sec', 10.0)
         self.declare_parameter('frontier_progress_epsilon_m', 0.08)
+        self.declare_parameter('recent_path_memory_size', 2)
+        self.declare_parameter('recent_path_overlap_fraction', 0.6)
+        self.declare_parameter('recent_path_point_tolerance_m', 0.18)
         self.declare_parameter('publish_target_markers', True)
         self.declare_parameter('target_marker_scale_m', 0.12)
-        self.declare_parameter('bug_recovery_enabled', True)
+        self.declare_parameter('bug_recovery_enabled', False)
         self.declare_parameter('bug_wall_side', 'auto')
         self.declare_parameter('bug_forward_speed_mps', 0.012)
         self.declare_parameter('bug_lateral_gain', 0.8)
@@ -206,6 +216,7 @@ class LidarOpenSpaceExplorer(Node):
         self.frontier_progress_waypoint_index = -1
         self.suppressed_frontiers = []
         self.rejected_frontiers = []
+        self.recent_frontier_paths = []
         self.bug_active = False
         self.bug_wall_side = 1
         self.bug_started_at_sec = 0.0
@@ -406,6 +417,20 @@ class LidarOpenSpaceExplorer(Node):
             0.0,
             float(self.get_parameter('frontier_progress_epsilon_m').value),
         )
+        self.recent_path_memory_size = max(
+            0,
+            int(self.get_parameter('recent_path_memory_size').value),
+        )
+        self.recent_path_overlap_fraction = clamp(
+            float(self.get_parameter('recent_path_overlap_fraction').value),
+            0.0,
+            1.0,
+        )
+        self.recent_path_point_tolerance_m = max(
+            0.01,
+            float(self.get_parameter('recent_path_point_tolerance_m').value),
+        )
+        self.trim_recent_frontier_paths()
         self.publish_target_markers = as_bool(
             self.get_parameter('publish_target_markers').value
         )
@@ -562,6 +587,13 @@ class LidarOpenSpaceExplorer(Node):
                 self.frontier_progress_timeout_sec = max(1.0, float(parameter.value))
             elif parameter.name == 'frontier_progress_epsilon_m':
                 self.frontier_progress_epsilon_m = max(0.0, float(parameter.value))
+            elif parameter.name == 'recent_path_memory_size':
+                self.recent_path_memory_size = max(0, int(parameter.value))
+                self.trim_recent_frontier_paths()
+            elif parameter.name == 'recent_path_overlap_fraction':
+                self.recent_path_overlap_fraction = clamp(float(parameter.value), 0.0, 1.0)
+            elif parameter.name == 'recent_path_point_tolerance_m':
+                self.recent_path_point_tolerance_m = max(0.01, float(parameter.value))
             elif parameter.name == 'publish_target_markers':
                 self.publish_target_markers = as_bool(parameter.value)
                 if not self.publish_target_markers:
@@ -821,9 +853,11 @@ class LidarOpenSpaceExplorer(Node):
                     'Reached frontier viewpoint; clearing target and replanning.',
                     throttle_duration_sec=2.0,
                 )
+                self.remember_current_frontier_path('reached')
                 self.clear_current_frontier()
+                self.plan_frontier_target()
                 self.publish_suppressed_markers()
-                return cmd
+                continue
 
             body_angle = math.atan2(body_y, body_x)
             if not self.bug_active and self.frontier_progress_timed_out(distance_m):
@@ -1363,6 +1397,8 @@ class LidarOpenSpaceExplorer(Node):
             self.clear_current_frontier()
             return
 
+        self.remember_current_frontier_path(reason)
+
         motion_failure_reasons = {
             'no_progress',
             'scan_blocked',
@@ -1579,6 +1615,67 @@ class LidarOpenSpaceExplorer(Node):
     ) -> bool:
         return any(self.frontier_is_suppressed(x_m, y_m) for x_m, y_m in path)
 
+    def remember_current_frontier_path(self, reason: str):
+        frontier = self.current_frontier
+        if frontier is None or not frontier.path or self.recent_path_memory_size <= 0:
+            return
+        self.recent_frontier_paths.append(
+            RecentFrontierPath(
+                path=frontier.path,
+                recorded_at_sec=self.now_sec(),
+                reason=reason,
+            )
+        )
+        self.trim_recent_frontier_paths()
+
+    def trim_recent_frontier_paths(self):
+        keep = max(0, getattr(self, 'recent_path_memory_size', 0))
+        if keep <= 0:
+            self.recent_frontier_paths = []
+            return
+        self.recent_frontier_paths = self.recent_frontier_paths[-keep:]
+
+    def frontier_path_recently_tried(
+        self,
+        path: tuple[tuple[float, float], ...],
+    ) -> bool:
+        if (
+            self.recent_path_memory_size <= 0
+            or self.recent_path_overlap_fraction <= 0.0
+            or not path
+            or not self.recent_frontier_paths
+        ):
+            return False
+
+        for recent in self.recent_frontier_paths:
+            overlap = self.path_overlap_fraction(path, recent.path)
+            if overlap >= self.recent_path_overlap_fraction:
+                self.get_logger().info(
+                    f'Skipping frontier path that overlaps {overlap:.0%} with recent '
+                    f'"{recent.reason}" path.',
+                    throttle_duration_sec=2.0,
+                )
+                return True
+        return False
+
+    def path_overlap_fraction(
+        self,
+        path_a: tuple[tuple[float, float], ...],
+        path_b: tuple[tuple[float, float], ...],
+    ) -> float:
+        if not path_a or not path_b:
+            return 0.0
+        matched = 0
+        tolerance_sq = self.recent_path_point_tolerance_m * self.recent_path_point_tolerance_m
+        for ax_m, ay_m in path_a:
+            for bx_m, by_m in path_b:
+                dx_m = ax_m - bx_m
+                dy_m = ay_m - by_m
+                if dx_m * dx_m + dy_m * dy_m <= tolerance_sq:
+                    matched += 1
+                    break
+        return matched / max(1, len(path_a))
+
     def robot_pose_in_map(self):
         try:
             transform = self.tf_buffer.lookup_transform(
@@ -1771,6 +1868,10 @@ class LidarOpenSpaceExplorer(Node):
                 self.add_rejected_frontier_debug(grid, component, 'unsafe_path')
                 continue
             if self.frontier_path_is_suppressed(path):
+                continue
+            if self.frontier_path_recently_tried(path):
+                rejected_count += 1
+                self.add_rejected_frontier_debug(grid, component, 'recent_path')
                 continue
 
             target_x = target_index % width

@@ -110,6 +110,15 @@ def generate_launch_description():
     explorer_frontier_progress_epsilon_m = LaunchConfiguration(
         'explorer_frontier_progress_epsilon_m'
     )
+    explorer_recent_path_memory_size = LaunchConfiguration(
+        'explorer_recent_path_memory_size'
+    )
+    explorer_recent_path_overlap_fraction = LaunchConfiguration(
+        'explorer_recent_path_overlap_fraction'
+    )
+    explorer_recent_path_point_tolerance_m = LaunchConfiguration(
+        'explorer_recent_path_point_tolerance_m'
+    )
     explorer_publish_target_markers = LaunchConfiguration('explorer_publish_target_markers')
     explorer_target_marker_scale_m = LaunchConfiguration('explorer_target_marker_scale_m')
     explorer_bug_recovery_enabled = LaunchConfiguration('explorer_bug_recovery_enabled')
@@ -382,6 +391,21 @@ def generate_launch_description():
             description='Minimum distance improvement that counts as progress toward a waypoint.',
         ),
         DeclareLaunchArgument(
+            'explorer_recent_path_memory_size',
+            default_value='2',
+            description='How many recently completed or failed frontier paths to avoid repeating.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_recent_path_overlap_fraction',
+            default_value='0.6',
+            description='Minimum path overlap fraction that counts as repeating a recent path.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_recent_path_point_tolerance_m',
+            default_value='0.18',
+            description='Waypoint matching tolerance used when comparing frontier paths.',
+        ),
+        DeclareLaunchArgument(
             'explorer_publish_target_markers',
             default_value='true',
             description='Publish RViz markers for frontier target nodes and the active local target.',
@@ -393,7 +417,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_bug_recovery_enabled',
-            default_value='true',
+            default_value='false',
             description='Use simple Bug-style wall following when the direct frontier waypoint is blocked.',
         ),
         DeclareLaunchArgument(
@@ -505,6 +529,9 @@ def generate_launch_description():
                 ),
                 'frontier_progress_timeout_sec': explorer_frontier_progress_timeout_sec,
                 'frontier_progress_epsilon_m': explorer_frontier_progress_epsilon_m,
+                'recent_path_memory_size': explorer_recent_path_memory_size,
+                'recent_path_overlap_fraction': explorer_recent_path_overlap_fraction,
+                'recent_path_point_tolerance_m': explorer_recent_path_point_tolerance_m,
                 'publish_target_markers': explorer_publish_target_markers,
                 'target_marker_scale_m': explorer_target_marker_scale_m,
                 'bug_recovery_enabled': explorer_bug_recovery_enabled,
