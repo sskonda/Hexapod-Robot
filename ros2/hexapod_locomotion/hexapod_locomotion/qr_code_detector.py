@@ -82,7 +82,7 @@ class QrCodeDetectorNode(Node):
             self.image_pub = self.create_publisher(
                 Image,
                 annotated_image_topic,
-                qos_profile_sensor_data,
+                qos_depth,
             )
 
         self.get_logger().info(f'Subscribed to {image_topic}')
