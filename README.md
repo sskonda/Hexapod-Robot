@@ -130,6 +130,10 @@ The explorer defaults to map-based frontier exploration. It subscribes to
 publishes slow `cmd_vel` commands toward it. It still uses `/scan` as a local
 safety check and can fall back to the older open-space reactive behavior.
 
+The current frontier path and active local target are published as RViz markers
+on `/explorer/targets`. Add a `MarkerArray` display in RViz to see the blue
+waypoint nodes, green active target, and yellow final frontier goal.
+
 Useful tuning knobs:
 
 ```bash

@@ -17,6 +17,7 @@ def generate_launch_description():
     enable_slam_toolbox = LaunchConfiguration('enable_slam_toolbox')
     scan_topic = LaunchConfiguration('scan_topic')
     map_topic = LaunchConfiguration('map_topic')
+    target_marker_topic = LaunchConfiguration('target_marker_topic')
     base_frame = LaunchConfiguration('base_frame')
     map_frame = LaunchConfiguration('map_frame')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -64,6 +65,8 @@ def generate_launch_description():
     explorer_frontier_blocked_clearance_margin_m = LaunchConfiguration(
         'explorer_frontier_blocked_clearance_margin_m'
     )
+    explorer_publish_target_markers = LaunchConfiguration('explorer_publish_target_markers')
+    explorer_target_marker_scale_m = LaunchConfiguration('explorer_target_marker_scale_m')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -90,6 +93,11 @@ def generate_launch_description():
             'map_topic',
             default_value='/map',
             description='OccupancyGrid topic used by frontier exploration.',
+        ),
+        DeclareLaunchArgument(
+            'target_marker_topic',
+            default_value='/explorer/targets',
+            description='MarkerArray topic for RViz target nodes and frontier path.',
         ),
         DeclareLaunchArgument(
             'base_frame',
@@ -221,6 +229,16 @@ def generate_launch_description():
             default_value='0.05',
             description='Extra clearance margin that treats a frontier path as blocked before stop-distance jitter.',
         ),
+        DeclareLaunchArgument(
+            'explorer_publish_target_markers',
+            default_value='true',
+            description='Publish RViz markers for frontier target nodes and the active local target.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_target_marker_scale_m',
+            default_value='0.12',
+            description='Marker size for RViz frontier target nodes.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(pose_stack_launch)),
             launch_arguments={
@@ -242,6 +260,7 @@ def generate_launch_description():
             parameters=[{
                 'scan_topic': scan_topic,
                 'map_topic': map_topic,
+                'target_marker_topic': target_marker_topic,
                 'cmd_vel_topic': 'cmd_vel',
                 'base_frame': base_frame,
                 'map_frame': map_frame,
@@ -272,6 +291,8 @@ def generate_launch_description():
                 'frontier_blocked_clearance_margin_m': (
                     explorer_frontier_blocked_clearance_margin_m
                 ),
+                'publish_target_markers': explorer_publish_target_markers,
+                'target_marker_scale_m': explorer_target_marker_scale_m,
             }],
         ),
     ])

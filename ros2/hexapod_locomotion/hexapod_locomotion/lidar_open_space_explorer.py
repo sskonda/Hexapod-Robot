@@ -11,13 +11,14 @@ from collections import deque
 from dataclasses import dataclass
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Point, Twist
 from nav_msgs.msg import OccupancyGrid
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from tf2_ros import Buffer, TransformException, TransformListener
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 def clamp(value: float, min_value: float, max_value: float) -> float:
@@ -76,6 +77,7 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('map_topic', '/map')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel')
+        self.declare_parameter('target_marker_topic', '/explorer/targets')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('map_frame', 'map')
         self.declare_parameter('cmd_vel_rate_hz', 10.0)
@@ -119,10 +121,13 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('frontier_suppression_duration_sec', 15.0)
         self.declare_parameter('frontier_suppression_radius_m', 0.60)
         self.declare_parameter('frontier_blocked_clearance_margin_m', 0.05)
+        self.declare_parameter('publish_target_markers', True)
+        self.declare_parameter('target_marker_scale_m', 0.12)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.map_topic = str(self.get_parameter('map_topic').value)
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
+        self.target_marker_topic = str(self.get_parameter('target_marker_topic').value)
         self.base_frame = str(self.get_parameter('base_frame').value)
         self.map_frame = str(self.get_parameter('map_frame').value)
         self.latest_scan = None
@@ -138,6 +143,7 @@ class LidarOpenSpaceExplorer(Node):
         self._load_parameters()
 
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.marker_pub = self.create_publisher(MarkerArray, self.target_marker_topic, 10)
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
@@ -258,6 +264,13 @@ class LidarOpenSpaceExplorer(Node):
             0.0,
             float(self.get_parameter('frontier_blocked_clearance_margin_m').value),
         )
+        self.publish_target_markers = as_bool(
+            self.get_parameter('publish_target_markers').value
+        )
+        self.target_marker_scale_m = max(
+            0.02,
+            float(self.get_parameter('target_marker_scale_m').value),
+        )
 
     def normalized_mode(self, value: str) -> str:
         mode = value.strip().lower()
@@ -323,6 +336,12 @@ class LidarOpenSpaceExplorer(Node):
                     0.0,
                     float(parameter.value),
                 )
+            elif parameter.name == 'publish_target_markers':
+                self.publish_target_markers = as_bool(parameter.value)
+                if not self.publish_target_markers:
+                    self.clear_target_markers()
+            elif parameter.name == 'target_marker_scale_m':
+                self.target_marker_scale_m = max(0.02, float(parameter.value))
             if parameter.name == 'base_frame':
                 self.base_frame = str(parameter.value)
             elif parameter.name == 'enabled':
@@ -401,6 +420,7 @@ class LidarOpenSpaceExplorer(Node):
         cmd = Twist()
 
         if not self.enabled or self.latest_scan is None or self.latest_scan_time is None:
+            self.clear_target_markers()
             self.cmd_pub.publish(cmd)
             return
 
@@ -492,13 +512,17 @@ class LidarOpenSpaceExplorer(Node):
                 'No reachable frontier found. Exploration appears complete or blocked.',
                 throttle_duration_sec=4.0,
             )
+            self.clear_target_markers()
             return cmd
 
         while self.current_frontier is not None:
             waypoint = self.active_frontier_waypoint()
             if waypoint is None:
                 self.clear_current_frontier()
+                self.clear_target_markers()
                 return cmd
+
+            self.publish_frontier_markers(waypoint)
 
             body_vector = self.map_target_vector_in_body(waypoint[0], waypoint[1])
             if body_vector is None:
@@ -510,6 +534,7 @@ class LidarOpenSpaceExplorer(Node):
                 if self.advance_frontier_waypoint():
                     continue
                 self.suppress_current_frontier('reached')
+                self.clear_target_markers()
                 return cmd
 
             body_angle = math.atan2(body_y, body_x)
@@ -529,6 +554,7 @@ class LidarOpenSpaceExplorer(Node):
                 )
             if blocked:
                 self.suppress_current_frontier('scan_blocked')
+                self.clear_target_markers()
                 return cmd
 
             speed = self.speed_for_clearance(
@@ -546,6 +572,7 @@ class LidarOpenSpaceExplorer(Node):
                     if self.advance_frontier_waypoint():
                         continue
                     self.suppress_current_frontier('requires_reverse')
+                    self.clear_target_markers()
                     return cmd
             else:
                 cmd.linear.x = speed * max(0.0, math.cos(body_angle))
@@ -558,6 +585,105 @@ class LidarOpenSpaceExplorer(Node):
             return cmd
 
         return cmd
+
+    def publish_frontier_markers(self, active_waypoint: tuple[float, float]):
+        if not self.publish_target_markers or self.current_frontier is None:
+            return
+
+        now = self.get_clock().now().to_msg()
+        markers = MarkerArray()
+
+        remaining_path = self.current_frontier.path[self.current_path_index:]
+        if remaining_path:
+            path_nodes = self.make_marker('frontier_nodes', 1, Marker.SPHERE_LIST, now)
+            path_nodes.scale.x = self.target_marker_scale_m * 0.65
+            path_nodes.scale.y = self.target_marker_scale_m * 0.65
+            path_nodes.scale.z = self.target_marker_scale_m * 0.65
+            path_nodes.color.r = 0.15
+            path_nodes.color.g = 0.45
+            path_nodes.color.b = 1.0
+            path_nodes.color.a = 0.9
+            path_nodes.points = [self.point_from_xy(x_m, y_m) for x_m, y_m in remaining_path]
+            markers.markers.append(path_nodes)
+
+            path_line = self.make_marker('frontier_path', 2, Marker.LINE_STRIP, now)
+            path_line.scale.x = max(0.02, self.target_marker_scale_m * 0.25)
+            path_line.color.r = 0.1
+            path_line.color.g = 0.7
+            path_line.color.b = 1.0
+            path_line.color.a = 0.75
+            path_line.points = [self.point_from_xy(x_m, y_m) for x_m, y_m in remaining_path]
+            markers.markers.append(path_line)
+
+        active = self.make_marker('active_target', 3, Marker.SPHERE, now)
+        active.pose.position = self.point_from_xy(active_waypoint[0], active_waypoint[1])
+        active.scale.x = self.target_marker_scale_m
+        active.scale.y = self.target_marker_scale_m
+        active.scale.z = self.target_marker_scale_m
+        active.color.r = 0.0
+        active.color.g = 1.0
+        active.color.b = 0.2
+        active.color.a = 1.0
+        markers.markers.append(active)
+
+        final = self.make_marker('frontier_goal', 4, Marker.CUBE, now)
+        final.pose.position = self.point_from_xy(
+            self.current_frontier.x_m,
+            self.current_frontier.y_m,
+        )
+        final.scale.x = self.target_marker_scale_m * 1.25
+        final.scale.y = self.target_marker_scale_m * 1.25
+        final.scale.z = self.target_marker_scale_m * 0.45
+        final.color.r = 1.0
+        final.color.g = 0.75
+        final.color.b = 0.0
+        final.color.a = 0.95
+        markers.markers.append(final)
+
+        if self.frontier_failure_memory_enabled and self.suppressed_frontiers:
+            suppressed = self.make_marker('suppressed_frontiers', 5, Marker.SPHERE_LIST, now)
+            suppressed.scale.x = self.target_marker_scale_m * 0.5
+            suppressed.scale.y = self.target_marker_scale_m * 0.5
+            suppressed.scale.z = self.target_marker_scale_m * 0.5
+            suppressed.color.r = 1.0
+            suppressed.color.g = 0.1
+            suppressed.color.b = 0.1
+            suppressed.color.a = 0.65
+            suppressed.points = [
+                self.point_from_xy(frontier.x_m, frontier.y_m)
+                for frontier in self.suppressed_frontiers
+            ]
+            markers.markers.append(suppressed)
+
+        self.marker_pub.publish(markers)
+
+    def make_marker(self, namespace: str, marker_id: int, marker_type: int, stamp):
+        marker = Marker()
+        marker.header.frame_id = self.map_frame
+        marker.header.stamp = stamp
+        marker.ns = namespace
+        marker.id = marker_id
+        marker.type = marker_type
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+        marker.lifetime.sec = 2
+        return marker
+
+    def clear_target_markers(self):
+        if not hasattr(self, 'marker_pub'):
+            return
+        marker = Marker()
+        marker.action = Marker.DELETEALL
+        markers = MarkerArray()
+        markers.markers.append(marker)
+        self.marker_pub.publish(markers)
+
+    def point_from_xy(self, x_m: float, y_m: float):
+        point = Point()
+        point.x = float(x_m)
+        point.y = float(y_m)
+        point.z = 0.05
+        return point
 
     def plan_frontier_target(self):
         self.prune_suppressed_frontiers()
