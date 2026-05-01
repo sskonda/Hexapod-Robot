@@ -11,6 +11,11 @@ from launch_ros.actions import Node
 def generate_launch_description():
     bringup_share_dir = Path(get_package_share_directory('hexapod_bringup'))
     pose_stack_launch = bringup_share_dir / 'launch' / 'pose_stack.launch.py'
+    qr_detection_launch = (
+        Path(get_package_share_directory('hexapod_locomotion'))
+        / 'launch'
+        / 'qr_detection.launch.py'
+    )
 
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     launch_lidar = LaunchConfiguration('launch_lidar')
@@ -28,6 +33,17 @@ def generate_launch_description():
         'locomotion_publish_yaw_hold_diagnostics'
     )
     show_imu_data = LaunchConfiguration('show_imu_data')
+    launch_camera = LaunchConfiguration('launch_camera')
+    camera_video_device = LaunchConfiguration('camera_video_device')
+    camera_pixel_format = LaunchConfiguration('camera_pixel_format')
+    camera_image_width = LaunchConfiguration('camera_image_width')
+    camera_image_height = LaunchConfiguration('camera_image_height')
+    camera_framerate = LaunchConfiguration('camera_framerate')
+    camera_image_topic = LaunchConfiguration('camera_image_topic')
+    qr_text_topic = LaunchConfiguration('qr_text_topic')
+    qr_image_topic = LaunchConfiguration('qr_image_topic')
+    qr_show_rqt = LaunchConfiguration('qr_show_rqt')
+    qr_republish_same_text = LaunchConfiguration('qr_republish_same_text')
 
     explorer_enabled = LaunchConfiguration('explorer_enabled')
     explorer_mode = LaunchConfiguration('explorer_mode')
@@ -204,6 +220,61 @@ def generate_launch_description():
             'show_imu_data',
             default_value='false',
             description='When false, suppress routine BNO055 IMU status logs while still publishing IMU topics.',
+        ),
+        DeclareLaunchArgument(
+            'launch_camera',
+            default_value='false',
+            description='Launch usb_cam and the QR code detector.',
+        ),
+        DeclareLaunchArgument(
+            'camera_video_device',
+            default_value='/dev/video0',
+            description='Camera device passed to usb_cam.',
+        ),
+        DeclareLaunchArgument(
+            'camera_pixel_format',
+            default_value='mjpeg2rgb',
+            description='Pixel format passed to usb_cam.',
+        ),
+        DeclareLaunchArgument(
+            'camera_image_width',
+            default_value='640',
+            description='Camera image width.',
+        ),
+        DeclareLaunchArgument(
+            'camera_image_height',
+            default_value='480',
+            description='Camera image height.',
+        ),
+        DeclareLaunchArgument(
+            'camera_framerate',
+            default_value='30.0',
+            description='Camera frame rate.',
+        ),
+        DeclareLaunchArgument(
+            'camera_image_topic',
+            default_value='/image_raw',
+            description='Image topic consumed by the QR detector.',
+        ),
+        DeclareLaunchArgument(
+            'qr_text_topic',
+            default_value='/qr_code/text',
+            description='String topic where decoded QR text is published.',
+        ),
+        DeclareLaunchArgument(
+            'qr_image_topic',
+            default_value='/qr_code/image',
+            description='Annotated image topic for QR visualization.',
+        ),
+        DeclareLaunchArgument(
+            'qr_show_rqt',
+            default_value='false',
+            description='Open rqt_image_view on the annotated QR image topic.',
+        ),
+        DeclareLaunchArgument(
+            'qr_republish_same_text',
+            default_value='false',
+            description='When true, publish repeated detections of the same QR text.',
         ),
         DeclareLaunchArgument(
             'explorer_enabled',
@@ -466,6 +537,22 @@ def generate_launch_description():
                     locomotion_publish_yaw_hold_diagnostics
                 ),
                 'show_imu_data': show_imu_data,
+            }.items(),
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(str(qr_detection_launch)),
+            launch_arguments={
+                'start_camera': launch_camera,
+                'video_device': camera_video_device,
+                'pixel_format': camera_pixel_format,
+                'image_width': camera_image_width,
+                'image_height': camera_image_height,
+                'framerate': camera_framerate,
+                'image_topic': camera_image_topic,
+                'text_topic': qr_text_topic,
+                'output_image_topic': qr_image_topic,
+                'show_rqt': qr_show_rqt,
+                'republish_same_text': qr_republish_same_text,
             }.items(),
         ),
         Node(

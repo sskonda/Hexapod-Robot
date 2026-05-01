@@ -36,6 +36,8 @@ setup(
             'calibration = hexapod_locomotion.calibration:main',
             'calibration_matrix = hexapod_locomotion.calibration_matrix:main',
             'calibration_points = hexapod_locomotion.calibration_points:main',
+            'face_detector = hexapod_locomotion.face_detector:main',
+            'qr_code_detector = hexapod_locomotion.qr_code_detector:main',
         ],
     },
 )

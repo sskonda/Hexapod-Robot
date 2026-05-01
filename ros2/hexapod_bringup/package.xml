@@ -13,6 +13,8 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>hexapod_locomotion</exec_depend>
+  <exec_depend>usb_cam</exec_depend>
+  <exec_depend>rqt_image_view</exec_depend>
   <exec_depend>rplidar_ros</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
