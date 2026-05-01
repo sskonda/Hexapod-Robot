@@ -897,7 +897,11 @@ class LidarOpenSpaceExplorer(Node):
                 continue
 
             body_angle = math.atan2(body_y, body_x)
-            if not self.reverse_allowed and abs(body_angle) > math.pi / 2.0:
+            if (
+                not self.crab_motion
+                and not self.reverse_allowed
+                and abs(body_angle) > math.pi / 2.0
+            ):
                 return self.turn_toward_target_command(body_angle)
 
             scan_clearance = self.min_scan_range_near_body_angle(
