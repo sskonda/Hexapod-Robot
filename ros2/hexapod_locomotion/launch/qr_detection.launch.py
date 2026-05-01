@@ -18,6 +18,9 @@ def generate_launch_description():
     text_topic = LaunchConfiguration('text_topic')
     output_image_topic = LaunchConfiguration('output_image_topic')
     republish_same_text = LaunchConfiguration('republish_same_text')
+    output_image_width = LaunchConfiguration('output_image_width')
+    output_image_height = LaunchConfiguration('output_image_height')
+    output_image_grayscale = LaunchConfiguration('output_image_grayscale')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -37,7 +40,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'pixel_format',
-            default_value='mjpeg2rgb',
+            default_value='yuyv2rgb',
             description='Pixel format passed to usb_cam.',
         ),
         DeclareLaunchArgument(
@@ -75,6 +78,21 @@ def generate_launch_description():
             default_value='false',
             description='When true, publish repeated detections of the same QR text.',
         ),
+        DeclareLaunchArgument(
+            'output_image_width',
+            default_value='320',
+            description='Width of the published QR debug image.',
+        ),
+        DeclareLaunchArgument(
+            'output_image_height',
+            default_value='240',
+            description='Height of the published QR debug image.',
+        ),
+        DeclareLaunchArgument(
+            'output_image_grayscale',
+            default_value='true',
+            description='Publish the QR debug image as grayscale to reduce bandwidth.',
+        ),
         Node(
             package='usb_cam',
             executable='usb_cam_node_exe',
@@ -101,6 +119,18 @@ def generate_launch_description():
                 'publish_annotated_image': True,
                 'republish_same_text': ParameterValue(
                     republish_same_text,
+                    value_type=bool,
+                ),
+                'output_image_width': ParameterValue(
+                    output_image_width,
+                    value_type=int,
+                ),
+                'output_image_height': ParameterValue(
+                    output_image_height,
+                    value_type=int,
+                ),
+                'output_image_grayscale': ParameterValue(
+                    output_image_grayscale,
                     value_type=bool,
                 ),
             }],

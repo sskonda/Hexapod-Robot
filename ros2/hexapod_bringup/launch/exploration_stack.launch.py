@@ -233,7 +233,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'camera_pixel_format',
-            default_value='mjpeg2rgb',
+            default_value='yuyv2rgb',
             description='Pixel format passed to usb_cam.',
         ),
         DeclareLaunchArgument(

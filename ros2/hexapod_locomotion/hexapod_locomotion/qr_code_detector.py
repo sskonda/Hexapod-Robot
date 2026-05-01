@@ -8,6 +8,7 @@ import cv2
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
@@ -26,6 +27,9 @@ class QrCodeDetectorNode(Node):
         self.declare_parameter('qos_depth', 10)
         self.declare_parameter('log_throttle_sec', 2.0)
         self.declare_parameter('republish_same_text', False)
+        self.declare_parameter('output_image_width', 320)
+        self.declare_parameter('output_image_height', 240)
+        self.declare_parameter('output_image_grayscale', True)
 
         image_topic = str(self.get_parameter('image_topic').value)
         text_topic = str(self.get_parameter('text_topic').value)
@@ -36,6 +40,17 @@ class QrCodeDetectorNode(Node):
             self.get_parameter('publish_annotated_image').value
         )
         self.republish_same_text = bool(self.get_parameter('republish_same_text').value)
+        self.output_image_width = max(
+            1,
+            int(self.get_parameter('output_image_width').value),
+        )
+        self.output_image_height = max(
+            1,
+            int(self.get_parameter('output_image_height').value),
+        )
+        self.output_image_grayscale = bool(
+            self.get_parameter('output_image_grayscale').value
+        )
         self.log_throttle_ns = int(
             float(self.get_parameter('log_throttle_sec').value) * 1_000_000_000
         )
@@ -49,7 +64,7 @@ class QrCodeDetectorNode(Node):
             Image,
             image_topic,
             self.image_callback,
-            qos_depth,
+            qos_profile_sensor_data,
         )
         self.text_pub = self.create_publisher(String, text_topic, qos_depth)
         self.image_pub = None
@@ -57,7 +72,7 @@ class QrCodeDetectorNode(Node):
             self.image_pub = self.create_publisher(
                 Image,
                 annotated_image_topic,
-                qos_depth,
+                qos_profile_sensor_data,
             )
 
         self.get_logger().info(f'Subscribed to {image_topic}')
@@ -99,7 +114,8 @@ class QrCodeDetectorNode(Node):
         if self.image_pub is not None:
             annotated = frame.copy()
             self._draw_annotations(annotated, decoded_texts, polygons)
-            out_msg = self.bridge.cv2_to_imgmsg(annotated, encoding='bgr8')
+            output_frame, output_encoding = self._prepare_output_frame(annotated)
+            out_msg = self.bridge.cv2_to_imgmsg(output_frame, encoding=output_encoding)
             out_msg.header = msg.header
             self.image_pub.publish(out_msg)
 
@@ -170,6 +186,16 @@ class QrCodeDetectorNode(Node):
                     2,
                     cv2.LINE_AA,
                 )
+
+    def _prepare_output_frame(self, frame):
+        resized = cv2.resize(
+            frame,
+            (self.output_image_width, self.output_image_height),
+            interpolation=cv2.INTER_AREA,
+        )
+        if self.output_image_grayscale:
+            return cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY), 'mono8'
+        return resized, 'bgr8'
 
     def _log_detected_texts(self, texts: Sequence[str]):
         now_ns = self.get_clock().now().nanoseconds
