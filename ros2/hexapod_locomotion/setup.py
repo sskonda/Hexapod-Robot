@@ -30,7 +30,6 @@ setup(
             'locomotion = hexapod_locomotion.locomotion:main',
             'crab_path_follower = hexapod_locomotion.crab_path_follower:main',
             'lidar_open_space_explorer = hexapod_locomotion.lidar_open_space_explorer:main',
-            'wavefront_explorer = hexapod_locomotion.wavefront_explorer:main',
             'path_plan = hexapod_locomotion.path_plan:main',
             'servo_driver = hexapod_locomotion.servo_driver:main',
             'calibration = hexapod_locomotion.calibration:main',
@@ -38,6 +37,7 @@ setup(
             'calibration_points = hexapod_locomotion.calibration_points:main',
             'face_detector = hexapod_locomotion.face_detector:main',
             'qr_code_detector = hexapod_locomotion.qr_code_detector:main',
+            'qr_wall_marker = hexapod_locomotion.qr_wall_marker:main',
         ],
     },
 )

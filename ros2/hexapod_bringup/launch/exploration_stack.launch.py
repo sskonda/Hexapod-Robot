@@ -3,6 +3,7 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -44,6 +45,8 @@ def generate_launch_description():
     qr_image_topic = LaunchConfiguration('qr_image_topic')
     qr_show_rqt = LaunchConfiguration('qr_show_rqt')
     qr_republish_same_text = LaunchConfiguration('qr_republish_same_text')
+    qr_marker_topic = LaunchConfiguration('qr_marker_topic')
+    qr_marker_state_topic = LaunchConfiguration('qr_marker_state_topic')
 
     explorer_enabled = LaunchConfiguration('explorer_enabled')
     explorer_mode = LaunchConfiguration('explorer_mode')
@@ -275,6 +278,16 @@ def generate_launch_description():
             'qr_republish_same_text',
             default_value='false',
             description='When true, publish repeated detections of the same QR text.',
+        ),
+        DeclareLaunchArgument(
+            'qr_marker_topic',
+            default_value='/qr_code/markers',
+            description='MarkerArray topic used for QR wall markers in the map frame.',
+        ),
+        DeclareLaunchArgument(
+            'qr_marker_state_topic',
+            default_value='/qr_code/marker_state',
+            description='JSON string topic containing the remembered QR marker map coordinates.',
         ),
         DeclareLaunchArgument(
             'explorer_enabled',
@@ -554,6 +567,21 @@ def generate_launch_description():
                 'show_rqt': qr_show_rqt,
                 'republish_same_text': qr_republish_same_text,
             }.items(),
+        ),
+        Node(
+            package='hexapod_locomotion',
+            executable='qr_wall_marker',
+            name='qr_wall_marker',
+            output='screen',
+            condition=IfCondition(launch_camera),
+            parameters=[{
+                'qr_text_topic': qr_text_topic,
+                'scan_topic': scan_topic,
+                'marker_topic': qr_marker_topic,
+                'marker_state_topic': qr_marker_state_topic,
+                'base_frame': base_frame,
+                'map_frame': map_frame,
+            }],
         ),
         Node(
             package='hexapod_locomotion',
