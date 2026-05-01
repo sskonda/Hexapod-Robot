@@ -93,6 +93,7 @@ class PlannerGrid:
     height: int
     resolution: float
     free: bytearray
+    unknown: bytearray
     danger: bytearray
     path_safe: bytearray
     goal_safe: bytearray
@@ -173,6 +174,7 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('path_clearance_m', 0.40)
         self.declare_parameter('goal_clearance_m', 0.33)
         self.declare_parameter('frontier_unknown_margin_cells', 2)
+        self.declare_parameter('enclosed_unknown_fill_max_cells', 6)
         self.declare_parameter('frontier_min_area_cells', 5)
         self.declare_parameter('min_frontier_cluster_size', 5)
         self.declare_parameter('frontier_goal_projection_radius_m', 0.90)
@@ -404,6 +406,10 @@ class LidarOpenSpaceExplorer(Node):
             0,
             int(self.get_parameter('frontier_unknown_margin_cells').value),
         )
+        self.enclosed_unknown_fill_max_cells = max(
+            0,
+            int(self.get_parameter('enclosed_unknown_fill_max_cells').value),
+        )
         legacy_min_frontier_cells = int(
             self.get_parameter('frontier_min_area_cells').value
         )
@@ -596,6 +602,8 @@ class LidarOpenSpaceExplorer(Node):
                 self.goal_clearance_m = max(self.robot_radius_m, float(parameter.value))
             elif parameter.name == 'frontier_unknown_margin_cells':
                 self.frontier_unknown_margin_cells = max(0, int(parameter.value))
+            elif parameter.name == 'enclosed_unknown_fill_max_cells':
+                self.enclosed_unknown_fill_max_cells = max(0, int(parameter.value))
             elif parameter.name == 'frontier_min_area_cells':
                 self.frontier_min_area_cells = max(1, int(parameter.value))
             elif parameter.name == 'min_frontier_cluster_size':
@@ -1445,7 +1453,33 @@ class LidarOpenSpaceExplorer(Node):
             ]
             markers.markers.append(suppressed)
 
-        if self.rejected_frontiers:
+        tiny_frontiers = [
+            frontier
+            for frontier in self.rejected_frontiers
+            if frontier.reason == 'tiny_frontier'
+        ]
+        other_rejected_frontiers = [
+            frontier
+            for frontier in self.rejected_frontiers
+            if frontier.reason != 'tiny_frontier'
+        ]
+
+        if tiny_frontiers:
+            tiny = self.make_marker('tiny_frontiers', 10, Marker.SPHERE_LIST, now)
+            tiny.scale.x = self.target_marker_scale_m * 0.9
+            tiny.scale.y = self.target_marker_scale_m * 0.9
+            tiny.scale.z = self.target_marker_scale_m * 0.9
+            tiny.color.r = 1.0
+            tiny.color.g = 0.45
+            tiny.color.b = 0.0
+            tiny.color.a = 0.95
+            tiny.points = [
+                self.point_from_xy(frontier.x_m, frontier.y_m)
+                for frontier in tiny_frontiers
+            ]
+            markers.markers.append(tiny)
+
+        if other_rejected_frontiers:
             rejected = self.make_marker('rejected_candidates', 6, Marker.CUBE_LIST, now)
             rejected.scale.x = self.target_marker_scale_m * 0.7
             rejected.scale.y = self.target_marker_scale_m * 0.7
@@ -1456,7 +1490,7 @@ class LidarOpenSpaceExplorer(Node):
             rejected.color.a = 0.95
             rejected.points = [
                 self.point_from_xy(frontier.x_m, frontier.y_m)
-                for frontier in self.rejected_frontiers
+                for frontier in other_rejected_frontiers
             ]
             markers.markers.append(rejected)
 
@@ -2085,6 +2119,19 @@ class LidarOpenSpaceExplorer(Node):
             else:
                 danger[index] = 1
 
+        filled_unknown_cells = self.fill_enclosed_unknown_specks(
+            free,
+            occupied,
+            unknown,
+            width,
+            height,
+        )
+        if filled_unknown_cells > 0:
+            self.get_logger().info(
+                f'Filled {filled_unknown_cells} enclosed unknown speck cell(s) as known free noise.',
+                throttle_duration_sec=2.0,
+            )
+
         margin = self.frontier_unknown_margin_cells
         if margin > 0:
             occupied_indices = [index for index, value in enumerate(occupied) if value]
@@ -2124,6 +2171,7 @@ class LidarOpenSpaceExplorer(Node):
             height=height,
             resolution=grid.info.resolution,
             free=free,
+            unknown=unknown,
             danger=danger,
             path_safe=path_safe,
             goal_safe=goal_safe,
@@ -2175,6 +2223,67 @@ class LidarOpenSpaceExplorer(Node):
             min(distance * grid.info.resolution, self.max_usable_range_m)
             for distance in distances
         ]
+
+    def fill_enclosed_unknown_specks(
+        self,
+        free: bytearray,
+        occupied: bytearray,
+        unknown: bytearray,
+        width: int,
+        height: int,
+    ) -> int:
+        max_cells = self.enclosed_unknown_fill_max_cells
+        if max_cells <= 0:
+            return 0
+
+        visited = bytearray(width * height)
+        filled = 0
+        for start_index, is_unknown in enumerate(unknown):
+            if not is_unknown or visited[start_index]:
+                continue
+
+            pending = deque([start_index])
+            visited[start_index] = 1
+            component = []
+            touches_edge = False
+            touches_occupied = False
+            touches_free = False
+
+            while pending:
+                current = pending.popleft()
+                component.append(current)
+                x_value = current % width
+                y_value = current // width
+                if (
+                    x_value == 0
+                    or y_value == 0
+                    or x_value == width - 1
+                    or y_value == height - 1
+                ):
+                    touches_edge = True
+
+                for neighbor in self.cardinal_neighbor_indices(current, width, height):
+                    if unknown[neighbor]:
+                        if not visited[neighbor]:
+                            visited[neighbor] = 1
+                            pending.append(neighbor)
+                    elif occupied[neighbor]:
+                        touches_occupied = True
+                    elif free[neighbor]:
+                        touches_free = True
+
+            if (
+                len(component) <= max_cells
+                and not touches_edge
+                and not touches_occupied
+                and touches_free
+            ):
+                for index in component:
+                    unknown[index] = 0
+                    free[index] = 1
+                filled += len(component)
+
+        return filled
 
     def connected_frontier_components(
         self,
@@ -2433,7 +2542,7 @@ class LidarOpenSpaceExplorer(Node):
                 if dx * dx + dy * dy > radius_sq:
                     continue
                 index = self.grid_index(x_value, y_value, width)
-                if grid.data[index] >= 0:
+                if not planner.unknown[index]:
                     continue
                 if self.line_of_sight_to_unknown(grid, ox, oy, x_value, y_value):
                     visible += 1
@@ -2627,7 +2736,7 @@ class LidarOpenSpaceExplorer(Node):
         width = planner.width
         height = planner.height
         for neighbor in self.cardinal_neighbor_indices(index, width, height):
-            if grid.data[neighbor] < 0:
+            if planner.unknown[neighbor]:
                 return True
         return False
 
