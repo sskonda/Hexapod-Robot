@@ -1,0 +1,11 @@
+source;share/hexapod_interfaces/hook/cmake_prefix_path.ps1
+source;share/hexapod_interfaces/hook/cmake_prefix_path.dsv
+source;share/hexapod_interfaces/hook/cmake_prefix_path.sh
+source;share/hexapod_interfaces/hook/pythonpath.ps1
+source;share/hexapod_interfaces/hook/pythonpath.dsv
+source;share/hexapod_interfaces/hook/pythonpath.sh
+source;share/hexapod_interfaces/local_setup.bash
+source;share/hexapod_interfaces/local_setup.dsv
+source;share/hexapod_interfaces/local_setup.ps1
+source;share/hexapod_interfaces/local_setup.sh
+source;share/hexapod_interfaces/local_setup.zsh

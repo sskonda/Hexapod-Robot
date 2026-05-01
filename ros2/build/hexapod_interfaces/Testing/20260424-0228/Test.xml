@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Site BuildName="(empty)"
+	BuildStamp="20260424-0228-Experimental"
+	Name="KONDA-LT-126"
+	Generator="ctest-3.28.3"
+	CompilerName="/usr/bin/c++"
+	CompilerVersion="13.3.0"
+	OSName="Linux"
+	Hostname="KONDA-LT-126"
+	OSRelease="6.8.0-107-generic"
+	OSVersion="#107-Ubuntu SMP PREEMPT_DYNAMIC Fri Mar 13 19:51:50 UTC 2026"
+	OSPlatform="x86_64"
+	Is64Bits="1"
+	VendorString="GenuineIntel"
+	VendorID="Intel Corporation"
+	FamilyID="6"
+	ModelID="140"
+	ProcessorCacheSize="12288"
+	NumberOfLogicalCPU="8"
+	NumberOfPhysicalCPU="4"
+	TotalVirtualMemory="2047"
+	TotalPhysicalMemory="31824"
+	LogicalProcessorsPerPhysical="2"
+	ProcessorClockFrequency="2400.02"
+	>
+	<Testing>
+		<StartDateTime>Apr 23 22:28 EDT</StartDateTime>
+		<StartTestTime>1776997684</StartTestTime>
+		<TestList>
+			<Test>./flake8</Test>
+			<Test>./lint_cmake</Test>
+			<Test>./pep257</Test>
+			<Test>./xmllint</Test>
+		</TestList>
+		<Test Status="failed">
+			<Name>flake8</Name>
+			<Path>.</Path>
+			<FullName>./flake8</FullName>
+			<FullCommandLine>/usr/bin/python3 "-u" "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/flake8.xunit.xml" "--package-name" "hexapod_interfaces" "--output-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_flake8/flake8.txt" "--command" "/opt/ros/jazzy/bin/ament_flake8" "--xunit-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/flake8.xunit.xml"</FullCommandLine>
+			<Results>
+				<NamedMeasurement type="text/string" name="Exit Code">
+					<Value>Failed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Exit Value">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Execution Time">
+					<Value>0.530068</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Processors">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Completion Status">
+					<Value>Completed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Command Line">
+					<Value>/usr/bin/python3 "-u" "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/flake8.xunit.xml" "--package-name" "hexapod_interfaces" "--output-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_flake8/flake8.txt" "--command" "/opt/ros/jazzy/bin/ament_flake8" "--xunit-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/flake8.xunit.xml"</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Environment">
+					<Value>#CTEST_RESOURCE_GROUP_COUNT=</Value>
+				</NamedMeasurement>
+				<Measurement>
+					<Value>-- run_test.py: invoking following command in '/home/sanat/Hexapod-Robot/ros2/hexapod_interfaces':
+ - /opt/ros/jazzy/bin/ament_flake8 --xunit-file /home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/flake8.xunit.xml
+from cv_bridge import CvBridge
+^
+    """Return a representative scene color in BGR order."""
+^
+                f'LED backend is unavailable, so colors will not be shown on hardware: {init_error}'
+                                                                                                   ^
+                f'LED backend ready using {self.led.driver_name} mode with {self.led.count} pixels.'
+                                                                                                   ^
+            self.init_error = getattr(strip, 'init_error', '') or f'{candidate} backend unavailable.'
+                                                                                                   ^
+1     D202 No blank lines allowed after function docstring
+3     E501 line too long (100 &gt; 99 characters)
+1     I100 Import statements are in the wrong order. 'from cv_bridge import CvBridge' should be before 'import rclpy'
+
+./hexapod_interfaces/camera_led.py:8:1: I100 Import statements are in the wrong order. 'from cv_bridge import CvBridge' should be before 'import rclpy'
+
+./hexapod_interfaces/camera_led.py:22:1: D202 No blank lines allowed after function docstring
+
+./hexapod_interfaces/camera_led.py:136:100: E501 line too long (100 &gt; 99 characters)
+
+./hexapod_interfaces/camera_led.py:140:100: E501 line too long (100 &gt; 99 characters)
+
+./hexapod_interfaces/led.py:57:100: E501 line too long (101 &gt; 99 characters)
+
+
+5 files checked
+5 errors
+
+'D'-type errors: 1
+'E'-type errors: 3
+'I'-type errors: 1
+
+Checked files:
+
+* ./hexapod_interfaces/rpi_ledpixel.py
+* ./hexapod_interfaces/spi_ledpixel.py
+* ./hexapod_interfaces/__init__.py
+* ./hexapod_interfaces/camera_led.py
+* ./hexapod_interfaces/led.py
+-- run_test.py: return code 1
+-- run_test.py: verify result file '/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/flake8.xunit.xml'
+</Value>
+				</Measurement>
+			</Results>
+			<Labels>
+				<Label>flake8</Label>
+				<Label>linter</Label>
+			</Labels>
+		</Test>
+		<Test Status="passed">
+			<Name>lint_cmake</Name>
+			<Path>.</Path>
+			<FullName>./lint_cmake</FullName>
+			<FullCommandLine>/usr/bin/python3 "-u" "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/lint_cmake.xunit.xml" "--package-name" "hexapod_interfaces" "--output-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_lint_cmake/lint_cmake.txt" "--command" "/opt/ros/jazzy/bin/ament_lint_cmake" "--xunit-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/lint_cmake.xunit.xml"</FullCommandLine>
+			<Results>
+				<NamedMeasurement type="numeric/double" name="Execution Time">
+					<Value>0.190631</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Processors">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Completion Status">
+					<Value>Completed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Command Line">
+					<Value>/usr/bin/python3 "-u" "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/lint_cmake.xunit.xml" "--package-name" "hexapod_interfaces" "--output-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_lint_cmake/lint_cmake.txt" "--command" "/opt/ros/jazzy/bin/ament_lint_cmake" "--xunit-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/lint_cmake.xunit.xml"</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Environment">
+					<Value>#CTEST_RESOURCE_GROUP_COUNT=</Value>
+				</NamedMeasurement>
+				<Measurement>
+					<Value>-- run_test.py: invoking following command in '/home/sanat/Hexapod-Robot/ros2/hexapod_interfaces':
+ - /opt/ros/jazzy/bin/ament_lint_cmake --xunit-file /home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/lint_cmake.xunit.xml
+
+No problems found
+-- run_test.py: return code 0
+-- run_test.py: verify result file '/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/lint_cmake.xunit.xml'
+</Value>
+				</Measurement>
+			</Results>
+			<Labels>
+				<Label>lint_cmake</Label>
+				<Label>linter</Label>
+			</Labels>
+		</Test>
+		<Test Status="failed">
+			<Name>pep257</Name>
+			<Path>.</Path>
+			<FullName>./pep257</FullName>
+			<FullCommandLine>/usr/bin/python3 "-u" "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/pep257.xunit.xml" "--package-name" "hexapod_interfaces" "--output-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_pep257/pep257.txt" "--command" "/opt/ros/jazzy/bin/ament_pep257" "--xunit-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/pep257.xunit.xml"</FullCommandLine>
+			<Results>
+				<NamedMeasurement type="text/string" name="Exit Code">
+					<Value>Failed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Exit Value">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Execution Time">
+					<Value>0.318514</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Processors">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Completion Status">
+					<Value>Completed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Command Line">
+					<Value>/usr/bin/python3 "-u" "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/pep257.xunit.xml" "--package-name" "hexapod_interfaces" "--output-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_pep257/pep257.txt" "--command" "/opt/ros/jazzy/bin/ament_pep257" "--xunit-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/pep257.xunit.xml"</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Environment">
+					<Value>#CTEST_RESOURCE_GROUP_COUNT=</Value>
+				</NamedMeasurement>
+				<Measurement>
+					<Value>-- run_test.py: invoking following command in '/home/sanat/Hexapod-Robot/ros2/hexapod_interfaces':
+ - /opt/ros/jazzy/bin/ament_pep257 --xunit-file /home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/pep257.xunit.xml
+./hexapod_interfaces/camera_led.py:22 in public function `compute_scene_color_bgr`: D202: No blank lines allowed after function docstring (found 1)
+1 errors
+checking ./hexapod_interfaces/__init__.py
+checking ./hexapod_interfaces/camera_led.py
+checking ./hexapod_interfaces/led.py
+checking ./hexapod_interfaces/rpi_ledpixel.py
+checking ./hexapod_interfaces/spi_ledpixel.py
+-- run_test.py: return code 1
+-- run_test.py: verify result file '/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/pep257.xunit.xml'
+</Value>
+				</Measurement>
+			</Results>
+			<Labels>
+				<Label>linter</Label>
+				<Label>pep257</Label>
+			</Labels>
+		</Test>
+		<Test Status="failed">
+			<Name>xmllint</Name>
+			<Path>.</Path>
+			<FullName>./xmllint</FullName>
+			<FullCommandLine>/usr/bin/python3 "-u" "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/xmllint.xunit.xml" "--package-name" "hexapod_interfaces" "--output-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_xmllint/xmllint.txt" "--command" "/opt/ros/jazzy/bin/ament_xmllint" "--xunit-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/xmllint.xunit.xml"</FullCommandLine>
+			<Results>
+				<NamedMeasurement type="text/string" name="Exit Code">
+					<Value>Failed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Exit Value">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Execution Time">
+					<Value>0.224855</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Processors">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Completion Status">
+					<Value>Completed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Command Line">
+					<Value>/usr/bin/python3 "-u" "/opt/ros/jazzy/share/ament_cmake_test/cmake/run_test.py" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/xmllint.xunit.xml" "--package-name" "hexapod_interfaces" "--output-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_xmllint/xmllint.txt" "--command" "/opt/ros/jazzy/bin/ament_xmllint" "--xunit-file" "/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/xmllint.xunit.xml"</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Environment">
+					<Value>#CTEST_RESOURCE_GROUP_COUNT=</Value>
+				</NamedMeasurement>
+				<Measurement>
+					<Value>-- run_test.py: invoking following command in '/home/sanat/Hexapod-Robot/ros2/hexapod_interfaces':
+ - /opt/ros/jazzy/bin/ament_xmllint --xunit-file /home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/xmllint.xunit.xml
+File 'package.xml' is invalid:
+warning: failed to load external entity "http://download.ros.org/schema/package_format3.xsd"
+Schemas parser error : Failed to locate the main schema resource at 'http://download.ros.org/schema/package_format3.xsd'.
+WXS schema http://download.ros.org/schema/package_format3.xsd failed to compile
+
+1 files are invalid
+-- run_test.py: return code 1
+-- run_test.py: verify result file '/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/test_results/hexapod_interfaces/xmllint.xunit.xml'
+</Value>
+				</Measurement>
+			</Results>
+			<Labels>
+				<Label>linter</Label>
+				<Label>xmllint</Label>
+			</Labels>
+		</Test>
+		<EndDateTime>Apr 23 22:28 EDT</EndDateTime>
+		<EndTestTime>1776997685</EndTestTime>
+		<ElapsedMinutes>0</ElapsedMinutes>
+	</Testing>
+</Site>

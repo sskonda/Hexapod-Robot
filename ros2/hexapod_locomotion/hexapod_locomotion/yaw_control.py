@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""Shared helpers for yaw control and IMU startup settling."""
+"""Shared helpers for yaw control, IMU frame alignment, and startup settling."""
 
 import math
 from dataclasses import dataclass
