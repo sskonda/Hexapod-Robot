@@ -2,11 +2,23 @@ from pathlib import Path
 
 from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    IncludeLaunchDescription,
+    LogInfo,
+    OpaqueFunction,
+    RegisterEventHandler,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessStart
+from launch.events import matches_action
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+from launch_ros.actions import LifecycleNode, Node
+from launch_ros.event_handlers import OnStateTransition
+from launch_ros.events.lifecycle import ChangeState
+from lifecycle_msgs.msg import Transition
 
 
 def include_lidar_launch(context, *args, **kwargs):
@@ -73,6 +85,7 @@ def generate_launch_description():
     scan_topic = LaunchConfiguration('scan_topic')
     slam_params_file = LaunchConfiguration('slam_params_file')
     enable_slam_toolbox = LaunchConfiguration('enable_slam_toolbox')
+    autostart_slam_toolbox = LaunchConfiguration('autostart_slam_toolbox')
     map_frame = LaunchConfiguration('map_frame')
     odom_frame = LaunchConfiguration('odom_frame')
     base_frame = LaunchConfiguration('base_frame')
@@ -101,6 +114,28 @@ def generate_launch_description():
     imu_roll = LaunchConfiguration('imu_roll')
     imu_pitch = LaunchConfiguration('imu_pitch')
     imu_yaw = LaunchConfiguration('imu_yaw')
+
+    slam_toolbox_node = LifecycleNode(
+        package='slam_toolbox',
+        executable='async_slam_toolbox_node',
+        name='slam_toolbox',
+        namespace='',
+        output='screen',
+        condition=IfCondition(enable_slam_toolbox),
+        parameters=[
+            slam_params_file,
+            {
+                'use_sim_time': use_sim_time,
+                'scan_topic': scan_topic,
+                'map_frame': map_frame,
+                'odom_frame': odom_frame,
+                'base_frame': base_frame,
+            },
+        ],
+        remappings=[
+            ('scan', scan_topic),
+        ],
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -182,6 +217,11 @@ def generate_launch_description():
             'enable_slam_toolbox',
             default_value='true',
             description='Launch slam_toolbox for lidar-based 2D mapping.',
+        ),
+        DeclareLaunchArgument(
+            'autostart_slam_toolbox',
+            default_value='true',
+            description='Automatically configure and activate the slam_toolbox lifecycle node.',
         ),
         DeclareLaunchArgument(
             'map_frame',
@@ -354,24 +394,36 @@ def generate_launch_description():
                 '--frame-id', base_frame, '--child-frame-id', laser_frame,
             ],
         ),
-        Node(
-            package='slam_toolbox',
-            executable='async_slam_toolbox_node',
-            name='slam_toolbox',
-            output='screen',
+        slam_toolbox_node,
+        RegisterEventHandler(
+            OnProcessStart(
+                target_action=slam_toolbox_node,
+                on_start=[
+                    EmitEvent(
+                        event=ChangeState(
+                            lifecycle_node_matcher=matches_action(slam_toolbox_node),
+                            transition_id=Transition.TRANSITION_CONFIGURE,
+                        ),
+                        condition=IfCondition(autostart_slam_toolbox),
+                    ),
+                ],
+            ),
             condition=IfCondition(enable_slam_toolbox),
-            parameters=[
-                slam_params_file,
-                {
-                    'use_sim_time': use_sim_time,
-                    'scan_topic': scan_topic,
-                    'map_frame': map_frame,
-                    'odom_frame': odom_frame,
-                    'base_frame': base_frame,
-                },
-            ],
-            remappings=[
-                ('scan', scan_topic),
-            ],
+        ),
+        RegisterEventHandler(
+            OnStateTransition(
+                target_lifecycle_node=slam_toolbox_node,
+                goal_state='inactive',
+                entities=[
+                    EmitEvent(
+                        event=ChangeState(
+                            lifecycle_node_matcher=matches_action(slam_toolbox_node),
+                            transition_id=Transition.TRANSITION_ACTIVATE,
+                        ),
+                        condition=IfCondition(autostart_slam_toolbox),
+                    ),
+                ],
+            ),
+            condition=IfCondition(enable_slam_toolbox),
         ),
     ])
