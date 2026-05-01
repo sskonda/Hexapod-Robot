@@ -115,8 +115,9 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('frontier_min_clearance_m', 0.25)
         self.declare_parameter('frontier_free_threshold', 25)
         self.declare_parameter('frontier_occupied_threshold', 65)
-        self.declare_parameter('frontier_suppression_duration_sec', 6.0)
-        self.declare_parameter('frontier_suppression_radius_m', 0.35)
+        self.declare_parameter('frontier_suppression_duration_sec', 15.0)
+        self.declare_parameter('frontier_suppression_radius_m', 0.60)
+        self.declare_parameter('frontier_blocked_clearance_margin_m', 0.05)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.map_topic = str(self.get_parameter('map_topic').value)
@@ -249,6 +250,10 @@ class LidarOpenSpaceExplorer(Node):
             0.0,
             float(self.get_parameter('frontier_suppression_radius_m').value),
         )
+        self.frontier_blocked_clearance_margin_m = max(
+            0.0,
+            float(self.get_parameter('frontier_blocked_clearance_margin_m').value),
+        )
 
     def normalized_mode(self, value: str) -> str:
         mode = value.strip().lower()
@@ -305,6 +310,11 @@ class LidarOpenSpaceExplorer(Node):
                 self.frontier_suppression_duration_sec = max(0.0, float(parameter.value))
             elif parameter.name == 'frontier_suppression_radius_m':
                 self.frontier_suppression_radius_m = max(0.0, float(parameter.value))
+            elif parameter.name == 'frontier_blocked_clearance_margin_m':
+                self.frontier_blocked_clearance_margin_m = max(
+                    0.0,
+                    float(parameter.value),
+                )
             if parameter.name == 'base_frame':
                 self.base_frame = str(parameter.value)
             elif parameter.name == 'enabled':
@@ -499,7 +509,11 @@ class LidarOpenSpaceExplorer(Node):
                 body_angle,
                 self.direction_window_rad,
             )
-            if scan_clearance is not None and scan_clearance < self.obstacle_stop_distance_m:
+            blocked_clearance_m = (
+                self.obstacle_stop_distance_m
+                + self.frontier_blocked_clearance_margin_m
+            )
+            if scan_clearance is not None and scan_clearance <= blocked_clearance_m:
                 self.suppress_current_frontier('scan_blocked')
                 return cmd
 
@@ -564,22 +578,56 @@ class LidarOpenSpaceExplorer(Node):
             self.clear_current_frontier()
             return
 
+        self.prune_suppressed_frontiers()
         duration_sec = self.frontier_suppression_duration_sec
+        suppressed_count = 0
         if duration_sec > 0.0 and self.frontier_suppression_radius_m > 0.0:
-            self.suppressed_frontiers.append(
-                SuppressedFrontier(
-                    x_m=frontier.x_m,
-                    y_m=frontier.y_m,
-                    expires_at_sec=self.now_sec() + duration_sec,
-                    reason=reason,
-                )
+            expires_at_sec = self.now_sec() + duration_sec
+            suppressed_count += self.add_suppressed_frontier_area(
+                frontier.x_m,
+                frontier.y_m,
+                expires_at_sec,
+                reason,
             )
+            for x_m, y_m in frontier.path[self.current_path_index:]:
+                suppressed_count += self.add_suppressed_frontier_area(
+                    x_m,
+                    y_m,
+                    expires_at_sec,
+                    reason,
+                )
             self.get_logger().info(
-                f'Suppressing frontier ({frontier.x_m:.2f}, {frontier.y_m:.2f}) '
-                f'for {duration_sec:.1f}s after {reason}.',
+                f'Suppressing frontier path near ({frontier.x_m:.2f}, '
+                f'{frontier.y_m:.2f}) for {duration_sec:.1f}s after {reason} '
+                f'({suppressed_count} map areas).',
                 throttle_duration_sec=2.0,
             )
         self.clear_current_frontier()
+
+    def add_suppressed_frontier_area(
+        self,
+        x_m: float,
+        y_m: float,
+        expires_at_sec: float,
+        reason: str,
+    ) -> int:
+        dedupe_radius_m = max(0.05, self.frontier_suppression_radius_m * 0.5)
+        dedupe_radius_sq = dedupe_radius_m * dedupe_radius_m
+        for frontier in self.suppressed_frontiers:
+            dx_m = x_m - frontier.x_m
+            dy_m = y_m - frontier.y_m
+            if dx_m * dx_m + dy_m * dy_m <= dedupe_radius_sq:
+                return 0
+
+        self.suppressed_frontiers.append(
+            SuppressedFrontier(
+                x_m=x_m,
+                y_m=y_m,
+                expires_at_sec=expires_at_sec,
+                reason=reason,
+            )
+        )
+        return 1
 
     def active_frontier_waypoint(self):
         if self.current_frontier is None or not self.current_frontier.path:
@@ -616,6 +664,12 @@ class LidarOpenSpaceExplorer(Node):
             if dx_m * dx_m + dy_m * dy_m <= radius_sq:
                 return True
         return False
+
+    def frontier_path_is_suppressed(
+        self,
+        path: tuple[tuple[float, float], ...],
+    ) -> bool:
+        return any(self.frontier_is_suppressed(x_m, y_m) for x_m, y_m in path)
 
     def map_target_vector_in_body(self, target_x_m: float, target_y_m: float):
         try:
@@ -737,14 +791,15 @@ class LidarOpenSpaceExplorer(Node):
                 world_x, world_y = self.grid_to_world(grid, grid_x, grid_y)
                 if not self.frontier_is_suppressed(world_x, world_y):
                     path = self.reconstruct_world_path(grid, parent, start_index, current)
-                    return FrontierTarget(
-                        x_m=world_x,
-                        y_m=world_y,
-                        grid_x=grid_x,
-                        grid_y=grid_y,
-                        searched_cells=searched,
-                        path=path,
-                    )
+                    if not self.frontier_path_is_suppressed(path):
+                        return FrontierTarget(
+                            x_m=world_x,
+                            y_m=world_y,
+                            grid_x=grid_x,
+                            grid_y=grid_y,
+                            searched_cells=searched,
+                            path=path,
+                        )
 
             for neighbor in self.neighbor_indices(current, width, height):
                 if visited[neighbor] or not self.is_traversable(grid, neighbor):

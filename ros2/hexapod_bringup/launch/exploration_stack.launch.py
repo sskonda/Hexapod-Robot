@@ -58,6 +58,9 @@ def generate_launch_description():
     explorer_frontier_suppression_radius_m = LaunchConfiguration(
         'explorer_frontier_suppression_radius_m'
     )
+    explorer_frontier_blocked_clearance_margin_m = LaunchConfiguration(
+        'explorer_frontier_blocked_clearance_margin_m'
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -197,13 +200,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_frontier_suppression_duration_sec',
-            default_value='6.0',
+            default_value='15.0',
             description='How long to avoid a frontier after reaching it or rejecting its current path.',
         ),
         DeclareLaunchArgument(
             'explorer_frontier_suppression_radius_m',
-            default_value='0.35',
+            default_value='0.60',
             description='Radius around a rejected frontier to skip during the suppression window.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_blocked_clearance_margin_m',
+            default_value='0.05',
+            description='Extra clearance margin that treats a frontier path as blocked before stop-distance jitter.',
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(pose_stack_launch)),
@@ -250,6 +258,9 @@ def generate_launch_description():
                     explorer_frontier_suppression_duration_sec
                 ),
                 'frontier_suppression_radius_m': explorer_frontier_suppression_radius_m,
+                'frontier_blocked_clearance_margin_m': (
+                    explorer_frontier_blocked_clearance_margin_m
+                ),
             }],
         ),
     ])
