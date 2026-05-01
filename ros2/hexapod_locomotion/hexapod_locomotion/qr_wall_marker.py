@@ -7,6 +7,7 @@ import math
 from typing import Dict, Optional, Tuple
 
 import rclpy
+from builtin_interfaces.msg import Duration
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -47,6 +48,7 @@ class QrWallMarkerNode(Node):
         self.declare_parameter('marker_size_m', 0.12)
         self.declare_parameter('marker_height_m', 0.18)
         self.declare_parameter('label_height_m', 0.34)
+        self.declare_parameter('marker_lifetime_sec', 0.0)
 
         self.qr_text_topic = str(self.get_parameter('qr_text_topic').value)
         self.scan_topic = str(self.get_parameter('scan_topic').value)
@@ -61,6 +63,10 @@ class QrWallMarkerNode(Node):
         self.marker_size_m = max(0.02, float(self.get_parameter('marker_size_m').value))
         self.marker_height_m = max(0.02, float(self.get_parameter('marker_height_m').value))
         self.label_height_m = max(self.marker_height_m, float(self.get_parameter('label_height_m').value))
+        self.marker_lifetime_sec = max(
+            0.0,
+            float(self.get_parameter('marker_lifetime_sec').value),
+        )
 
         self.latest_scan: Optional[LaserScan] = None
         self.latest_scan_stamp = None
@@ -71,7 +77,10 @@ class QrWallMarkerNode(Node):
         state_qos = QoSProfile(depth=1)
         state_qos.reliability = ReliabilityPolicy.RELIABLE
         state_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-        self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, 10)
+        marker_qos = QoSProfile(depth=1)
+        marker_qos.reliability = ReliabilityPolicy.RELIABLE
+        marker_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.marker_pub = self.create_publisher(MarkerArray, self.marker_topic, marker_qos)
         self.marker_state_pub = self.create_publisher(String, self.marker_state_topic, state_qos)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, qos_profile_sensor_data)
         self.create_subscription(String, self.qr_text_topic, self.qr_text_callback, 10)
@@ -208,7 +217,7 @@ class QrWallMarkerNode(Node):
     def publish_markers(self):
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
-        markers.markers.append(self.delete_all_marker())
+        marker_lifetime = self.duration_message(self.marker_lifetime_sec)
 
         for color_name, (x_pos, y_pos) in sorted(self.detected_markers.items()):
             marker_id, rgba = COLOR_TABLE[color_name]
@@ -227,6 +236,7 @@ class QrWallMarkerNode(Node):
             wall_marker.scale.x = self.marker_size_m
             wall_marker.scale.y = self.marker_size_m
             wall_marker.scale.z = self.marker_height_m
+            wall_marker.lifetime = marker_lifetime
             self.set_marker_color(wall_marker, rgba)
             markers.markers.append(wall_marker)
 
@@ -243,6 +253,7 @@ class QrWallMarkerNode(Node):
             label_marker.pose.orientation.w = 1.0
             label_marker.scale.z = self.marker_size_m
             label_marker.text = color_name
+            label_marker.lifetime = marker_lifetime
             self.set_marker_color(label_marker, rgba)
             markers.markers.append(label_marker)
 
@@ -261,16 +272,20 @@ class QrWallMarkerNode(Node):
         }
         self.marker_state_pub.publish(String(data=json.dumps(state, sort_keys=True)))
 
-    def delete_all_marker(self) -> Marker:
-        marker = Marker()
-        marker.action = Marker.DELETEALL
-        return marker
-
     def set_marker_color(self, marker: Marker, color: Tuple[float, float, float, float]):
         marker.color.r = color[0]
         marker.color.g = color[1]
         marker.color.b = color[2]
         marker.color.a = color[3]
+
+    def duration_message(self, duration_sec: float) -> Duration:
+        seconds = max(0.0, float(duration_sec))
+        whole_seconds = int(seconds)
+        nanoseconds = int(round((seconds - whole_seconds) * 1_000_000_000))
+        if nanoseconds >= 1_000_000_000:
+            whole_seconds += 1
+            nanoseconds -= 1_000_000_000
+        return Duration(sec=whole_seconds, nanosec=nanoseconds)
 
 
 def main(args=None):
