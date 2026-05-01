@@ -48,7 +48,7 @@ def generate_launch_description():
     qr_republish_same_text = LaunchConfiguration('qr_republish_same_text')
     qr_marker_topic = LaunchConfiguration('qr_marker_topic')
     qr_marker_state_topic = LaunchConfiguration('qr_marker_state_topic')
-    qr_marker_front_offset_deg = LaunchConfiguration('qr_marker_front_offset_deg')
+    cam_angle = LaunchConfiguration('cam_angle')
 
     explorer_enabled = LaunchConfiguration('explorer_enabled')
     explorer_mode = LaunchConfiguration('explorer_mode')
@@ -297,7 +297,7 @@ def generate_launch_description():
             description='JSON string topic containing the remembered QR marker map coordinates.',
         ),
         DeclareLaunchArgument(
-            'qr_marker_front_offset_deg',
+            'cam_angle',
             default_value='90.0',
             description='Extra rotation applied when projecting the front-wall QR marker from the LiDAR scan.',
         ),
@@ -594,7 +594,7 @@ def generate_launch_description():
                 'marker_state_topic': qr_marker_state_topic,
                 'base_frame': base_frame,
                 'map_frame': map_frame,
-                'front_direction_offset_deg': qr_marker_front_offset_deg,
+                'front_direction_offset_deg': cam_angle,
             }],
         ),
         Node(
