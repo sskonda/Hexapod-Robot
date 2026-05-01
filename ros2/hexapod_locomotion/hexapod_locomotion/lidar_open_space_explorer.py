@@ -7,10 +7,12 @@ slam_toolbox builds the map.
 """
 
 import math
+from collections import deque
 from dataclasses import dataclass
 
 import rclpy
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import OccupancyGrid
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
 from rclpy.time import Time
@@ -20,6 +22,10 @@ from tf2_ros import Buffer, TransformException, TransformListener
 
 def clamp(value: float, min_value: float, max_value: float) -> float:
     return max(min_value, min(max_value, value))
+
+
+def normalize_angle(angle_rad: float) -> float:
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
 def as_bool(value) -> bool:
@@ -45,16 +51,32 @@ class DirectionScore:
     score: float
 
 
+@dataclass(frozen=True)
+class FrontierTarget:
+    x_m: float
+    y_m: float
+    grid_x: int
+    grid_y: int
+    searched_cells: int
+    path: tuple[tuple[float, float], ...]
+
+
 class LidarOpenSpaceExplorer(Node):
     def __init__(self):
         super().__init__('lidar_open_space_explorer')
 
         self.declare_parameter('scan_topic', '/scan')
+        self.declare_parameter('map_topic', '/map')
         self.declare_parameter('cmd_vel_topic', 'cmd_vel')
         self.declare_parameter('base_frame', 'base_link')
+        self.declare_parameter('map_frame', 'map')
         self.declare_parameter('cmd_vel_rate_hz', 10.0)
         self.declare_parameter('scan_timeout_sec', 0.75)
+        self.declare_parameter('map_timeout_sec', 2.5)
         self.declare_parameter('enabled', True)
+        self.declare_parameter('exploration_mode', 'frontier')
+        self.declare_parameter('search_strategy', 'bfs')
+        self.declare_parameter('reactive_fallback', True)
         self.declare_parameter('use_tf_for_scan_frame', True)
         self.declare_parameter('scan_yaw_offset_deg', 0.0)
 
@@ -79,13 +101,26 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('distance_weight', 1.0)
         self.declare_parameter('clearance_angle_weight', 1.4)
         self.declare_parameter('reverse_allowed', False)
+        self.declare_parameter('frontier_replan_period_sec', 2.0)
+        self.declare_parameter('frontier_goal_tolerance_m', 0.18)
+        self.declare_parameter('frontier_waypoint_spacing_m', 0.25)
+        self.declare_parameter('frontier_min_clearance_m', 0.25)
+        self.declare_parameter('frontier_free_threshold', 25)
+        self.declare_parameter('frontier_occupied_threshold', 65)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
+        self.map_topic = str(self.get_parameter('map_topic').value)
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
         self.base_frame = str(self.get_parameter('base_frame').value)
+        self.map_frame = str(self.get_parameter('map_frame').value)
         self.latest_scan = None
         self.latest_scan_time = None
+        self.latest_map = None
+        self.latest_map_time = None
         self.last_choice = None
+        self.current_frontier = None
+        self.current_path_index = 0
+        self.last_frontier_plan_time = None
 
         self._load_parameters()
 
@@ -93,19 +128,29 @@ class LidarOpenSpaceExplorer(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
+        self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, 10)
         self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.create_timer(1.0 / self.cmd_vel_rate_hz, self.control_loop)
 
         self.get_logger().info(
             'LiDAR open-space explorer ready: '
-            f'scan={self.scan_topic}, cmd_vel={self.cmd_vel_topic}, '
-            f'max_speed={self.max_speed_mps:.3f} m/s, crab_motion={self.crab_motion}'
+            f'scan={self.scan_topic}, map={self.map_topic}, cmd_vel={self.cmd_vel_topic}, '
+            f'mode={self.exploration_mode}, search={self.search_strategy}, '
+            f'max_speed={self.max_speed_mps:.3f} m/s'
         )
 
     def _load_parameters(self):
         self.cmd_vel_rate_hz = max(1.0, float(self.get_parameter('cmd_vel_rate_hz').value))
         self.scan_timeout_sec = max(0.1, float(self.get_parameter('scan_timeout_sec').value))
+        self.map_timeout_sec = max(0.1, float(self.get_parameter('map_timeout_sec').value))
         self.enabled = as_bool(self.get_parameter('enabled').value)
+        self.exploration_mode = self.normalized_mode(
+            str(self.get_parameter('exploration_mode').value)
+        )
+        self.search_strategy = self.normalized_search_strategy(
+            str(self.get_parameter('search_strategy').value)
+        )
+        self.reactive_fallback = as_bool(self.get_parameter('reactive_fallback').value)
         self.use_tf_for_scan_frame = as_bool(self.get_parameter('use_tf_for_scan_frame').value)
         self.scan_yaw_offset_rad = math.radians(
             float(self.get_parameter('scan_yaw_offset_deg').value)
@@ -165,9 +210,76 @@ class LidarOpenSpaceExplorer(Node):
             float(self.get_parameter('clearance_angle_weight').value),
         )
         self.reverse_allowed = as_bool(self.get_parameter('reverse_allowed').value)
+        self.frontier_replan_period_sec = max(
+            0.5,
+            float(self.get_parameter('frontier_replan_period_sec').value),
+        )
+        self.frontier_goal_tolerance_m = max(
+            0.03,
+            float(self.get_parameter('frontier_goal_tolerance_m').value),
+        )
+        self.frontier_waypoint_spacing_m = max(
+            self.frontier_goal_tolerance_m,
+            float(self.get_parameter('frontier_waypoint_spacing_m').value),
+        )
+        self.frontier_min_clearance_m = max(
+            0.0,
+            float(self.get_parameter('frontier_min_clearance_m').value),
+        )
+        self.frontier_free_threshold = int(self.get_parameter('frontier_free_threshold').value)
+        self.frontier_occupied_threshold = int(
+            self.get_parameter('frontier_occupied_threshold').value
+        )
+
+    def normalized_mode(self, value: str) -> str:
+        mode = value.strip().lower()
+        if mode not in ('frontier', 'reactive'):
+            self.get_logger().warn(
+                f'Unsupported exploration_mode "{value}". Falling back to frontier.',
+                throttle_duration_sec=2.0,
+            )
+            return 'frontier'
+        return mode
+
+    def normalized_search_strategy(self, value: str) -> str:
+        strategy = value.strip().lower()
+        if strategy not in ('bfs', 'dfs'):
+            self.get_logger().warn(
+                f'Unsupported search_strategy "{value}". Falling back to bfs.',
+                throttle_duration_sec=2.0,
+            )
+            return 'bfs'
+        return strategy
 
     def parameter_update_callback(self, parameters):
         for parameter in parameters:
+            if parameter.name == 'map_frame':
+                self.map_frame = str(parameter.value)
+            elif parameter.name == 'map_timeout_sec':
+                self.map_timeout_sec = max(0.1, float(parameter.value))
+            elif parameter.name == 'exploration_mode':
+                self.exploration_mode = self.normalized_mode(str(parameter.value))
+                self.current_frontier = None
+            elif parameter.name == 'search_strategy':
+                self.search_strategy = self.normalized_search_strategy(str(parameter.value))
+                self.current_frontier = None
+            elif parameter.name == 'reactive_fallback':
+                self.reactive_fallback = as_bool(parameter.value)
+            elif parameter.name == 'frontier_replan_period_sec':
+                self.frontier_replan_period_sec = max(0.5, float(parameter.value))
+            elif parameter.name == 'frontier_goal_tolerance_m':
+                self.frontier_goal_tolerance_m = max(0.03, float(parameter.value))
+            elif parameter.name == 'frontier_waypoint_spacing_m':
+                self.frontier_waypoint_spacing_m = max(
+                    self.frontier_goal_tolerance_m,
+                    float(parameter.value),
+                )
+            elif parameter.name == 'frontier_min_clearance_m':
+                self.frontier_min_clearance_m = max(0.0, float(parameter.value))
+            elif parameter.name == 'frontier_free_threshold':
+                self.frontier_free_threshold = int(parameter.value)
+            elif parameter.name == 'frontier_occupied_threshold':
+                self.frontier_occupied_threshold = int(parameter.value)
             if parameter.name == 'base_frame':
                 self.base_frame = str(parameter.value)
             elif parameter.name == 'enabled':
@@ -238,6 +350,10 @@ class LidarOpenSpaceExplorer(Node):
         self.latest_scan = msg
         self.latest_scan_time = self.get_clock().now()
 
+    def map_callback(self, msg: OccupancyGrid):
+        self.latest_map = msg
+        self.latest_map_time = self.get_clock().now()
+
     def control_loop(self):
         cmd = Twist()
 
@@ -255,6 +371,15 @@ class LidarOpenSpaceExplorer(Node):
             )
             self.cmd_pub.publish(cmd)
             return
+
+        if self.exploration_mode == 'frontier':
+            frontier_cmd = self.frontier_control()
+            if frontier_cmd is not None:
+                self.cmd_pub.publish(frontier_cmd)
+                return
+            if not self.reactive_fallback:
+                self.cmd_pub.publish(cmd)
+                return
 
         best = self.choose_best_direction(self.latest_scan)
         if best is None:
@@ -297,6 +422,378 @@ class LidarOpenSpaceExplorer(Node):
 
         self.last_choice = best
         self.cmd_pub.publish(cmd)
+
+    def frontier_control(self):
+        cmd = Twist()
+
+        if self.latest_map is None or self.latest_map_time is None:
+            self.get_logger().warn(
+                'No /map received yet. Waiting before frontier exploration.',
+                throttle_duration_sec=2.0,
+            )
+            return None
+
+        map_age_sec = (self.get_clock().now() - self.latest_map_time).nanoseconds * 1e-9
+        if map_age_sec > self.map_timeout_sec:
+            self.get_logger().warn(
+                f'Map timeout ({map_age_sec:.2f}s old). Holding position.',
+                throttle_duration_sec=2.0,
+            )
+            return cmd
+
+        if self.current_frontier is None or self.frontier_replan_due():
+            self.current_frontier = self.find_frontier_target()
+            self.current_path_index = 0
+            self.last_frontier_plan_time = self.get_clock().now()
+            if self.current_frontier is not None:
+                self.get_logger().info(
+                    f'New {self.search_strategy.upper()} frontier target: '
+                    f'({self.current_frontier.x_m:.2f}, {self.current_frontier.y_m:.2f}) '
+                    f'after searching {self.current_frontier.searched_cells} cells '
+                    f'with {len(self.current_frontier.path)} waypoints.'
+                )
+
+        if self.current_frontier is None:
+            self.get_logger().info(
+                'No reachable frontier found. Exploration appears complete or blocked.',
+                throttle_duration_sec=4.0,
+            )
+            return cmd
+
+        waypoint = self.active_frontier_waypoint()
+        if waypoint is None:
+            self.current_frontier = None
+            return cmd
+
+        body_vector = self.map_target_vector_in_body(waypoint[0], waypoint[1])
+        if body_vector is None:
+            return None
+
+        body_x, body_y = body_vector
+        distance_m = math.hypot(body_x, body_y)
+        if distance_m < self.frontier_goal_tolerance_m:
+            self.current_path_index += 1
+            if self.current_frontier is not None and (
+                self.current_path_index >= len(self.current_frontier.path)
+            ):
+                self.current_frontier = None
+            return cmd
+
+        body_angle = math.atan2(body_y, body_x)
+        scan_clearance = self.min_scan_range_near_body_angle(
+            body_angle,
+            self.direction_window_rad,
+        )
+        if scan_clearance is not None and scan_clearance < self.obstacle_stop_distance_m:
+            self.current_frontier = None
+            return None
+
+        speed = self.speed_for_clearance(
+            scan_clearance if scan_clearance is not None else self.obstacle_slow_distance_m
+        )
+        if self.crab_motion:
+            cmd.linear.x = speed * (body_x / distance_m)
+            cmd.linear.y = speed * (body_y / distance_m)
+            cmd.linear.y = clamp(
+                cmd.linear.y,
+                -self.max_lateral_speed_mps,
+                self.max_lateral_speed_mps,
+            )
+            if not self.reverse_allowed and cmd.linear.x < 0.0:
+                self.current_frontier = None
+                return None
+        else:
+            cmd.linear.x = speed * max(0.0, math.cos(body_angle))
+            cmd.angular.z = clamp(
+                self.turn_gain * body_angle,
+                -self.max_turn_rate_rad_s,
+                self.max_turn_rate_rad_s,
+            )
+
+        return cmd
+
+    def active_frontier_waypoint(self):
+        if self.current_frontier is None or not self.current_frontier.path:
+            return None
+        index = min(self.current_path_index, len(self.current_frontier.path) - 1)
+        return self.current_frontier.path[index]
+
+    def frontier_replan_due(self) -> bool:
+        if self.last_frontier_plan_time is None:
+            return True
+        elapsed = (self.get_clock().now() - self.last_frontier_plan_time).nanoseconds * 1e-9
+        return elapsed >= self.frontier_replan_period_sec
+
+    def map_target_vector_in_body(self, target_x_m: float, target_y_m: float):
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.map_frame,
+                self.base_frame,
+                Time(),
+            )
+        except TransformException as exc:
+            self.get_logger().warn(
+                f'Could not transform {self.base_frame} to {self.map_frame}: {exc}.',
+                throttle_duration_sec=2.0,
+            )
+            return None
+
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        robot_yaw = quaternion_to_yaw(rotation.x, rotation.y, rotation.z, rotation.w)
+        dx_map = target_x_m - translation.x
+        dy_map = target_y_m - translation.y
+        cos_yaw = math.cos(robot_yaw)
+        sin_yaw = math.sin(robot_yaw)
+        return (
+            cos_yaw * dx_map + sin_yaw * dy_map,
+            -sin_yaw * dx_map + cos_yaw * dy_map,
+        )
+
+    def min_scan_range_near_body_angle(self, body_angle_rad: float, window_rad: float):
+        if self.latest_scan is None:
+            return None
+
+        yaw_offset = self.scan_to_body_yaw(self.latest_scan)
+        best = None
+        for index, raw_range in enumerate(self.latest_scan.ranges):
+            value = self.sanitize_range(
+                raw_range,
+                self.latest_scan.range_min,
+                self.latest_scan.range_max,
+            )
+            if value is None:
+                continue
+
+            scan_angle = self.latest_scan.angle_min + index * self.latest_scan.angle_increment
+            beam_body_angle = scan_angle + yaw_offset
+            if abs(normalize_angle(beam_body_angle - body_angle_rad)) <= window_rad:
+                best = value if best is None else min(best, value)
+
+        return best
+
+    def scan_to_body_yaw(self, scan: LaserScan) -> float:
+        if not self.use_tf_for_scan_frame:
+            return self.scan_yaw_offset_rad
+
+        scan_frame = scan.header.frame_id.strip()
+        if not scan_frame:
+            return self.scan_yaw_offset_rad
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_frame,
+                scan_frame,
+                Time(),
+            )
+        except TransformException:
+            return self.scan_yaw_offset_rad
+
+        rotation = transform.transform.rotation
+        return quaternion_to_yaw(rotation.x, rotation.y, rotation.z, rotation.w)
+
+    def find_frontier_target(self):
+        grid = self.latest_map
+        if grid is None or grid.info.width <= 0 or grid.info.height <= 0:
+            return None
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                grid.header.frame_id or self.map_frame,
+                self.base_frame,
+                Time(),
+            )
+        except TransformException as exc:
+            self.get_logger().warn(
+                f'Cannot find robot pose in map for frontier search: {exc}.',
+                throttle_duration_sec=2.0,
+            )
+            return None
+
+        start = self.world_to_grid(
+            grid,
+            transform.transform.translation.x,
+            transform.transform.translation.y,
+        )
+        if start is None:
+            return None
+
+        width = grid.info.width
+        height = grid.info.height
+        start_index = self.grid_index(start[0], start[1], width)
+        if not self.is_traversable(grid, start_index):
+            nearest = self.nearest_traversable_cell(grid, start[0], start[1])
+            if nearest is None:
+                return None
+            start_index = self.grid_index(nearest[0], nearest[1], width)
+
+        visited = bytearray(width * height)
+        parent = [-1] * (width * height)
+        pending = deque([start_index])
+        visited[start_index] = 1
+        parent[start_index] = start_index
+        searched = 0
+
+        while pending:
+            current = pending.popleft() if self.search_strategy == 'bfs' else pending.pop()
+            searched += 1
+
+            if self.is_frontier_cell(grid, current):
+                grid_x = current % width
+                grid_y = current // width
+                world_x, world_y = self.grid_to_world(grid, grid_x, grid_y)
+                path = self.reconstruct_world_path(grid, parent, start_index, current)
+                return FrontierTarget(
+                    x_m=world_x,
+                    y_m=world_y,
+                    grid_x=grid_x,
+                    grid_y=grid_y,
+                    searched_cells=searched,
+                    path=path,
+                )
+
+            for neighbor in self.neighbor_indices(current, width, height):
+                if visited[neighbor] or not self.is_traversable(grid, neighbor):
+                    continue
+                visited[neighbor] = 1
+                parent[neighbor] = current
+                pending.append(neighbor)
+
+        return None
+
+    def reconstruct_world_path(
+        self,
+        grid: OccupancyGrid,
+        parent: list[int],
+        start_index: int,
+        goal_index: int,
+    ):
+        path_indices = []
+        current = goal_index
+        while current != start_index and current >= 0:
+            path_indices.append(current)
+            current = parent[current]
+        path_indices.reverse()
+
+        if not path_indices:
+            goal_x = goal_index % grid.info.width
+            goal_y = goal_index // grid.info.width
+            return (self.grid_to_world(grid, goal_x, goal_y),)
+
+        waypoints = []
+        last_waypoint = None
+        for index in path_indices:
+            grid_x = index % grid.info.width
+            grid_y = index // grid.info.width
+            world = self.grid_to_world(grid, grid_x, grid_y)
+            if last_waypoint is None:
+                waypoints.append(world)
+                last_waypoint = world
+                continue
+
+            if math.hypot(world[0] - last_waypoint[0], world[1] - last_waypoint[1]) >= (
+                self.frontier_waypoint_spacing_m
+            ):
+                waypoints.append(world)
+                last_waypoint = world
+
+        final_x = goal_index % grid.info.width
+        final_y = goal_index // grid.info.width
+        final_world = self.grid_to_world(grid, final_x, final_y)
+        if not waypoints or waypoints[-1] != final_world:
+            waypoints.append(final_world)
+        return tuple(waypoints)
+
+    def nearest_traversable_cell(self, grid: OccupancyGrid, start_x: int, start_y: int):
+        width = grid.info.width
+        height = grid.info.height
+        start_index = self.grid_index(start_x, start_y, width)
+        visited = bytearray(width * height)
+        pending = deque([start_index])
+        visited[start_index] = 1
+        while pending:
+            current = pending.popleft()
+            if self.is_traversable(grid, current):
+                return current % width, current // width
+            for neighbor in self.neighbor_indices(current, width, height):
+                if not visited[neighbor]:
+                    visited[neighbor] = 1
+                    pending.append(neighbor)
+        return None
+
+    def is_frontier_cell(self, grid: OccupancyGrid, index: int) -> bool:
+        if not self.is_traversable(grid, index):
+            return False
+        width = grid.info.width
+        height = grid.info.height
+        for neighbor in self.neighbor_indices(index, width, height):
+            if grid.data[neighbor] < 0:
+                return True
+        return False
+
+    def is_traversable(self, grid: OccupancyGrid, index: int) -> bool:
+        value = grid.data[index]
+        if value < 0 or value > self.frontier_free_threshold:
+            return False
+
+        clearance_cells = int(math.ceil(self.frontier_min_clearance_m / grid.info.resolution))
+        if clearance_cells <= 0:
+            return True
+
+        width = grid.info.width
+        height = grid.info.height
+        center_x = index % width
+        center_y = index // width
+        for y_value in range(
+            max(0, center_y - clearance_cells),
+            min(height, center_y + clearance_cells + 1),
+        ):
+            for x_value in range(
+                max(0, center_x - clearance_cells),
+                min(width, center_x + clearance_cells + 1),
+            ):
+                neighbor_value = grid.data[self.grid_index(x_value, y_value, width)]
+                if neighbor_value >= self.frontier_occupied_threshold:
+                    return False
+        return True
+
+    def neighbor_indices(self, index: int, width: int, height: int):
+        x_value = index % width
+        y_value = index // width
+        for dy_value, dx_value in (
+            (0, 1),
+            (1, 0),
+            (0, -1),
+            (-1, 0),
+            (1, 1),
+            (1, -1),
+            (-1, -1),
+            (-1, 1),
+        ):
+            nx = x_value + dx_value
+            ny = y_value + dy_value
+            if 0 <= nx < width and 0 <= ny < height:
+                yield self.grid_index(nx, ny, width)
+
+    def grid_index(self, x_value: int, y_value: int, width: int) -> int:
+        return y_value * width + x_value
+
+    def world_to_grid(self, grid: OccupancyGrid, x_m: float, y_m: float):
+        origin = grid.info.origin.position
+        resolution = grid.info.resolution
+        grid_x = int((x_m - origin.x) / resolution)
+        grid_y = int((y_m - origin.y) / resolution)
+        if 0 <= grid_x < grid.info.width and 0 <= grid_y < grid.info.height:
+            return grid_x, grid_y
+        return None
+
+    def grid_to_world(self, grid: OccupancyGrid, grid_x: int, grid_y: int):
+        origin = grid.info.origin.position
+        resolution = grid.info.resolution
+        return (
+            origin.x + (grid_x + 0.5) * resolution,
+            origin.y + (grid_y + 0.5) * resolution,
+        )
 
     def scan_angle_to_body_angle(self, scan: LaserScan, scan_angle_rad: float) -> float:
         if not self.use_tf_for_scan_frame:

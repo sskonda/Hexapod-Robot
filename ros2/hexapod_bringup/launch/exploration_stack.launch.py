@@ -16,12 +16,17 @@ def generate_launch_description():
     launch_lidar = LaunchConfiguration('launch_lidar')
     enable_slam_toolbox = LaunchConfiguration('enable_slam_toolbox')
     scan_topic = LaunchConfiguration('scan_topic')
+    map_topic = LaunchConfiguration('map_topic')
     base_frame = LaunchConfiguration('base_frame')
+    map_frame = LaunchConfiguration('map_frame')
     use_sim_time = LaunchConfiguration('use_sim_time')
     lidar_serial_port = LaunchConfiguration('lidar_serial_port')
     locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
 
     explorer_enabled = LaunchConfiguration('explorer_enabled')
+    explorer_mode = LaunchConfiguration('explorer_mode')
+    strategy = LaunchConfiguration('strategy')
+    explorer_reactive_fallback = LaunchConfiguration('explorer_reactive_fallback')
     explorer_max_speed_mps = LaunchConfiguration('explorer_max_speed_mps')
     explorer_min_speed_mps = LaunchConfiguration('explorer_min_speed_mps')
     explorer_obstacle_stop_distance_m = LaunchConfiguration(
@@ -35,6 +40,18 @@ def generate_launch_description():
     explorer_reverse_allowed = LaunchConfiguration('explorer_reverse_allowed')
     explorer_use_tf_for_scan_frame = LaunchConfiguration('explorer_use_tf_for_scan_frame')
     explorer_scan_yaw_offset_deg = LaunchConfiguration('explorer_scan_yaw_offset_deg')
+    explorer_frontier_replan_period_sec = LaunchConfiguration(
+        'explorer_frontier_replan_period_sec'
+    )
+    explorer_frontier_goal_tolerance_m = LaunchConfiguration(
+        'explorer_frontier_goal_tolerance_m'
+    )
+    explorer_frontier_waypoint_spacing_m = LaunchConfiguration(
+        'explorer_frontier_waypoint_spacing_m'
+    )
+    explorer_frontier_min_clearance_m = LaunchConfiguration(
+        'explorer_frontier_min_clearance_m'
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -58,9 +75,19 @@ def generate_launch_description():
             description='LaserScan topic used by the explorer and slam_toolbox.',
         ),
         DeclareLaunchArgument(
+            'map_topic',
+            default_value='/map',
+            description='OccupancyGrid topic used by frontier exploration.',
+        ),
+        DeclareLaunchArgument(
             'base_frame',
             default_value='base_link',
             description='Robot body frame used by the explorer for cmd_vel directions.',
+        ),
+        DeclareLaunchArgument(
+            'map_frame',
+            default_value='map',
+            description='Map frame used by frontier exploration.',
         ),
         DeclareLaunchArgument(
             'use_sim_time',
@@ -81,6 +108,21 @@ def generate_launch_description():
             'explorer_enabled',
             default_value='true',
             description='When false, explorer publishes stop commands only.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_mode',
+            default_value='frontier',
+            description='Explorer mode: "frontier" uses /map, "reactive" uses only /scan.',
+        ),
+        DeclareLaunchArgument(
+            'strategy',
+            default_value='bfs',
+            description='Frontier search strategy: "bfs" maps nearest frontiers first, "dfs" dives deeper.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_reactive_fallback',
+            default_value='true',
+            description='Fall back to scan-reactive motion when no usable frontier target is available.',
         ),
         DeclareLaunchArgument(
             'explorer_max_speed_mps',
@@ -127,6 +169,26 @@ def generate_launch_description():
             default_value='0.0',
             description='Fallback scan-to-body yaw offset if TF is unavailable.',
         ),
+        DeclareLaunchArgument(
+            'explorer_frontier_replan_period_sec',
+            default_value='2.0',
+            description='How often to re-run BFS/DFS frontier selection.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_goal_tolerance_m',
+            default_value='0.18',
+            description='Distance at which a frontier target is considered reached.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_waypoint_spacing_m',
+            default_value='0.25',
+            description='Spacing between followed waypoints on the BFS/DFS map path.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_min_clearance_m',
+            default_value='0.25',
+            description='Minimum map clearance from occupied cells for frontier goals and traversed cells.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(pose_stack_launch)),
             launch_arguments={
@@ -135,6 +197,7 @@ def generate_launch_description():
                 'enable_slam_toolbox': enable_slam_toolbox,
                 'scan_topic': scan_topic,
                 'use_sim_time': use_sim_time,
+                'map_frame': map_frame,
                 'lidar_serial_port': lidar_serial_port,
                 'locomotion_use_imu_for_odom': locomotion_use_imu_for_odom,
             }.items(),
@@ -146,9 +209,14 @@ def generate_launch_description():
             output='screen',
             parameters=[{
                 'scan_topic': scan_topic,
+                'map_topic': map_topic,
                 'cmd_vel_topic': 'cmd_vel',
                 'base_frame': base_frame,
+                'map_frame': map_frame,
                 'enabled': explorer_enabled,
+                'exploration_mode': explorer_mode,
+                'search_strategy': strategy,
+                'reactive_fallback': explorer_reactive_fallback,
                 'use_tf_for_scan_frame': explorer_use_tf_for_scan_frame,
                 'scan_yaw_offset_deg': explorer_scan_yaw_offset_deg,
                 'max_speed_mps': explorer_max_speed_mps,
@@ -158,6 +226,10 @@ def generate_launch_description():
                 'desired_clearance_m': explorer_desired_clearance_m,
                 'crab_motion': explorer_crab_motion,
                 'reverse_allowed': explorer_reverse_allowed,
+                'frontier_replan_period_sec': explorer_frontier_replan_period_sec,
+                'frontier_goal_tolerance_m': explorer_frontier_goal_tolerance_m,
+                'frontier_waypoint_spacing_m': explorer_frontier_waypoint_spacing_m,
+                'frontier_min_clearance_m': explorer_frontier_min_clearance_m,
             }],
         ),
     ])

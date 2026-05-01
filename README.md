@@ -124,19 +124,24 @@ reasonable, run real motion explicitly:
 ros2 launch hexapod_bringup exploration_stack.launch.py servo_dry_run:=false
 ```
 
-The explorer subscribes to `/scan`, scores candidate LiDAR directions by
-range and angular clearance, and publishes slow `cmd_vel` commands toward the
-most open direction. It is a basic reactive wanderer, not full Nav2-style
-frontier exploration.
+The explorer defaults to map-based frontier exploration. It subscribes to
+`/map`, searches reachable free cells with `strategy:=bfs` or
+`strategy:=dfs`, picks a frontier next to unknown space, and
+publishes slow `cmd_vel` commands toward it. It still uses `/scan` as a local
+safety check and can fall back to the older open-space reactive behavior.
 
 Useful tuning knobs:
 
 ```bash
 ros2 launch hexapod_bringup exploration_stack.launch.py \
+  strategy:=bfs \
   explorer_max_speed_mps:=0.025 \
   explorer_obstacle_stop_distance_m:=0.35 \
   explorer_desired_clearance_m:=0.65
 ```
+
+Use `explorer_mode:=reactive` to ignore `/map` and return to the simpler
+open-space behavior.
 
 ### 3. Core Locomotion Stack
 
