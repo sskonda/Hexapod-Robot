@@ -120,10 +120,12 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('frontier_min_clearance_m', 0.15)
         self.declare_parameter('frontier_free_threshold', 25)
         self.declare_parameter('frontier_occupied_threshold', 65)
-        self.declare_parameter('frontier_failure_memory_enabled', False)
-        self.declare_parameter('frontier_suppression_duration_sec', 15.0)
-        self.declare_parameter('frontier_suppression_radius_m', 0.60)
+        self.declare_parameter('frontier_failure_memory_enabled', True)
+        self.declare_parameter('frontier_suppression_duration_sec', 45.0)
+        self.declare_parameter('frontier_suppression_radius_m', 0.75)
         self.declare_parameter('frontier_blocked_clearance_margin_m', 0.05)
+        self.declare_parameter('frontier_progress_timeout_sec', 10.0)
+        self.declare_parameter('frontier_progress_epsilon_m', 0.08)
         self.declare_parameter('publish_target_markers', True)
         self.declare_parameter('target_marker_scale_m', 0.12)
         self.declare_parameter('bug_recovery_enabled', True)
@@ -152,11 +154,15 @@ class LidarOpenSpaceExplorer(Node):
         self.current_frontier = None
         self.current_path_index = 0
         self.last_frontier_plan_time = None
+        self.frontier_progress_best_distance_m = None
+        self.frontier_progress_last_time_sec = 0.0
+        self.frontier_progress_waypoint_index = -1
         self.suppressed_frontiers = []
         self.bug_active = False
         self.bug_wall_side = 1
         self.bug_started_at_sec = 0.0
         self.bug_clear_since_sec = None
+        self.bug_timed_out = False
 
         self._load_parameters()
 
@@ -292,6 +298,14 @@ class LidarOpenSpaceExplorer(Node):
             0.0,
             float(self.get_parameter('frontier_blocked_clearance_margin_m').value),
         )
+        self.frontier_progress_timeout_sec = max(
+            1.0,
+            float(self.get_parameter('frontier_progress_timeout_sec').value),
+        )
+        self.frontier_progress_epsilon_m = max(
+            0.0,
+            float(self.get_parameter('frontier_progress_epsilon_m').value),
+        )
         self.publish_target_markers = as_bool(
             self.get_parameter('publish_target_markers').value
         )
@@ -411,6 +425,10 @@ class LidarOpenSpaceExplorer(Node):
                     0.0,
                     float(parameter.value),
                 )
+            elif parameter.name == 'frontier_progress_timeout_sec':
+                self.frontier_progress_timeout_sec = max(1.0, float(parameter.value))
+            elif parameter.name == 'frontier_progress_epsilon_m':
+                self.frontier_progress_epsilon_m = max(0.0, float(parameter.value))
             elif parameter.name == 'publish_target_markers':
                 self.publish_target_markers = as_bool(parameter.value)
                 if not self.publish_target_markers:
@@ -628,7 +646,7 @@ class LidarOpenSpaceExplorer(Node):
             )
             return cmd
 
-        if not self.bug_active and self.frontier_replan_due():
+        if self.current_frontier is None and self.frontier_replan_due():
             self.plan_frontier_target()
 
         if self.current_frontier is None:
@@ -669,6 +687,19 @@ class LidarOpenSpaceExplorer(Node):
                 return cmd
 
             body_angle = math.atan2(body_y, body_x)
+            if not self.bug_active and self.frontier_progress_timed_out(distance_m):
+                if self.bug_recovery_enabled:
+                    self.get_logger().info(
+                        'No progress toward current frontier waypoint; trying Bug recovery.',
+                        throttle_duration_sec=2.0,
+                    )
+                    bug_cmd = self.bug_recovery_command(body_angle)
+                    if bug_cmd is not None:
+                        return bug_cmd
+                self.suppress_current_frontier('no_progress')
+                self.clear_target_markers()
+                return cmd
+
             scan_clearance = self.min_scan_range_near_body_angle(
                 body_angle,
                 self.direction_window_rad,
@@ -696,12 +727,20 @@ class LidarOpenSpaceExplorer(Node):
                 bug_cmd = self.bug_recovery_command(body_angle)
                 if bug_cmd is not None:
                     return bug_cmd
+                if self.bug_timed_out:
+                    self.suppress_current_frontier('bug_timeout')
+                    self.clear_target_markers()
+                    return cmd
 
             if self.side_clearance_is_too_close():
                 if self.bug_recovery_enabled:
                     bug_cmd = self.bug_recovery_command(body_angle)
                     if bug_cmd is not None:
                         return bug_cmd
+                    if self.bug_timed_out:
+                        self.suppress_current_frontier('bug_timeout')
+                        self.clear_target_markers()
+                        return cmd
                 guard_cmd = self.wall_clearance_guard_command()
                 if guard_cmd is not None:
                     return guard_cmd
@@ -795,6 +834,7 @@ class LidarOpenSpaceExplorer(Node):
         if self.latest_scan is None:
             return None
 
+        self.bug_timed_out = False
         if not self.bug_active:
             self.start_bug_recovery(target_body_angle_rad)
 
@@ -805,6 +845,7 @@ class LidarOpenSpaceExplorer(Node):
                     'Bug recovery timed out; rejecting current frontier path.',
                     throttle_duration_sec=2.0,
                 )
+                self.bug_timed_out = True
                 self.stop_bug_recovery()
                 return None
 
@@ -858,6 +899,7 @@ class LidarOpenSpaceExplorer(Node):
 
     def start_bug_recovery(self, target_body_angle_rad: float):
         self.bug_active = True
+        self.bug_timed_out = False
         self.bug_started_at_sec = self.now_sec()
         self.bug_clear_since_sec = None
         self.bug_wall_side = self.select_bug_wall_side(target_body_angle_rad)
@@ -1018,6 +1060,9 @@ class LidarOpenSpaceExplorer(Node):
         return point
 
     def plan_frontier_target(self):
+        if self.current_frontier is not None:
+            return
+
         self.prune_suppressed_frontiers()
         candidate = self.find_frontier_target()
         self.last_frontier_plan_time = self.get_clock().now()
@@ -1032,6 +1077,7 @@ class LidarOpenSpaceExplorer(Node):
         self.stop_bug_recovery()
         self.current_frontier = candidate
         self.current_path_index = 0
+        self.reset_frontier_progress()
         self.get_logger().info(
             f'New {self.search_strategy.upper()} frontier target: '
             f'({self.current_frontier.x_m:.2f}, {self.current_frontier.y_m:.2f}) '
@@ -1046,13 +1092,36 @@ class LidarOpenSpaceExplorer(Node):
         if next_index >= len(self.current_frontier.path):
             return False
         self.current_path_index = next_index
+        self.reset_frontier_progress()
         return True
 
     def clear_current_frontier(self):
         self.stop_bug_recovery()
         self.current_frontier = None
         self.current_path_index = 0
-        self.last_frontier_plan_time = self.get_clock().now()
+        self.reset_frontier_progress()
+        self.last_frontier_plan_time = None
+
+    def reset_frontier_progress(self):
+        self.frontier_progress_best_distance_m = None
+        self.frontier_progress_last_time_sec = self.now_sec()
+        self.frontier_progress_waypoint_index = self.current_path_index
+
+    def frontier_progress_timed_out(self, distance_m: float) -> bool:
+        now_sec = self.now_sec()
+        if (
+            self.frontier_progress_best_distance_m is None
+            or self.frontier_progress_waypoint_index != self.current_path_index
+            or distance_m
+            < self.frontier_progress_best_distance_m - self.frontier_progress_epsilon_m
+        ):
+            self.frontier_progress_best_distance_m = distance_m
+            self.frontier_progress_last_time_sec = now_sec
+            self.frontier_progress_waypoint_index = self.current_path_index
+            return False
+
+        elapsed_sec = now_sec - self.frontier_progress_last_time_sec
+        return elapsed_sec >= self.frontier_progress_timeout_sec
 
     def suppress_current_frontier(self, reason: str):
         frontier = self.current_frontier

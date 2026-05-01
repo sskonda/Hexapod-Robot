@@ -67,6 +67,12 @@ def generate_launch_description():
     explorer_frontier_blocked_clearance_margin_m = LaunchConfiguration(
         'explorer_frontier_blocked_clearance_margin_m'
     )
+    explorer_frontier_progress_timeout_sec = LaunchConfiguration(
+        'explorer_frontier_progress_timeout_sec'
+    )
+    explorer_frontier_progress_epsilon_m = LaunchConfiguration(
+        'explorer_frontier_progress_epsilon_m'
+    )
     explorer_publish_target_markers = LaunchConfiguration('explorer_publish_target_markers')
     explorer_target_marker_scale_m = LaunchConfiguration('explorer_target_marker_scale_m')
     explorer_bug_recovery_enabled = LaunchConfiguration('explorer_bug_recovery_enabled')
@@ -232,23 +238,33 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_frontier_failure_memory_enabled',
-            default_value='false',
+            default_value='true',
             description='Remember failed frontier paths and temporarily avoid repeating them.',
         ),
         DeclareLaunchArgument(
             'explorer_frontier_suppression_duration_sec',
-            default_value='15.0',
+            default_value='45.0',
             description='How long to avoid a frontier after reaching it or rejecting its current path.',
         ),
         DeclareLaunchArgument(
             'explorer_frontier_suppression_radius_m',
-            default_value='0.60',
+            default_value='0.75',
             description='Radius around a rejected frontier to skip during the suppression window.',
         ),
         DeclareLaunchArgument(
             'explorer_frontier_blocked_clearance_margin_m',
             default_value='0.05',
             description='Extra clearance margin that treats a frontier path as blocked before stop-distance jitter.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_progress_timeout_sec',
+            default_value='10.0',
+            description='Seconds without getting closer to a waypoint before Bug recovery or suppression.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_progress_epsilon_m',
+            default_value='0.08',
+            description='Minimum distance improvement that counts as progress toward a waypoint.',
         ),
         DeclareLaunchArgument(
             'explorer_publish_target_markers',
@@ -349,6 +365,8 @@ def generate_launch_description():
                 'frontier_blocked_clearance_margin_m': (
                     explorer_frontier_blocked_clearance_margin_m
                 ),
+                'frontier_progress_timeout_sec': explorer_frontier_progress_timeout_sec,
+                'frontier_progress_epsilon_m': explorer_frontier_progress_epsilon_m,
                 'publish_target_markers': explorer_publish_target_markers,
                 'target_marker_scale_m': explorer_target_marker_scale_m,
                 'bug_recovery_enabled': explorer_bug_recovery_enabled,
