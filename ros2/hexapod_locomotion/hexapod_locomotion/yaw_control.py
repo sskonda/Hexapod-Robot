@@ -3,35 +3,17 @@
 """Shared helpers for yaw control, IMU frame alignment, and startup settling."""
 
 import math
+from dataclasses import dataclass
 
 
 STANDARD_GRAVITY_M_S2 = 9.80665
 
 
-def clamp(value: float, min_value: float, max_value: float) -> float:
-    return max(min_value, min(max_value, value))
-
-
 def normalize_angle(angle_rad: float) -> float:
-    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+    return math.atan2(math.sin(float(angle_rad)), math.cos(float(angle_rad)))
 
 
-def apply_angular_deadband(error_rad: float, deadband_rad: float) -> float:
-    """Return zero inside the deadband and a continuous error outside it."""
-    error_rad = float(error_rad)
-    deadband_rad = max(0.0, float(deadband_rad))
-
-    if abs(error_rad) <= deadband_rad:
-        return 0.0
-
-    return math.copysign(abs(error_rad) - deadband_rad, error_rad)
-
-
-def vector_norm(values) -> float:
-    return math.sqrt(sum(float(value) * float(value) for value in values))
-
-
-def quaternion_from_euler(roll_rad: float, pitch_rad: float, yaw_rad: float):
+def quaternion_from_euler(roll_rad, pitch_rad, yaw_rad):
     half_roll = float(roll_rad) * 0.5
     half_pitch = float(pitch_rad) * 0.5
     half_yaw = float(yaw_rad) * 0.5
@@ -51,94 +33,170 @@ def quaternion_from_euler(roll_rad: float, pitch_rad: float, yaw_rad: float):
     )
 
 
-def quaternion_conjugate(quaternion):
-    x_value, y_value, z_value, w_value = quaternion
-    return (-float(x_value), -float(y_value), -float(z_value), float(w_value))
-
-
-def quaternion_normalize(quaternion):
-    x_value, y_value, z_value, w_value = quaternion
-    norm = math.sqrt(
-        x_value * x_value
-        + y_value * y_value
-        + z_value * z_value
-        + w_value * w_value
+def quaternion_to_yaw(x_value, y_value, z_value, w_value):
+    siny_cosp = 2.0 * (float(w_value) * float(z_value) + float(x_value) * float(y_value))
+    cosy_cosp = 1.0 - 2.0 * (
+        float(y_value) * float(y_value) + float(z_value) * float(z_value)
     )
-    if norm < 1e-12:
-        return 0.0, 0.0, 0.0, 1.0
-
-    return (
-        float(x_value) / norm,
-        float(y_value) / norm,
-        float(z_value) / norm,
-        float(w_value) / norm,
-    )
-
-
-def quaternion_multiply(first, second):
-    ax, ay, az, aw = first
-    bx, by, bz, bw = second
-    return quaternion_normalize((
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
-    ))
-
-
-def rotate_vector_by_quaternion(vector, quaternion):
-    x_value, y_value, z_value, w_value = quaternion_normalize(quaternion)
-    vx, vy, vz = vector
-
-    # Quaternion sandwich product optimized for pure-vector input.
-    tx = 2.0 * (y_value * vz - z_value * vy)
-    ty = 2.0 * (z_value * vx - x_value * vz)
-    tz = 2.0 * (x_value * vy - y_value * vx)
-
-    return (
-        float(vx) + w_value * tx + (y_value * tz - z_value * ty),
-        float(vy) + w_value * ty + (z_value * tx - x_value * tz),
-        float(vz) + w_value * tz + (x_value * ty - y_value * tx),
-    )
-
-
-def quaternion_to_yaw(x_value: float, y_value: float, z_value: float, w_value: float) -> float:
-    siny_cosp = 2.0 * (w_value * z_value + x_value * y_value)
-    cosy_cosp = 1.0 - 2.0 * (y_value * y_value + z_value * z_value)
     return math.atan2(siny_cosp, cosy_cosp)
 
 
-def orientation_quaternion_is_available(msg) -> bool:
-    covariance = getattr(msg, 'orientation_covariance', None)
-    if covariance is None or len(covariance) < 1 or covariance[0] < 0.0:
+def quaternion_normalize(quaternion):
+    norm = vector_norm(quaternion)
+    if norm < 1e-12:
+        return 0.0, 0.0, 0.0, 1.0
+    return tuple(float(value) / norm for value in quaternion)
+
+
+def apply_angular_deadband(error_rad: float, deadband_rad: float) -> float:
+    """Return zero inside the deadband and a continuous error outside it."""
+    error_rad = float(error_rad)
+    deadband_rad = max(0.0, float(deadband_rad))
+
+    if abs(error_rad) <= deadband_rad:
+        return 0.0
+
+    return math.copysign(abs(error_rad) - deadband_rad, error_rad)
+
+
+def update_startup_yaw_reference(
+    reference_yaw_rad,
+    current_yaw_rad,
+    reference_locked,
+    imu_is_still,
+):
+    current_yaw_rad = normalize_angle(current_yaw_rad)
+    if reference_yaw_rad is None or (not reference_locked and imu_is_still):
+        return current_yaw_rad
+
+    return normalize_angle(reference_yaw_rad)
+
+
+def relative_yaw_from_reference(yaw_rad, reference_yaw_rad):
+    if reference_yaw_rad is None:
+        return 0.0
+
+    return normalize_angle(float(yaw_rad) - float(reference_yaw_rad))
+
+
+def calibration_status_meets_thresholds(
+    calibration,
+    min_sys: int = 0,
+    min_gyro: int = 0,
+    min_accel: int = 0,
+    min_mag: int = 0,
+) -> bool:
+    if calibration is None or len(calibration) != 4:
         return False
 
-    return any(abs(value) > 1e-6 for value in (
-        msg.orientation.x,
-        msg.orientation.y,
-        msg.orientation.z,
-        msg.orientation.w,
-    ))
+    sys_calib, gyro_calib, accel_calib, mag_calib = (
+        int(value) for value in calibration
+    )
+    return (
+        sys_calib >= int(min_sys)
+        and gyro_calib >= int(min_gyro)
+        and accel_calib >= int(min_accel)
+        and mag_calib >= int(min_mag)
+    )
 
 
-def orientation_yaw_variance(orientation_covariance) -> float:
-    if orientation_covariance is None or len(orientation_covariance) < 9:
-        return math.inf
+def fused_yaw_untrusted_reason(
+    calibration,
+    reference_locked: bool,
+    min_sys: int,
+    min_gyro: int,
+    min_accel: int,
+    min_mag: int,
+    ignore_sys_after_lock: bool = True,
+) -> str:
+    if calibration is None or len(calibration) != 4:
+        return 'calibration_missing'
 
-    yaw_variance = float(orientation_covariance[8])
-    if yaw_variance < 0.0:
-        return math.inf
+    sys_calib, gyro_calib, accel_calib, mag_calib = (
+        int(value) for value in calibration
+    )
+    if gyro_calib < int(min_gyro):
+        return 'gyro_calibration_low'
+    if accel_calib < int(min_accel):
+        return 'accel_calibration_low'
+    if mag_calib < int(min_mag):
+        return 'mag_calibration_low'
+    if (not bool(reference_locked) or not bool(ignore_sys_after_lock)) and sys_calib < int(min_sys):
+        return 'sys_calibration_low'
+    return 'calibration_healthy'
 
-    return yaw_variance
 
-
-def heading_is_trusted(
-    orientation_covariance,
-    max_yaw_variance_rad2: float = 1.0,
+def fused_yaw_is_trusted(
+    calibration,
+    reference_locked: bool,
+    min_sys: int,
+    min_gyro: int,
+    min_accel: int,
+    min_mag: int,
+    ignore_sys_after_lock: bool = True,
 ) -> bool:
-    return orientation_yaw_variance(orientation_covariance) <= max(
+    return fused_yaw_untrusted_reason(
+        calibration,
+        reference_locked=reference_locked,
+        min_sys=min_sys,
+        min_gyro=min_gyro,
+        min_accel=min_accel,
+        min_mag=min_mag,
+        ignore_sys_after_lock=ignore_sys_after_lock,
+    ) == 'calibration_healthy'
+
+
+def vector_norm(values) -> float:
+    return math.sqrt(sum(float(value) * float(value) for value in values))
+
+
+def yaw_is_trusted_from_covariance(
+    orientation_covariance,
+    max_trusted_yaw_covariance_rad2: float,
+) -> bool:
+    if orientation_covariance is None or len(orientation_covariance) < 9:
+        return False
+
+    yaw_covariance = float(orientation_covariance[8])
+    if not math.isfinite(yaw_covariance):
+        return False
+
+    return yaw_covariance >= 0.0 and yaw_covariance <= max(
         0.0,
-        float(max_yaw_variance_rad2),
+        float(max_trusted_yaw_covariance_rad2),
+    )
+
+
+def update_vector_running_average(current_average, sample_values, sample_count):
+    """Update a per-axis running average and return ``(average, count)``."""
+    if sample_values is None:
+        return current_average, int(sample_count)
+
+    if current_average is None or int(sample_count) <= 0:
+        return tuple(float(value) for value in sample_values), 1
+
+    next_count = int(sample_count) + 1
+    next_average = tuple(
+        current_average[index]
+        + (float(sample_values[index]) - current_average[index]) / next_count
+        for index in range(len(sample_values))
+    )
+    return next_average, next_count
+
+
+def vector_components_within_tolerance(reference_values, sample_values, tolerance):
+    """Return true when every axis stays within the absolute tolerance."""
+    if (
+        reference_values is None
+        or sample_values is None
+        or len(reference_values) != len(sample_values)
+    ):
+        return False
+
+    tolerance = max(0.0, float(tolerance))
+    return all(
+        abs(float(sample_values[index]) - float(reference_values[index])) <= tolerance
+        for index in range(len(reference_values))
     )
 
 
@@ -211,6 +269,86 @@ def resolve_parameter_value(
         return legacy_value, False
 
     return preferred_value, False
+
+
+@dataclass(frozen=True)
+class HeadingHoldPidStep:
+    yaw_error_rad: float
+    deadbanded_yaw_error_rad: float
+    proportional_term: float
+    integral_candidate: float
+    integral_term: float
+    derivative_term: float
+    unsaturated_correction: float
+    correction: float
+    correction_limit: float
+    correction_is_saturated: bool
+    integral_should_update: bool
+
+
+def compute_heading_hold_pid(
+    target_yaw_rad: float,
+    current_yaw_rad: float,
+    current_yaw_rate_rps: float,
+    integral_state_rad: float,
+    control_dt_sec: float,
+    kp: float,
+    ki: float,
+    kd: float,
+    deadband_rad: float,
+    integral_limit: float,
+    correction_limit: float,
+) -> HeadingHoldPidStep:
+    yaw_error_rad = normalize_angle(float(target_yaw_rad) - float(current_yaw_rad))
+    deadbanded_yaw_error_rad = apply_angular_deadband(yaw_error_rad, deadband_rad)
+    proportional_term = float(kp) * deadbanded_yaw_error_rad
+    derivative_term = -float(kd) * float(current_yaw_rate_rps)
+    integral_candidate = max(
+        -float(integral_limit),
+        min(
+            float(integral_limit),
+            float(integral_state_rad) + deadbanded_yaw_error_rad * max(0.0, float(control_dt_sec)),
+        ),
+    )
+    integral_term = float(ki) * integral_candidate
+    unsaturated_correction = proportional_term + integral_term + derivative_term
+    correction = max(
+        -float(correction_limit),
+        min(float(correction_limit), unsaturated_correction),
+    )
+    correction_is_saturated = not math.isclose(
+        unsaturated_correction,
+        correction,
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    )
+    integral_should_update = (
+        float(ki) > 0.0
+        and (
+            not correction_is_saturated
+            or (
+                unsaturated_correction > float(correction_limit)
+                and deadbanded_yaw_error_rad < 0.0
+            )
+            or (
+                unsaturated_correction < -float(correction_limit)
+                and deadbanded_yaw_error_rad > 0.0
+            )
+        )
+    )
+    return HeadingHoldPidStep(
+        yaw_error_rad=yaw_error_rad,
+        deadbanded_yaw_error_rad=deadbanded_yaw_error_rad,
+        proportional_term=proportional_term,
+        integral_candidate=integral_candidate,
+        integral_term=integral_term,
+        derivative_term=derivative_term,
+        unsaturated_correction=unsaturated_correction,
+        correction=correction,
+        correction_limit=float(correction_limit),
+        correction_is_saturated=correction_is_saturated,
+        integral_should_update=integral_should_update,
+    )
 
 
 class StartupStillnessGate:

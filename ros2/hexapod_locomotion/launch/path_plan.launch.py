@@ -17,21 +17,48 @@ def generate_launch_description():
     apply_offsets = LaunchConfiguration('apply_offsets')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
     yaw_ki = LaunchConfiguration('yaw_ki')
+    yaw_kd = LaunchConfiguration('yaw_kd')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
-    yaw_rate_fault_threshold_rad_s = LaunchConfiguration('yaw_rate_fault_threshold_rad_s')
-    yaw_rate_fault_time_sec = LaunchConfiguration('yaw_rate_fault_time_sec')
-    heading_valid_timeout_sec = LaunchConfiguration('heading_valid_timeout_sec')
+    tripod_planar_travel_scale = LaunchConfiguration('tripod_planar_travel_scale')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
+    imu_mode = LaunchConfiguration('imu_mode')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
-    imu_accel_heading_tolerance_m_s2 = LaunchConfiguration('imu_accel_heading_tolerance_m_s2')
-    imu_mag_norm_tolerance_ratio = LaunchConfiguration('imu_mag_norm_tolerance_ratio')
-    imu_mag_yaw_jump_reject_deg = LaunchConfiguration('imu_mag_yaw_jump_reject_deg')
+    imu_min_sys_calibration_for_fused_yaw_acquire = LaunchConfiguration(
+        'imu_min_sys_calibration_for_fused_yaw_acquire'
+    )
+    imu_min_gyro_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_gyro_calibration_for_fused_yaw'
+    )
+    imu_min_accel_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_accel_calibration_for_fused_yaw'
+    )
+    imu_min_mag_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_mag_calibration_for_fused_yaw'
+    )
+    imu_ignore_sys_calibration_after_fused_yaw_lock = LaunchConfiguration(
+        'imu_ignore_sys_calibration_after_fused_yaw_lock'
+    )
+    imu_max_trusted_yaw_covariance_rad2 = LaunchConfiguration(
+        'imu_max_trusted_yaw_covariance_rad2'
+    )
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
+    imu_allow_mag_baseline_trust_without_calibration = LaunchConfiguration(
+        'imu_allow_mag_baseline_trust_without_calibration'
+    )
+    imu_idle_baseline_mag_axis_tolerance_ut = LaunchConfiguration(
+        'imu_idle_baseline_mag_axis_tolerance_ut'
+    )
+    imu_idle_baseline_min_still_samples = LaunchConfiguration(
+        'imu_idle_baseline_min_still_samples'
+    )
+    bno055_init_retry_period_sec = LaunchConfiguration('bno055_init_retry_period_sec')
+    imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
+    imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
     wait_for_imu_yaw = LaunchConfiguration('wait_for_imu_yaw')
     imu_topic = LaunchConfiguration('imu_topic')
     publish_rate_hz = LaunchConfiguration('publish_rate_hz')
@@ -69,6 +96,11 @@ def generate_launch_description():
             description='PI heading-hold integral gain passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
+            'yaw_kd',
+            default_value='0.10',
+            description='PID heading-hold derivative gain passed through to hexapod_core.launch.py.',
+        ),
+        DeclareLaunchArgument(
             'yaw_deadband_deg',
             default_value='2.5',
             description='Yaw-error deadband passed through to hexapod_core.launch.py.',
@@ -79,24 +111,19 @@ def generate_launch_description():
             description='Heading-hold integrator limit passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
-            'yaw_rate_fault_threshold_rad_s',
-            default_value='0.35',
-            description='Spin-fault yaw-rate threshold passed through to hexapod_core.launch.py.',
-        ),
-        DeclareLaunchArgument(
-            'yaw_rate_fault_time_sec',
-            default_value='0.75',
-            description='Spin-fault hold time passed through to hexapod_core.launch.py.',
-        ),
-        DeclareLaunchArgument(
-            'heading_valid_timeout_sec',
-            default_value='0.25',
-            description='Heading freshness timeout passed through to hexapod_core.launch.py.',
+            'tripod_planar_travel_scale',
+            default_value='2.0',
+            description='Tripod gait planar foot-travel multiplier passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',
             default_value='false',
             description='Pass through to hexapod_core.launch.py for the BNO055 UART bring-up.',
+        ),
+        DeclareLaunchArgument(
+            'imu_mode',
+            default_value='NDOF_MODE',
+            description='BNO055 operating mode passed through to hexapod_core.launch.py.',
         ),
         DeclareLaunchArgument(
             'imu_read_retry_count',
@@ -119,19 +146,34 @@ def generate_launch_description():
             description='Pass through to hexapod_core.launch.py for magnetic yaw correction gating.',
         ),
         DeclareLaunchArgument(
-            'imu_accel_heading_tolerance_m_s2',
+            'imu_min_sys_calibration_for_fused_yaw_acquire',
+            default_value='1',
+            description='Pass through to hexapod_core.launch.py for fused yaw reference acquisition.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_gyro_calibration_for_fused_yaw',
+            default_value='3',
+            description='Pass through to hexapod_core.launch.py for fused yaw gyro trust gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_accel_calibration_for_fused_yaw',
+            default_value='2',
+            description='Pass through to hexapod_core.launch.py for fused yaw accel trust gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_mag_calibration_for_fused_yaw',
+            default_value='2',
+            description='Pass through to hexapod_core.launch.py for fused yaw mag trust gating.',
+        ),
+        DeclareLaunchArgument(
+            'imu_ignore_sys_calibration_after_fused_yaw_lock',
+            default_value='true',
+            description='Pass through to hexapod_core.launch.py to ignore transient SYS drops after fused yaw lock.',
+        ),
+        DeclareLaunchArgument(
+            'imu_max_trusted_yaw_covariance_rad2',
             default_value='1.0',
-            description='Pass through to hexapod_core.launch.py for acceleration-based mag gating.',
-        ),
-        DeclareLaunchArgument(
-            'imu_mag_norm_tolerance_ratio',
-            default_value='0.25',
-            description='Pass through to hexapod_core.launch.py for mag-field-magnitude gating.',
-        ),
-        DeclareLaunchArgument(
-            'imu_mag_yaw_jump_reject_deg',
-            default_value='25.0',
-            description='Pass through to hexapod_core.launch.py for mag-yaw innovation gating.',
+            description='Maximum yaw covariance that path planning and locomotion still consider trusted.',
         ),
         DeclareLaunchArgument(
             'imu_startup_still_time_sec',
@@ -142,6 +184,36 @@ def generate_launch_description():
             'imu_startup_motion_grace_sec',
             default_value='0.5',
             description='Pass through to hexapod_core.launch.py for startup stillness motion grace.',
+        ),
+        DeclareLaunchArgument(
+            'imu_allow_mag_baseline_trust_without_calibration',
+            default_value='true',
+            description='Pass through to hexapod_core.launch.py for startup magnetic baseline yaw fallback.',
+        ),
+        DeclareLaunchArgument(
+            'imu_idle_baseline_mag_axis_tolerance_ut',
+            default_value='2.0',
+            description='Pass through to hexapod_core.launch.py for the startup magnetic baseline tolerance in microtesla.',
+        ),
+        DeclareLaunchArgument(
+            'imu_idle_baseline_min_still_samples',
+            default_value='25',
+            description='Pass through to hexapod_core.launch.py for the startup magnetic baseline sample count.',
+        ),
+        DeclareLaunchArgument(
+            'bno055_init_retry_period_sec',
+            default_value='1.0',
+            description='Pass through to hexapod_core.launch.py for BNO055 bring-up retries after UART/protocol failures.',
+        ),
+        DeclareLaunchArgument(
+            'imu_zero_yaw_to_startup_heading',
+            default_value='true',
+            description='Pass through to hexapod_core.launch.py to zero IMU yaw to the startup heading.',
+        ),
+        DeclareLaunchArgument(
+            'imu_publish_orientation_during_startup',
+            default_value='true',
+            description='Pass through to hexapod_core.launch.py to publish startup-relative IMU orientation before settle completes.',
         ),
         DeclareLaunchArgument(
             'wait_for_imu_yaw',
@@ -196,21 +268,30 @@ def generate_launch_description():
                 'yaw_kp': yaw_kp,
                 'yaw_correction_gain': yaw_correction_gain,
                 'yaw_ki': yaw_ki,
+                'yaw_kd': yaw_kd,
                 'yaw_deadband_deg': yaw_deadband_deg,
                 'yaw_integrator_limit': yaw_integrator_limit,
-                'yaw_rate_fault_threshold_rad_s': yaw_rate_fault_threshold_rad_s,
-                'yaw_rate_fault_time_sec': yaw_rate_fault_time_sec,
-                'heading_valid_timeout_sec': heading_valid_timeout_sec,
+                'tripod_planar_travel_scale': tripod_planar_travel_scale,
+                'imu_mode': imu_mode,
                 'imu_use_external_crystal': imu_use_external_crystal,
                 'imu_read_retry_count': imu_read_retry_count,
                 'imu_retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'imu_min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
-                'imu_accel_heading_tolerance_m_s2': imu_accel_heading_tolerance_m_s2,
-                'imu_mag_norm_tolerance_ratio': imu_mag_norm_tolerance_ratio,
-                'imu_mag_yaw_jump_reject_deg': imu_mag_yaw_jump_reject_deg,
+                'imu_min_sys_calibration_for_fused_yaw_acquire': imu_min_sys_calibration_for_fused_yaw_acquire,
+                'imu_min_gyro_calibration_for_fused_yaw': imu_min_gyro_calibration_for_fused_yaw,
+                'imu_min_accel_calibration_for_fused_yaw': imu_min_accel_calibration_for_fused_yaw,
+                'imu_min_mag_calibration_for_fused_yaw': imu_min_mag_calibration_for_fused_yaw,
+                'imu_ignore_sys_calibration_after_fused_yaw_lock': imu_ignore_sys_calibration_after_fused_yaw_lock,
+                'imu_max_trusted_yaw_covariance_rad2': imu_max_trusted_yaw_covariance_rad2,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
+                'imu_allow_mag_baseline_trust_without_calibration': imu_allow_mag_baseline_trust_without_calibration,
+                'imu_idle_baseline_mag_axis_tolerance_ut': imu_idle_baseline_mag_axis_tolerance_ut,
+                'imu_idle_baseline_min_still_samples': imu_idle_baseline_min_still_samples,
+                'bno055_init_retry_period_sec': bno055_init_retry_period_sec,
+                'imu_zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
+                'imu_publish_orientation_during_startup': imu_publish_orientation_during_startup,
             }.items(),
         ),
         Node(
@@ -228,6 +309,7 @@ def generate_launch_description():
                 'square_side_m': square_side_m,
                 'wait_for_imu_yaw': wait_for_imu_yaw,
                 'imu_topic': imu_topic,
+                'max_trusted_yaw_covariance_rad2': imu_max_trusted_yaw_covariance_rad2,
             }],
         ),
     ])

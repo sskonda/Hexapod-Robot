@@ -7,7 +7,7 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
-from .yaw_control import heading_is_trusted, orientation_quaternion_is_available
+from .yaw_control import yaw_is_trusted_from_covariance
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class PathPlanNode(Node):
         self.declare_parameter('square_side_m', 0.5)
         self.declare_parameter('wait_for_imu_yaw', False)
         self.declare_parameter('imu_topic', '/imu/data_raw')
+        self.declare_parameter('max_trusted_yaw_covariance_rad2', 1.0)
 
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
         self.publish_rate_hz = max(1.0, float(self.get_parameter('publish_rate_hz').value))
@@ -43,6 +44,10 @@ class PathPlanNode(Node):
         self.square_side_m = max(0.001, float(self.get_parameter('square_side_m').value))
         self.wait_for_imu_yaw = bool(self.get_parameter('wait_for_imu_yaw').value)
         self.imu_topic = str(self.get_parameter('imu_topic').value)
+        self.max_trusted_yaw_covariance_rad2 = max(
+            0.0,
+            float(self.get_parameter('max_trusted_yaw_covariance_rad2').value),
+        )
 
         self.publisher = self.create_publisher(Twist, self.cmd_vel_topic, 10)
         self.imu_subscription = None
@@ -83,9 +88,19 @@ class PathPlanNode(Node):
             )
 
     def imu_callback(self, msg: Imu):
-        self.imu_yaw_ready = (
-            orientation_quaternion_is_available(msg)
-            and heading_is_trusted(msg.orientation_covariance)
+        orientation_covariance = msg.orientation_covariance
+        orientation_available = (
+            orientation_covariance[0] >= 0.0
+            and any(abs(value) > 1e-6 for value in (
+                msg.orientation.x,
+                msg.orientation.y,
+                msg.orientation.z,
+                msg.orientation.w,
+            ))
+        )
+        self.imu_yaw_ready = orientation_available and yaw_is_trusted_from_covariance(
+            orientation_covariance,
+            self.max_trusted_yaw_covariance_rad2,
         )
 
     def build_segments(self):
@@ -164,7 +179,7 @@ class PathPlanNode(Node):
         self.publish_stop()
         self.get_logger().info('Path plan complete. Published stop command.')
         self.timer.cancel()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
     def control_loop(self):
         if self.finished:
@@ -211,10 +226,8 @@ def main(args=None):
     finally:
         if rclpy.ok():
             node.publish_stop()
-            node.destroy_node()
-            rclpy.shutdown()
-        else:
-            node.destroy_node()
+        node.destroy_node()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

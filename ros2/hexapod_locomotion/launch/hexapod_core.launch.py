@@ -13,15 +13,20 @@ def generate_launch_description():
     yaw_kp = LaunchConfiguration('yaw_kp')
     yaw_correction_gain = LaunchConfiguration('yaw_correction_gain')
     yaw_ki = LaunchConfiguration('yaw_ki')
+    yaw_kd = LaunchConfiguration('yaw_kd')
     yaw_deadband_deg = LaunchConfiguration('yaw_deadband_deg')
     yaw_integrator_limit = LaunchConfiguration('yaw_integrator_limit')
-    yaw_rate_fault_threshold_rad_s = LaunchConfiguration('yaw_rate_fault_threshold_rad_s')
-    yaw_rate_fault_time_sec = LaunchConfiguration('yaw_rate_fault_time_sec')
-    heading_valid_timeout_sec = LaunchConfiguration('heading_valid_timeout_sec')
+    heading_hold_release_grace_sec = LaunchConfiguration('heading_hold_release_grace_sec')
+    tripod_planar_travel_scale = LaunchConfiguration('tripod_planar_travel_scale')
     odom_topic = LaunchConfiguration('odom_topic')
     odom_frame_id = LaunchConfiguration('odom_frame_id')
     base_frame_id = LaunchConfiguration('base_frame_id')
     publish_odom_tf = LaunchConfiguration('publish_odom_tf')
+    use_imu_for_odom = LaunchConfiguration('use_imu_for_odom')
+    locomotion_debug_logging = LaunchConfiguration('locomotion_debug_logging')
+    locomotion_publish_yaw_hold_diagnostics = LaunchConfiguration(
+        'locomotion_publish_yaw_hold_diagnostics'
+    )
     imu_frame = LaunchConfiguration('imu_frame')
     imu_publish_rate_hz = LaunchConfiguration('imu_publish_rate_hz')
     imu_mag_topic = LaunchConfiguration('imu_mag_topic')
@@ -33,11 +38,39 @@ def generate_launch_description():
     imu_retry_backoff_sec = LaunchConfiguration('imu_retry_backoff_sec')
     imu_yaw_filter_time_constant_sec = LaunchConfiguration('imu_yaw_filter_time_constant_sec')
     imu_min_mag_calibration_for_yaw = LaunchConfiguration('imu_min_mag_calibration_for_yaw')
-    imu_accel_heading_tolerance_m_s2 = LaunchConfiguration('imu_accel_heading_tolerance_m_s2')
-    imu_mag_norm_tolerance_ratio = LaunchConfiguration('imu_mag_norm_tolerance_ratio')
-    imu_mag_yaw_jump_reject_deg = LaunchConfiguration('imu_mag_yaw_jump_reject_deg')
+    imu_min_sys_calibration_for_fused_yaw_acquire = LaunchConfiguration(
+        'imu_min_sys_calibration_for_fused_yaw_acquire'
+    )
+    imu_min_gyro_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_gyro_calibration_for_fused_yaw'
+    )
+    imu_min_accel_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_accel_calibration_for_fused_yaw'
+    )
+    imu_min_mag_calibration_for_fused_yaw = LaunchConfiguration(
+        'imu_min_mag_calibration_for_fused_yaw'
+    )
+    imu_ignore_sys_calibration_after_fused_yaw_lock = LaunchConfiguration(
+        'imu_ignore_sys_calibration_after_fused_yaw_lock'
+    )
+    imu_max_trusted_yaw_covariance_rad2 = LaunchConfiguration(
+        'imu_max_trusted_yaw_covariance_rad2'
+    )
     imu_startup_still_time_sec = LaunchConfiguration('imu_startup_still_time_sec')
     imu_startup_motion_grace_sec = LaunchConfiguration('imu_startup_motion_grace_sec')
+    imu_allow_mag_baseline_trust_without_calibration = LaunchConfiguration(
+        'imu_allow_mag_baseline_trust_without_calibration'
+    )
+    imu_idle_baseline_mag_axis_tolerance_ut = LaunchConfiguration(
+        'imu_idle_baseline_mag_axis_tolerance_ut'
+    )
+    imu_idle_baseline_min_still_samples = LaunchConfiguration(
+        'imu_idle_baseline_min_still_samples'
+    )
+    bno055_init_retry_period_sec = LaunchConfiguration('bno055_init_retry_period_sec')
+    imu_zero_yaw_to_startup_heading = LaunchConfiguration('imu_zero_yaw_to_startup_heading')
+    imu_publish_orientation_during_startup = LaunchConfiguration('imu_publish_orientation_during_startup')
+    show_imu_data = LaunchConfiguration('show_imu_data')
     imu_x = LaunchConfiguration('imu_x')
     imu_y = LaunchConfiguration('imu_y')
     imu_z = LaunchConfiguration('imu_z')
@@ -58,7 +91,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_kp',
-            default_value='0.45',
+            default_value='0.02',
             description='Heading-hold proportional gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
@@ -68,8 +101,13 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'yaw_ki',
-            default_value='0.12',
+            default_value='0.01',
             description='Heading-hold integral gain used by locomotion when no yaw is commanded.',
+        ),
+        DeclareLaunchArgument(
+            'yaw_kd',
+            default_value='0.01',
+            description='Heading-hold derivative gain used by locomotion when no yaw is commanded.',
         ),
         DeclareLaunchArgument(
             'yaw_deadband_deg',
@@ -82,19 +120,17 @@ def generate_launch_description():
             description='Absolute limit for the locomotion heading-hold integrator state.',
         ),
         DeclareLaunchArgument(
-            'yaw_rate_fault_threshold_rad_s',
-            default_value='0.35',
-            description='Measured yaw-rate threshold used to detect pathological spin when yaw command is near zero.',
-        ),
-        DeclareLaunchArgument(
-            'yaw_rate_fault_time_sec',
+            'heading_hold_release_grace_sec',
             default_value='0.75',
-            description='How long pathological spin must persist before locomotion latches a spin fault.',
+            description=(
+                'Keep the current heading-hold reference through brief stop/replan pauses '
+                'to avoid relatching yaw drift as the new straight heading.'
+            ),
         ),
         DeclareLaunchArgument(
-            'heading_valid_timeout_sec',
-            default_value='0.25',
-            description='Maximum age of the IMU heading estimate before heading hold is disabled.',
+            'tripod_planar_travel_scale',
+            default_value='2.0',
+            description='Planar foot-travel multiplier for the tripod gait. Increase slightly if the robot still under-travels.',
         ),
         DeclareLaunchArgument(
             'odom_topic',
@@ -115,6 +151,27 @@ def generate_launch_description():
             'publish_odom_tf',
             default_value='true',
             description='Publish the odom to base_link TF from locomotion.',
+        ),
+        DeclareLaunchArgument(
+            'use_imu_for_odom',
+            default_value='true',
+            description=(
+                'Use trusted IMU yaw inside locomotion odometry. Set false when '
+                'another node owns odom pose fusion from raw gait velocity + IMU.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'locomotion_debug_logging',
+            default_value='true',
+            description=(
+                'When true, print locomotion startup, yaw heading-hold, and '
+                'IMU/yaw debug messages.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'locomotion_publish_yaw_hold_diagnostics',
+            default_value='true',
+            description='Publish detailed yaw heading-hold diagnostics.',
         ),
         DeclareLaunchArgument(
             'imu_frame',
@@ -143,8 +200,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'imu_mode',
-            default_value='AMG_MODE',
-            description='BNO055 operating mode. AMG_MODE keeps accel, gyro, and mag raw for explicit yaw correction.',
+            default_value='NDOF_MODE',
+            description='BNO055 operating mode. NDOF_MODE publishes the BNO055 fused orientation quaternion.',
         ),
         DeclareLaunchArgument(
             'imu_use_external_crystal',
@@ -175,19 +232,34 @@ def generate_launch_description():
             description='Minimum BNO055 magnetometer calibration level required for magnetic yaw correction.',
         ),
         DeclareLaunchArgument(
-            'imu_accel_heading_tolerance_m_s2',
+            'imu_min_sys_calibration_for_fused_yaw_acquire',
+            default_value='1',
+            description='Minimum BNO055 SYS calibration level required to acquire the fused absolute yaw reference.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_gyro_calibration_for_fused_yaw',
+            default_value='3',
+            description='Minimum gyroscope calibration level required to trust fused yaw.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_accel_calibration_for_fused_yaw',
+            default_value='2',
+            description='Minimum accelerometer calibration level required to trust fused yaw.',
+        ),
+        DeclareLaunchArgument(
+            'imu_min_mag_calibration_for_fused_yaw',
+            default_value='2',
+            description='Minimum magnetometer calibration level required to trust fused yaw.',
+        ),
+        DeclareLaunchArgument(
+            'imu_ignore_sys_calibration_after_fused_yaw_lock',
+            default_value='true',
+            description='Ignore transient SYS calibration drops after fused yaw has already acquired its absolute reference.',
+        ),
+        DeclareLaunchArgument(
+            'imu_max_trusted_yaw_covariance_rad2',
             default_value='1.0',
-            description='Acceleration-magnitude gate for trusting magnetometer yaw updates.',
-        ),
-        DeclareLaunchArgument(
-            'imu_mag_norm_tolerance_ratio',
-            default_value='0.25',
-            description='Relative magnetic-field-magnitude gate for trusting magnetometer yaw updates.',
-        ),
-        DeclareLaunchArgument(
-            'imu_mag_yaw_jump_reject_deg',
-            default_value='25.0',
-            description='Reject magnetometer yaw corrections whose innovation exceeds this threshold.',
+            description='Maximum yaw covariance that locomotion and path planning still consider trusted.',
         ),
         DeclareLaunchArgument(
             'imu_startup_still_time_sec',
@@ -198,6 +270,41 @@ def generate_launch_description():
             'imu_startup_motion_grace_sec',
             default_value='0.5',
             description='Continuous motion time that resets the IMU startup stillness timer.',
+        ),
+        DeclareLaunchArgument(
+            'imu_allow_mag_baseline_trust_without_calibration',
+            default_value='true',
+            description='Allow stable startup magnetic baseline checks to enable yaw correction even when BNO055 mag calibration stays low.',
+        ),
+        DeclareLaunchArgument(
+            'imu_idle_baseline_mag_axis_tolerance_ut',
+            default_value='2.0',
+            description='Per-axis startup magnetometer tolerance in microtesla used by the low-calibration yaw fallback.',
+        ),
+        DeclareLaunchArgument(
+            'imu_idle_baseline_min_still_samples',
+            default_value='25',
+            description='Minimum still startup samples required before the low-calibration magnetometer baseline fallback may be accepted.',
+        ),
+        DeclareLaunchArgument(
+            'bno055_init_retry_period_sec',
+            default_value='1.0',
+            description='How often the BNO055 node retries sensor bring-up after a UART/protocol failure.',
+        ),
+        DeclareLaunchArgument(
+            'imu_zero_yaw_to_startup_heading',
+            default_value='true',
+            description='Zero IMU yaw to the startup heading so locomotion sees relative rotation from launch.',
+        ),
+        DeclareLaunchArgument(
+            'imu_publish_orientation_during_startup',
+            default_value='true',
+            description='Publish startup-relative IMU orientation before settle completes so heading hold can react immediately.',
+        ),
+        DeclareLaunchArgument(
+            'show_imu_data',
+            default_value='true',
+            description='When false, suppress routine BNO055 IMU status logs while still publishing IMU topics.',
         ),
         DeclareLaunchArgument(
             'imu_x',
@@ -258,11 +365,20 @@ def generate_launch_description():
                 'retry_backoff_sec': imu_retry_backoff_sec,
                 'imu_yaw_filter_time_constant_sec': imu_yaw_filter_time_constant_sec,
                 'min_mag_calibration_for_yaw': imu_min_mag_calibration_for_yaw,
-                'imu_accel_heading_tolerance_m_s2': imu_accel_heading_tolerance_m_s2,
-                'imu_mag_norm_tolerance_ratio': imu_mag_norm_tolerance_ratio,
-                'imu_mag_yaw_jump_reject_deg': imu_mag_yaw_jump_reject_deg,
+                'imu_min_sys_calibration_for_fused_yaw_acquire': imu_min_sys_calibration_for_fused_yaw_acquire,
+                'imu_min_gyro_calibration_for_fused_yaw': imu_min_gyro_calibration_for_fused_yaw,
+                'imu_min_accel_calibration_for_fused_yaw': imu_min_accel_calibration_for_fused_yaw,
+                'imu_min_mag_calibration_for_fused_yaw': imu_min_mag_calibration_for_fused_yaw,
+                'imu_ignore_sys_calibration_after_fused_yaw_lock': imu_ignore_sys_calibration_after_fused_yaw_lock,
                 'imu_startup_still_time_sec': imu_startup_still_time_sec,
                 'imu_startup_motion_grace_sec': imu_startup_motion_grace_sec,
+                'allow_mag_baseline_trust_without_calibration': imu_allow_mag_baseline_trust_without_calibration,
+                'idle_baseline_mag_axis_tolerance_ut': imu_idle_baseline_mag_axis_tolerance_ut,
+                'idle_baseline_min_still_samples': imu_idle_baseline_min_still_samples,
+                'init_retry_period_sec': bno055_init_retry_period_sec,
+                'zero_yaw_to_startup_heading': imu_zero_yaw_to_startup_heading,
+                'publish_orientation_during_startup': imu_publish_orientation_during_startup,
+                'show_imu_data': show_imu_data,
             }]
         ),
         Node(
@@ -276,18 +392,21 @@ def generate_launch_description():
                     'yaw_kp': yaw_kp,
                     'yaw_correction_gain': yaw_correction_gain,
                     'yaw_ki': yaw_ki,
+                    'yaw_kd': yaw_kd,
                     'yaw_deadband_deg': yaw_deadband_deg,
                     'yaw_integrator_limit': yaw_integrator_limit,
-                    'yaw_rate_fault_threshold_rad_s': yaw_rate_fault_threshold_rad_s,
-                    'yaw_rate_fault_time_sec': yaw_rate_fault_time_sec,
-                    'heading_valid_timeout_sec': heading_valid_timeout_sec,
-                    'imu_roll': imu_roll,
-                    'imu_pitch': imu_pitch,
-                    'imu_yaw': imu_yaw,
+                    'heading_hold_release_grace_sec': heading_hold_release_grace_sec,
+                    'max_trusted_yaw_covariance_rad2': imu_max_trusted_yaw_covariance_rad2,
+                    'tripod_planar_travel_scale': tripod_planar_travel_scale,
                     'odom_topic': odom_topic,
                     'odom_frame_id': odom_frame_id,
                     'base_frame_id': base_frame_id,
                     'publish_odom_tf': publish_odom_tf,
+                    'use_imu_for_odom': use_imu_for_odom,
+                    'debug_logging': locomotion_debug_logging,
+                    'publish_yaw_hold_diagnostics': (
+                        locomotion_publish_yaw_hold_diagnostics
+                    ),
                 },
             ]
         ),

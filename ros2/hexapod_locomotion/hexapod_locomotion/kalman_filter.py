@@ -3,6 +3,10 @@ import math
 from .yaw_control import clamp, normalize_angle
 
 
+def clamp(value, min_value, max_value):
+    return max(min_value, min(max_value, value))
+
+
 class AngleKalmanFilter:
     """
     Two-state Kalman filter for tilt angle estimation from IMU data.
@@ -101,6 +105,17 @@ class YawComplementaryFilter:
         return normalize_angle(self.yaw_rad + corrected_rate_rad_s * dt)
 
     def update(self, measured_yaw_rad, gyro_yaw_rate_rad_s, dt):
+        """
+        Fuse an absolute yaw measurement with gyroscope yaw rate.
+
+        Args:
+            measured_yaw_rad: absolute yaw measurement (radians)
+            gyro_yaw_rate_rad_s: gyroscope yaw rate (radians/second)
+            dt: elapsed time since the previous update (seconds)
+
+        Returns:
+            Filtered yaw estimate (radians)
+        """
         measured_yaw_rad = normalize_angle(float(measured_yaw_rad))
         dt = max(0.0, float(dt))
 
@@ -124,7 +139,12 @@ class YawComplementaryFilter:
         return self.yaw_rad
 
     def predict(self, gyro_yaw_rate_rad_s, dt, fallback_yaw_rad=None):
-        dt = max(0.0, float(dt))
+        """
+        Advance yaw using only gyro integration.
+
+        This is useful when the absolute heading is unavailable or untrusted,
+        but short-term relative yaw is still needed.
+        """
         predicted_yaw_rad = self.peek_prediction(
             gyro_yaw_rate_rad_s,
             dt,
