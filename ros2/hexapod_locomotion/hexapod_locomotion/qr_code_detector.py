@@ -6,6 +6,7 @@ import time
 from typing import List, Sequence, Tuple
 
 import cv2
+import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
@@ -161,10 +162,31 @@ class QrCodeDetectorNode(Node):
         if points is None:
             return []
 
+        points_array = np.asarray(points)
+        if points_array.size == 0:
+            return []
+
+        if points_array.ndim == 2 and points_array.shape[-1] == 2:
+            polygon_arrays = [points_array]
+        else:
+            polygon_arrays = [np.asarray(polygon) for polygon in points_array]
+
         polygons = []
-        for polygon in points:
+        for polygon in polygon_arrays:
             if polygon is None:
                 continue
+
+            polygon = np.asarray(polygon)
+            if polygon.size == 0:
+                continue
+
+            polygon = np.squeeze(polygon)
+            if polygon.ndim == 1:
+                if polygon.shape[0] < 2:
+                    continue
+                polygon = polygon.reshape(1, -1)
+            elif polygon.ndim > 2:
+                polygon = polygon.reshape(-1, polygon.shape[-1])
 
             normalized = []
             for point in polygon:
