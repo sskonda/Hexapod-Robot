@@ -61,6 +61,14 @@ class FrontierTarget:
     path: tuple[tuple[float, float], ...]
 
 
+@dataclass(frozen=True)
+class SuppressedFrontier:
+    x_m: float
+    y_m: float
+    expires_at_sec: float
+    reason: str
+
+
 class LidarOpenSpaceExplorer(Node):
     def __init__(self):
         super().__init__('lidar_open_space_explorer')
@@ -107,6 +115,8 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('frontier_min_clearance_m', 0.25)
         self.declare_parameter('frontier_free_threshold', 25)
         self.declare_parameter('frontier_occupied_threshold', 65)
+        self.declare_parameter('frontier_suppression_duration_sec', 6.0)
+        self.declare_parameter('frontier_suppression_radius_m', 0.35)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.map_topic = str(self.get_parameter('map_topic').value)
@@ -121,6 +131,7 @@ class LidarOpenSpaceExplorer(Node):
         self.current_frontier = None
         self.current_path_index = 0
         self.last_frontier_plan_time = None
+        self.suppressed_frontiers = []
 
         self._load_parameters()
 
@@ -230,6 +241,14 @@ class LidarOpenSpaceExplorer(Node):
         self.frontier_occupied_threshold = int(
             self.get_parameter('frontier_occupied_threshold').value
         )
+        self.frontier_suppression_duration_sec = max(
+            0.0,
+            float(self.get_parameter('frontier_suppression_duration_sec').value),
+        )
+        self.frontier_suppression_radius_m = max(
+            0.0,
+            float(self.get_parameter('frontier_suppression_radius_m').value),
+        )
 
     def normalized_mode(self, value: str) -> str:
         mode = value.strip().lower()
@@ -260,9 +279,11 @@ class LidarOpenSpaceExplorer(Node):
             elif parameter.name == 'exploration_mode':
                 self.exploration_mode = self.normalized_mode(str(parameter.value))
                 self.current_frontier = None
+                self.last_frontier_plan_time = None
             elif parameter.name == 'search_strategy':
                 self.search_strategy = self.normalized_search_strategy(str(parameter.value))
                 self.current_frontier = None
+                self.last_frontier_plan_time = None
             elif parameter.name == 'reactive_fallback':
                 self.reactive_fallback = as_bool(parameter.value)
             elif parameter.name == 'frontier_replan_period_sec':
@@ -280,6 +301,10 @@ class LidarOpenSpaceExplorer(Node):
                 self.frontier_free_threshold = int(parameter.value)
             elif parameter.name == 'frontier_occupied_threshold':
                 self.frontier_occupied_threshold = int(parameter.value)
+            elif parameter.name == 'frontier_suppression_duration_sec':
+                self.frontier_suppression_duration_sec = max(0.0, float(parameter.value))
+            elif parameter.name == 'frontier_suppression_radius_m':
+                self.frontier_suppression_radius_m = max(0.0, float(parameter.value))
             if parameter.name == 'base_frame':
                 self.base_frame = str(parameter.value)
             elif parameter.name == 'enabled':
@@ -441,17 +466,8 @@ class LidarOpenSpaceExplorer(Node):
             )
             return cmd
 
-        if self.current_frontier is None or self.frontier_replan_due():
-            self.current_frontier = self.find_frontier_target()
-            self.current_path_index = 0
-            self.last_frontier_plan_time = self.get_clock().now()
-            if self.current_frontier is not None:
-                self.get_logger().info(
-                    f'New {self.search_strategy.upper()} frontier target: '
-                    f'({self.current_frontier.x_m:.2f}, {self.current_frontier.y_m:.2f}) '
-                    f'after searching {self.current_frontier.searched_cells} cells '
-                    f'with {len(self.current_frontier.path)} waypoints.'
-                )
+        if self.frontier_replan_due():
+            self.plan_frontier_target()
 
         if self.current_frontier is None:
             self.get_logger().info(
@@ -460,57 +476,110 @@ class LidarOpenSpaceExplorer(Node):
             )
             return cmd
 
-        waypoint = self.active_frontier_waypoint()
-        if waypoint is None:
-            self.current_frontier = None
-            return cmd
+        while self.current_frontier is not None:
+            waypoint = self.active_frontier_waypoint()
+            if waypoint is None:
+                self.clear_current_frontier()
+                return cmd
 
-        body_vector = self.map_target_vector_in_body(waypoint[0], waypoint[1])
-        if body_vector is None:
-            return None
-
-        body_x, body_y = body_vector
-        distance_m = math.hypot(body_x, body_y)
-        if distance_m < self.frontier_goal_tolerance_m:
-            self.current_path_index += 1
-            if self.current_frontier is not None and (
-                self.current_path_index >= len(self.current_frontier.path)
-            ):
-                self.current_frontier = None
-            return cmd
-
-        body_angle = math.atan2(body_y, body_x)
-        scan_clearance = self.min_scan_range_near_body_angle(
-            body_angle,
-            self.direction_window_rad,
-        )
-        if scan_clearance is not None and scan_clearance < self.obstacle_stop_distance_m:
-            self.current_frontier = None
-            return None
-
-        speed = self.speed_for_clearance(
-            scan_clearance if scan_clearance is not None else self.obstacle_slow_distance_m
-        )
-        if self.crab_motion:
-            cmd.linear.x = speed * (body_x / distance_m)
-            cmd.linear.y = speed * (body_y / distance_m)
-            cmd.linear.y = clamp(
-                cmd.linear.y,
-                -self.max_lateral_speed_mps,
-                self.max_lateral_speed_mps,
-            )
-            if not self.reverse_allowed and cmd.linear.x < 0.0:
-                self.current_frontier = None
+            body_vector = self.map_target_vector_in_body(waypoint[0], waypoint[1])
+            if body_vector is None:
                 return None
-        else:
-            cmd.linear.x = speed * max(0.0, math.cos(body_angle))
-            cmd.angular.z = clamp(
-                self.turn_gain * body_angle,
-                -self.max_turn_rate_rad_s,
-                self.max_turn_rate_rad_s,
+
+            body_x, body_y = body_vector
+            distance_m = math.hypot(body_x, body_y)
+            if distance_m < self.frontier_goal_tolerance_m:
+                if self.advance_frontier_waypoint():
+                    continue
+                self.suppress_current_frontier('reached')
+                return cmd
+
+            body_angle = math.atan2(body_y, body_x)
+            scan_clearance = self.min_scan_range_near_body_angle(
+                body_angle,
+                self.direction_window_rad,
             )
+            if scan_clearance is not None and scan_clearance < self.obstacle_stop_distance_m:
+                self.suppress_current_frontier('scan_blocked')
+                return cmd
+
+            speed = self.speed_for_clearance(
+                scan_clearance if scan_clearance is not None else self.obstacle_slow_distance_m
+            )
+            if self.crab_motion:
+                cmd.linear.x = speed * (body_x / distance_m)
+                cmd.linear.y = speed * (body_y / distance_m)
+                cmd.linear.y = clamp(
+                    cmd.linear.y,
+                    -self.max_lateral_speed_mps,
+                    self.max_lateral_speed_mps,
+                )
+                if not self.reverse_allowed and cmd.linear.x < 0.0:
+                    if self.advance_frontier_waypoint():
+                        continue
+                    self.suppress_current_frontier('requires_reverse')
+                    return cmd
+            else:
+                cmd.linear.x = speed * max(0.0, math.cos(body_angle))
+                cmd.angular.z = clamp(
+                    self.turn_gain * body_angle,
+                    -self.max_turn_rate_rad_s,
+                    self.max_turn_rate_rad_s,
+                )
+
+            return cmd
 
         return cmd
+
+    def plan_frontier_target(self):
+        self.prune_suppressed_frontiers()
+        self.current_frontier = self.find_frontier_target()
+        self.current_path_index = 0
+        self.last_frontier_plan_time = self.get_clock().now()
+        if self.current_frontier is not None:
+            self.get_logger().info(
+                f'New {self.search_strategy.upper()} frontier target: '
+                f'({self.current_frontier.x_m:.2f}, {self.current_frontier.y_m:.2f}) '
+                f'after searching {self.current_frontier.searched_cells} cells '
+                f'with {len(self.current_frontier.path)} waypoints.'
+            )
+
+    def advance_frontier_waypoint(self) -> bool:
+        if self.current_frontier is None:
+            return False
+        next_index = self.current_path_index + 1
+        if next_index >= len(self.current_frontier.path):
+            return False
+        self.current_path_index = next_index
+        return True
+
+    def clear_current_frontier(self):
+        self.current_frontier = None
+        self.current_path_index = 0
+        self.last_frontier_plan_time = self.get_clock().now()
+
+    def suppress_current_frontier(self, reason: str):
+        frontier = self.current_frontier
+        if frontier is None:
+            self.clear_current_frontier()
+            return
+
+        duration_sec = self.frontier_suppression_duration_sec
+        if duration_sec > 0.0 and self.frontier_suppression_radius_m > 0.0:
+            self.suppressed_frontiers.append(
+                SuppressedFrontier(
+                    x_m=frontier.x_m,
+                    y_m=frontier.y_m,
+                    expires_at_sec=self.now_sec() + duration_sec,
+                    reason=reason,
+                )
+            )
+            self.get_logger().info(
+                f'Suppressing frontier ({frontier.x_m:.2f}, {frontier.y_m:.2f}) '
+                f'for {duration_sec:.1f}s after {reason}.',
+                throttle_duration_sec=2.0,
+            )
+        self.clear_current_frontier()
 
     def active_frontier_waypoint(self):
         if self.current_frontier is None or not self.current_frontier.path:
@@ -523,6 +592,30 @@ class LidarOpenSpaceExplorer(Node):
             return True
         elapsed = (self.get_clock().now() - self.last_frontier_plan_time).nanoseconds * 1e-9
         return elapsed >= self.frontier_replan_period_sec
+
+    def now_sec(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def prune_suppressed_frontiers(self):
+        if not self.suppressed_frontiers:
+            return
+        now_sec = self.now_sec()
+        self.suppressed_frontiers = [
+            frontier
+            for frontier in self.suppressed_frontiers
+            if frontier.expires_at_sec > now_sec
+        ]
+
+    def frontier_is_suppressed(self, x_m: float, y_m: float) -> bool:
+        if not self.suppressed_frontiers or self.frontier_suppression_radius_m <= 0.0:
+            return False
+        radius_sq = self.frontier_suppression_radius_m * self.frontier_suppression_radius_m
+        for frontier in self.suppressed_frontiers:
+            dx_m = x_m - frontier.x_m
+            dy_m = y_m - frontier.y_m
+            if dx_m * dx_m + dy_m * dy_m <= radius_sq:
+                return True
+        return False
 
     def map_target_vector_in_body(self, target_x_m: float, target_y_m: float):
         try:
@@ -642,15 +735,16 @@ class LidarOpenSpaceExplorer(Node):
                 grid_x = current % width
                 grid_y = current // width
                 world_x, world_y = self.grid_to_world(grid, grid_x, grid_y)
-                path = self.reconstruct_world_path(grid, parent, start_index, current)
-                return FrontierTarget(
-                    x_m=world_x,
-                    y_m=world_y,
-                    grid_x=grid_x,
-                    grid_y=grid_y,
-                    searched_cells=searched,
-                    path=path,
-                )
+                if not self.frontier_is_suppressed(world_x, world_y):
+                    path = self.reconstruct_world_path(grid, parent, start_index, current)
+                    return FrontierTarget(
+                        x_m=world_x,
+                        y_m=world_y,
+                        grid_x=grid_x,
+                        grid_y=grid_y,
+                        searched_cells=searched,
+                        path=path,
+                    )
 
             for neighbor in self.neighbor_indices(current, width, height):
                 if visited[neighbor] or not self.is_traversable(grid, neighbor):

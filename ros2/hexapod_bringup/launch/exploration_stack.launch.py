@@ -52,6 +52,12 @@ def generate_launch_description():
     explorer_frontier_min_clearance_m = LaunchConfiguration(
         'explorer_frontier_min_clearance_m'
     )
+    explorer_frontier_suppression_duration_sec = LaunchConfiguration(
+        'explorer_frontier_suppression_duration_sec'
+    )
+    explorer_frontier_suppression_radius_m = LaunchConfiguration(
+        'explorer_frontier_suppression_radius_m'
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -189,6 +195,16 @@ def generate_launch_description():
             default_value='0.25',
             description='Minimum map clearance from occupied cells for frontier goals and traversed cells.',
         ),
+        DeclareLaunchArgument(
+            'explorer_frontier_suppression_duration_sec',
+            default_value='6.0',
+            description='How long to avoid a frontier after reaching it or rejecting its current path.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_frontier_suppression_radius_m',
+            default_value='0.35',
+            description='Radius around a rejected frontier to skip during the suppression window.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(pose_stack_launch)),
             launch_arguments={
@@ -230,6 +246,10 @@ def generate_launch_description():
                 'frontier_goal_tolerance_m': explorer_frontier_goal_tolerance_m,
                 'frontier_waypoint_spacing_m': explorer_frontier_waypoint_spacing_m,
                 'frontier_min_clearance_m': explorer_frontier_min_clearance_m,
+                'frontier_suppression_duration_sec': (
+                    explorer_frontier_suppression_duration_sec
+                ),
+                'frontier_suppression_radius_m': explorer_frontier_suppression_radius_m,
             }],
         ),
     ])
