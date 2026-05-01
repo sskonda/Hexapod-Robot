@@ -85,7 +85,6 @@ class WavefrontExplorer(Node):
         self.declare_parameter('planned_path_topic', '/explorer/planned_path')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('map_frame', 'map')
-        #self.declare_parameter('use_sim_time', False)
         self.declare_parameter('enabled', True)
         self.declare_parameter('replan_period_sec', 3.0)
         self.declare_parameter('control_rate_hz', 10.0)
@@ -661,6 +660,8 @@ class WavefrontExplorer(Node):
         marker.color.a = color[3]
 
     def stop_robot(self):
+        if not self.context.ok():
+            return
         self.cmd_pub.publish(Twist())
 
 
@@ -669,7 +670,10 @@ def main(args=None):
     node = WavefrontExplorer()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.stop_robot()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()

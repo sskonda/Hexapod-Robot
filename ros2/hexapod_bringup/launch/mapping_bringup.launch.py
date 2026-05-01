@@ -99,6 +99,10 @@ def generate_launch_description():
     locomotion_odom_topic = LaunchConfiguration('locomotion_odom_topic')
     locomotion_publish_odom_tf = LaunchConfiguration('locomotion_publish_odom_tf')
     locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
+    locomotion_debug_logging = LaunchConfiguration('locomotion_debug_logging')
+    locomotion_publish_yaw_hold_diagnostics = LaunchConfiguration(
+        'locomotion_publish_yaw_hold_diagnostics'
+    )
     imu_frame = LaunchConfiguration('imu_frame')
     imu_use_external_crystal = LaunchConfiguration('imu_use_external_crystal')
     imu_read_retry_count = LaunchConfiguration('imu_read_retry_count')
@@ -293,6 +297,16 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'locomotion_debug_logging',
+            default_value='true',
+            description='Print locomotion startup and yaw heading-hold debug logs.',
+        ),
+        DeclareLaunchArgument(
+            'locomotion_publish_yaw_hold_diagnostics',
+            default_value='true',
+            description='Publish detailed locomotion yaw heading-hold diagnostics.',
+        ),
+        DeclareLaunchArgument(
             'imu_frame',
             default_value='imu_link',
             description='Frame id used by the IMU publisher and base_link->imu static TF.',
@@ -373,6 +387,10 @@ def generate_launch_description():
                 'base_frame_id': base_frame,
                 'publish_odom_tf': locomotion_publish_odom_tf,
                 'use_imu_for_odom': locomotion_use_imu_for_odom,
+                'locomotion_debug_logging': locomotion_debug_logging,
+                'locomotion_publish_yaw_hold_diagnostics': (
+                    locomotion_publish_yaw_hold_diagnostics
+                ),
                 'imu_frame': imu_frame,
                 'imu_use_external_crystal': imu_use_external_crystal,
                 'imu_read_retry_count': imu_read_retry_count,

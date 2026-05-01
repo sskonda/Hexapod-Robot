@@ -23,6 +23,10 @@ def generate_launch_description():
     base_frame_id = LaunchConfiguration('base_frame_id')
     publish_odom_tf = LaunchConfiguration('publish_odom_tf')
     use_imu_for_odom = LaunchConfiguration('use_imu_for_odom')
+    locomotion_debug_logging = LaunchConfiguration('locomotion_debug_logging')
+    locomotion_publish_yaw_hold_diagnostics = LaunchConfiguration(
+        'locomotion_publish_yaw_hold_diagnostics'
+    )
     imu_frame = LaunchConfiguration('imu_frame')
     imu_publish_rate_hz = LaunchConfiguration('imu_publish_rate_hz')
     imu_mag_topic = LaunchConfiguration('imu_mag_topic')
@@ -155,6 +159,19 @@ def generate_launch_description():
                 'Use trusted IMU yaw inside locomotion odometry. Set false when '
                 'another node owns odom pose fusion from raw gait velocity + IMU.'
             ),
+        ),
+        DeclareLaunchArgument(
+            'locomotion_debug_logging',
+            default_value='true',
+            description=(
+                'When true, print locomotion startup, yaw heading-hold, and '
+                'IMU/yaw debug messages.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'locomotion_publish_yaw_hold_diagnostics',
+            default_value='true',
+            description='Publish detailed yaw heading-hold diagnostics.',
         ),
         DeclareLaunchArgument(
             'imu_frame',
@@ -386,6 +403,10 @@ def generate_launch_description():
                     'base_frame_id': base_frame_id,
                     'publish_odom_tf': publish_odom_tf,
                     'use_imu_for_odom': use_imu_for_odom,
+                    'debug_logging': locomotion_debug_logging,
+                    'publish_yaw_hold_diagnostics': (
+                        locomotion_publish_yaw_hold_diagnostics
+                    ),
                 },
             ]
         ),

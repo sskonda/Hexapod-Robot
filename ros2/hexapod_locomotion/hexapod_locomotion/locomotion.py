@@ -73,6 +73,14 @@ def normalize_angle(angle_rad):
     return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
 
 
+def as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
 def matrix_multiply(a, b):
     return [
         [
@@ -149,6 +157,8 @@ class LocomotionNode(Node):
         self.declare_parameter('publish_odom_tf', True)
         self.declare_parameter('use_imu_for_odom', True)
         self.declare_parameter('heading_hold_release_grace_sec', 0.75)
+        self.declare_parameter('debug_logging', True)
+        self.declare_parameter('publish_yaw_hold_diagnostics', True)
         self.use_imu = bool(self.get_parameter('use_imu').value)
         self.balance_gain = float(self.get_parameter('balance_gain').value)
         self.gait = str(self.get_parameter('gait').value).strip().lower()
@@ -202,6 +212,10 @@ class LocomotionNode(Node):
         self.heading_hold_release_grace_sec = max(
             0.0,
             float(self.get_parameter('heading_hold_release_grace_sec').value),
+        )
+        self.debug_logging = as_bool(self.get_parameter('debug_logging').value)
+        self.publish_yaw_hold_diagnostics = as_bool(
+            self.get_parameter('publish_yaw_hold_diagnostics').value
         )
 
         if self.gait not in ('tripod', 'wave'):
@@ -282,28 +296,35 @@ class LocomotionNode(Node):
         self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.timer = self.create_timer(1.0 / self.control_rate_hz, self.control_loop)
 
-        self.get_logger().info('Locomotion controller ready')
-        self.get_logger().info('Topics: /cmd_vel, /body_pose, /body_shift, /servo_targets')
-        self.get_logger().info(
-            f'cmd_vel uses m/s and rad/s. body_pose uses roll/pitch/yaw in degrees. '
-            f'body_shift uses x/y/z in mm. Publishing odom on /{self.odom_topic} '
-            f'with TF {"enabled" if self.publish_odom_tf else "disabled"}.'
-        )
-        self.get_logger().info(
-            f'Heading hold PID gains kp={self.yaw_kp:.3f}, ki={self.yaw_ki:.3f}, '
-            f'kd={self.yaw_kd:.3f}, '
-            f'deadband={math.degrees(self.yaw_deadband_rad):.1f} deg, '
-            f'integrator_limit={self.yaw_integrator_limit:.2f}.'
-        )
-        self.get_logger().info(
-            'Heading hold trusts IMU yaw when orientation covariance yaw <= '
-            f'{self.max_trusted_yaw_covariance_rad2:.2f} rad^2. '
-            f'Publishing diagnostics on {self.yaw_hold_diagnostic_topic}.'
-        )
-        if self.gait == 'tripod':
+        if self.debug_logging:
+            self.get_logger().info('Locomotion controller ready')
             self.get_logger().info(
-                f'Tripod gait planar travel scale={self.tripod_planar_travel_scale:.2f}.'
+                'Topics: /cmd_vel, /body_pose, /body_shift, /servo_targets'
             )
+            self.get_logger().info(
+                f'cmd_vel uses m/s and rad/s. body_pose uses roll/pitch/yaw in degrees. '
+                f'body_shift uses x/y/z in mm. Publishing odom on /{self.odom_topic} '
+                f'with TF {"enabled" if self.publish_odom_tf else "disabled"}.'
+            )
+            self.get_logger().info(
+                f'Heading hold PID gains kp={self.yaw_kp:.3f}, ki={self.yaw_ki:.3f}, '
+                f'kd={self.yaw_kd:.3f}, '
+                f'deadband={math.degrees(self.yaw_deadband_rad):.1f} deg, '
+                f'integrator_limit={self.yaw_integrator_limit:.2f}.'
+            )
+            diagnostics_state = (
+                'enabled' if self.publish_yaw_hold_diagnostics else 'disabled'
+            )
+            self.get_logger().info(
+                'Heading hold trusts IMU yaw when orientation covariance yaw <= '
+                f'{self.max_trusted_yaw_covariance_rad2:.2f} rad^2. '
+                f'Yaw diagnostics are {diagnostics_state} on '
+                f'{self.yaw_hold_diagnostic_topic}.'
+            )
+            if self.gait == 'tripod':
+                self.get_logger().info(
+                    f'Tripod gait planar travel scale={self.tripod_planar_travel_scale:.2f}.'
+                )
         if yaw_kp_conflict:
             self.get_logger().warn(
                 'Both yaw_kp and legacy yaw_correction_gain were set. Using yaw_kp.'
@@ -401,8 +422,12 @@ class LocomotionNode(Node):
                 changed_fields.append(
                     f'tripod_planar_travel_scale={self.tripod_planar_travel_scale:.3f}'
                 )
+            elif parameter.name == 'debug_logging':
+                self.debug_logging = as_bool(parameter.value)
+            elif parameter.name == 'publish_yaw_hold_diagnostics':
+                self.publish_yaw_hold_diagnostics = as_bool(parameter.value)
 
-        if changed_fields:
+        if changed_fields and self.debug_logging:
             self.get_logger().info(
                 'Updated locomotion heading-hold tuning: '
                 + ', '.join(changed_fields)
@@ -505,7 +530,8 @@ class LocomotionNode(Node):
                 self.publish_points(self.gait_state.points)
 
         self._publish_odometry()
-        self._publish_yaw_hold_diagnostics(motion)
+        if self.publish_yaw_hold_diagnostics:
+            self._publish_yaw_hold_diagnostics(motion)
 
     def _publish_odometry(self):
         dt = 1.0 / self.control_rate_hz
@@ -621,11 +647,13 @@ class LocomotionNode(Node):
                 if self.heading_hold_target_rad is None:
                     self.heading_hold_target_rad = current_yaw_rad
                     self.heading_integral_state = 0.0
-                    self.get_logger().info(
-                        'Heading hold latched reference yaw '
-                        f'{math.degrees(self.heading_hold_target_rad):.1f} deg, quaternion '
-                        f'{self._format_quaternion(self._heading_reference_quaternion())}.'
-                    )
+                    if self.debug_logging:
+                        self.get_logger().info(
+                            'Heading hold latched reference yaw '
+                            f'{math.degrees(self.heading_hold_target_rad):.1f} deg, '
+                            'quaternion '
+                            f'{self._format_quaternion(self._heading_reference_quaternion())}.'
+                        )
                 step = compute_heading_hold_pid(
                     target_yaw_rad=self.heading_hold_target_rad,
                     current_yaw_rad=current_yaw_rad,
@@ -695,6 +723,9 @@ class LocomotionNode(Node):
         )
 
     def _warn_unusable_yaw_estimate(self):
+        if not self.debug_logging:
+            return
+
         now = time.monotonic()
         if now - self.last_invalid_warn_time < 2.0:
             return

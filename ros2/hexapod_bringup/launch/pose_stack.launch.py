@@ -26,6 +26,10 @@ def generate_launch_description():
     servo_dry_run = LaunchConfiguration('servo_dry_run')
     apply_offsets = LaunchConfiguration('apply_offsets')
     locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
+    locomotion_debug_logging = LaunchConfiguration('locomotion_debug_logging')
+    locomotion_publish_yaw_hold_diagnostics = LaunchConfiguration(
+        'locomotion_publish_yaw_hold_diagnostics'
+    )
     laser_frame = LaunchConfiguration('laser_frame')
     laser_x = LaunchConfiguration('laser_x')
     laser_y = LaunchConfiguration('laser_y')
@@ -126,6 +130,16 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument(
+            'locomotion_debug_logging',
+            default_value='true',
+            description='Print locomotion startup and yaw heading-hold debug logs.',
+        ),
+        DeclareLaunchArgument(
+            'locomotion_publish_yaw_hold_diagnostics',
+            default_value='true',
+            description='Publish detailed locomotion yaw heading-hold diagnostics.',
+        ),
+        DeclareLaunchArgument(
             'laser_frame',
             default_value='laser',
             description='LiDAR TF frame.',
@@ -213,6 +227,10 @@ def generate_launch_description():
                 'locomotion_odom_topic': 'odom',
                 'locomotion_publish_odom_tf': 'true',
                 'locomotion_use_imu_for_odom': locomotion_use_imu_for_odom,
+                'locomotion_debug_logging': locomotion_debug_logging,
+                'locomotion_publish_yaw_hold_diagnostics': (
+                    locomotion_publish_yaw_hold_diagnostics
+                ),
                 'launch_lidar': launch_lidar,
                 'lidar_launch_package': lidar_launch_package,
                 'lidar_launch_file': lidar_launch_file,

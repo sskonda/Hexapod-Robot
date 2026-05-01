@@ -23,6 +23,10 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     lidar_serial_port = LaunchConfiguration('lidar_serial_port')
     locomotion_use_imu_for_odom = LaunchConfiguration('locomotion_use_imu_for_odom')
+    locomotion_debug_logging = LaunchConfiguration('locomotion_debug_logging')
+    locomotion_publish_yaw_hold_diagnostics = LaunchConfiguration(
+        'locomotion_publish_yaw_hold_diagnostics'
+    )
     show_imu_data = LaunchConfiguration('show_imu_data')
 
     explorer_enabled = LaunchConfiguration('explorer_enabled')
@@ -175,8 +179,21 @@ def generate_launch_description():
             description='Pass through to pose_stack.launch.py.',
         ),
         DeclareLaunchArgument(
+            'locomotion_debug_logging',
+            default_value='false',
+            description=(
+                'When true, print locomotion startup, IMU/yaw, and '
+                'heading-hold debug logs.'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'locomotion_publish_yaw_hold_diagnostics',
+            default_value='false',
+            description='Publish detailed locomotion yaw heading-hold diagnostics.',
+        ),
+        DeclareLaunchArgument(
             'show_imu_data',
-            default_value='true',
+            default_value='false',
             description='When false, suppress routine BNO055 IMU status logs while still publishing IMU topics.',
         ),
         DeclareLaunchArgument(
@@ -420,6 +437,10 @@ def generate_launch_description():
                 'map_frame': map_frame,
                 'lidar_serial_port': lidar_serial_port,
                 'locomotion_use_imu_for_odom': locomotion_use_imu_for_odom,
+                'locomotion_debug_logging': locomotion_debug_logging,
+                'locomotion_publish_yaw_hold_diagnostics': (
+                    locomotion_publish_yaw_hold_diagnostics
+                ),
                 'show_imu_data': show_imu_data,
             }.items(),
         ),
