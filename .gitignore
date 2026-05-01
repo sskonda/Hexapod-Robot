@@ -58,28 +58,63 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 compile_commands.json
+CTestTestfile.cmake
+CTestCostData.txt
+Testing/
+install_manifest.txt
+*.o
+*.obj
+*.so
+*.dll
+*.dylib
+*.a
+*.lib
+*.exe
 
 # ----------------------
 # Packaging artifacts
 # ----------------------
 dist/
+sdist/
+wheelhouse/
 *.egg-info/
 .eggs/
+*.egg
+*.whl
 pip-wheel-metadata/
 
 # ----------------------
-# ROS 2 generated Python artifacts
+# ROS 2 / colcon generated artifacts
 # ----------------------
+build/
+install/
+log/
+.colcon/
+test_results/
+ament_cmake_core/
+ament_cmake_environment_hooks/
+ament_cmake_index/
+ament_cmake_package_templates/
+ament_lint_cmake/
+rosidl_adapter/
+rosidl_generator_c/
+rosidl_generator_cpp/
 rosidl_generator_py/
+rosidl_typesupport_*/
+
+# ----------------------
+# ROS bag / runtime outputs
+# ----------------------
+rosbag2_*/
+*.bag
+*.db3
+*.mcap
 
 # ----------------------
 # Local test / runtime outputs
 # ----------------------
+.cache/
 *.out
-
-install/
-build/
-log/
 
 .claude/
 .codex
