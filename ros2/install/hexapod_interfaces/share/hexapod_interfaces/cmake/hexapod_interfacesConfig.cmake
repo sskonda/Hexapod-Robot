@@ -1,1 +1,0 @@
-/home/sanat/Hexapod-Robot/ros2/build/hexapod_interfaces/ament_cmake_core/hexapod_interfacesConfig.cmake

@@ -76,3 +76,10 @@ rosidl_generator_py/
 # Local test / runtime outputs
 # ----------------------
 *.out
+
+install/
+build/
+log/
+
+.claude/
+.codex
