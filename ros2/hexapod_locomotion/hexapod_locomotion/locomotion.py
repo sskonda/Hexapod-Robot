@@ -22,6 +22,7 @@ from .gait_math import (
 )
 from .kalman_filter import AngleKalmanFilter
 from .yaw_control import (
+    clamp,
     compute_heading_hold_pid,
     quaternion_from_euler,
     quaternion_normalize,
