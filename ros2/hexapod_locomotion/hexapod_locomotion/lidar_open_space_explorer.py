@@ -124,6 +124,7 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('cmd_vel_rate_hz', 10.0)
         self.declare_parameter('scan_timeout_sec', 0.75)
         self.declare_parameter('map_timeout_sec', 2.5)
+        self.declare_parameter('frontier_wait_before_reactive_sec', 3.0)
         self.declare_parameter('enabled', True)
         self.declare_parameter('exploration_mode', 'frontier')
         self.declare_parameter('search_strategy', 'bfs')
@@ -211,6 +212,8 @@ class LidarOpenSpaceExplorer(Node):
         self.current_frontier = None
         self.current_path_index = 0
         self.last_frontier_plan_time = None
+        self.frontier_wait_reason = ''
+        self.frontier_wait_started_sec = 0.0
         self.frontier_progress_best_distance_m = None
         self.frontier_progress_last_time_sec = 0.0
         self.frontier_progress_waypoint_index = -1
@@ -260,10 +263,25 @@ class LidarOpenSpaceExplorer(Node):
     def clear_delay_reason(self):
         self.last_delay_reason = ''
 
+    def frontier_wait_elapsed_sec(self, reason: str) -> float:
+        now_sec = self.now_sec()
+        if self.frontier_wait_reason != reason:
+            self.frontier_wait_reason = reason
+            self.frontier_wait_started_sec = now_sec
+        return max(0.0, now_sec - self.frontier_wait_started_sec)
+
+    def clear_frontier_wait(self):
+        self.frontier_wait_reason = ''
+        self.frontier_wait_started_sec = 0.0
+
     def _load_parameters(self):
         self.cmd_vel_rate_hz = max(1.0, float(self.get_parameter('cmd_vel_rate_hz').value))
         self.scan_timeout_sec = max(0.1, float(self.get_parameter('scan_timeout_sec').value))
         self.map_timeout_sec = max(0.1, float(self.get_parameter('map_timeout_sec').value))
+        self.frontier_wait_before_reactive_sec = max(
+            0.0,
+            float(self.get_parameter('frontier_wait_before_reactive_sec').value),
+        )
         self.enabled = as_bool(self.get_parameter('enabled').value)
         self.exploration_mode = self.normalized_mode(
             str(self.get_parameter('exploration_mode').value)
@@ -839,10 +857,16 @@ class LidarOpenSpaceExplorer(Node):
 
         if self.latest_map is None or self.latest_map_time is None:
             self.log_delay_reason('waiting for first /map from slam_toolbox')
+            wait_sec = self.frontier_wait_elapsed_sec('missing_map')
             self.get_logger().warn(
                 'No /map received yet. Waiting before frontier exploration.',
                 throttle_duration_sec=2.0,
             )
+            if self.reactive_fallback and wait_sec >= self.frontier_wait_before_reactive_sec:
+                self.log_delay_reason(
+                    f'no /map for {wait_sec:.1f}s; falling back to scan-reactive motion'
+                )
+                return None
             return None
 
         map_age_sec = (self.get_clock().now() - self.latest_map_time).nanoseconds * 1e-9
@@ -850,11 +874,19 @@ class LidarOpenSpaceExplorer(Node):
             self.log_delay_reason(
                 f'holding because /map is stale ({map_age_sec:.2f}s old)'
             )
+            wait_sec = self.frontier_wait_elapsed_sec('stale_map')
             self.get_logger().warn(
                 f'Map timeout ({map_age_sec:.2f}s old). Holding position.',
                 throttle_duration_sec=2.0,
             )
+            if self.reactive_fallback and wait_sec >= self.frontier_wait_before_reactive_sec:
+                self.log_delay_reason(
+                    f'/map has been stale for {wait_sec:.1f}s; falling back to scan-reactive motion'
+                )
+                return None
             return cmd
+
+        self.clear_frontier_wait()
 
         if self.current_frontier is None and self.frontier_replan_due():
             self.log_delay_reason('replanning frontier target')
@@ -895,7 +927,15 @@ class LidarOpenSpaceExplorer(Node):
                 self.log_delay_reason(
                     'waiting for TF pose transform from map to robot body'
                 )
+                wait_sec = self.frontier_wait_elapsed_sec('missing_pose_tf')
+                if self.reactive_fallback and wait_sec >= self.frontier_wait_before_reactive_sec:
+                    self.log_delay_reason(
+                        f'pose TF unavailable for {wait_sec:.1f}s; falling back to scan-reactive motion'
+                    )
+                    return None
                 return None
+
+            self.clear_frontier_wait()
 
             body_x, body_y = body_vector
             distance_m = math.hypot(body_x, body_y)
@@ -1030,6 +1070,7 @@ class LidarOpenSpaceExplorer(Node):
                     self.max_turn_rate_rad_s,
                 )
 
+            self.clear_frontier_wait()
             self.clear_delay_reason()
             return cmd
 

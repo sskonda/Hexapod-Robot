@@ -7,6 +7,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -68,6 +69,9 @@ def generate_launch_description():
     explorer_reverse_allowed = LaunchConfiguration('explorer_reverse_allowed')
     explorer_use_tf_for_scan_frame = LaunchConfiguration('explorer_use_tf_for_scan_frame')
     explorer_scan_yaw_offset_deg = LaunchConfiguration('explorer_scan_yaw_offset_deg')
+    explorer_frontier_wait_before_reactive_sec = LaunchConfiguration(
+        'explorer_frontier_wait_before_reactive_sec'
+    )
     explorer_frontier_replan_period_sec = LaunchConfiguration(
         'explorer_frontier_replan_period_sec'
     )
@@ -372,6 +376,11 @@ def generate_launch_description():
             description='Fallback scan-to-body yaw offset if TF is unavailable.',
         ),
         DeclareLaunchArgument(
+            'explorer_frontier_wait_before_reactive_sec',
+            default_value='3.0',
+            description='How long frontier mode waits on missing/stale map or pose TF before falling back to scan-reactive motion.',
+        ),
+        DeclareLaunchArgument(
             'explorer_frontier_replan_period_sec',
             default_value='5.0',
             description='How often to re-run BFS/DFS frontier selection.',
@@ -594,7 +603,7 @@ def generate_launch_description():
                 'marker_state_topic': qr_marker_state_topic,
                 'base_frame': base_frame,
                 'map_frame': map_frame,
-                'front_direction_offset_deg': cam_angle,
+                'front_direction_offset_deg': ParameterValue(cam_angle, value_type=float),
             }],
         ),
         Node(
@@ -615,6 +624,9 @@ def generate_launch_description():
                 'reactive_fallback': explorer_reactive_fallback,
                 'use_tf_for_scan_frame': explorer_use_tf_for_scan_frame,
                 'scan_yaw_offset_deg': explorer_scan_yaw_offset_deg,
+                'frontier_wait_before_reactive_sec': (
+                    explorer_frontier_wait_before_reactive_sec
+                ),
                 'max_speed_mps': explorer_max_speed_mps,
                 'min_speed_mps': explorer_min_speed_mps,
                 'obstacle_stop_distance_m': explorer_obstacle_stop_distance_m,
