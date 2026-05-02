@@ -92,6 +92,7 @@ class QrWallMarkerNode(Node):
         self.get_logger().info(
             f'Projecting QR detections from {self.qr_text_topic} onto {self.marker_topic}'
         )
+        self.publish_markers()
         self.publish_marker_state()
 
     def scan_callback(self, msg: LaserScan):
@@ -221,6 +222,7 @@ class QrWallMarkerNode(Node):
     def publish_markers(self):
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
+        markers.markers.append(self.delete_all_marker(now))
         marker_lifetime = self.duration_message(self.marker_lifetime_sec)
 
         for color_name, (x_pos, y_pos) in sorted(self.detected_markers.items()):
@@ -262,6 +264,13 @@ class QrWallMarkerNode(Node):
             markers.markers.append(label_marker)
 
         self.marker_pub.publish(markers)
+
+    def delete_all_marker(self, stamp):
+        marker = Marker()
+        marker.header.frame_id = self.map_frame
+        marker.header.stamp = stamp
+        marker.action = Marker.DELETEALL
+        return marker
 
     def publish_marker_state(self):
         state = {
