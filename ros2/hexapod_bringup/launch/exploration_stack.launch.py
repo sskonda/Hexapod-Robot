@@ -60,6 +60,9 @@ def generate_launch_description():
     explorer_scan_timeout_sec = LaunchConfiguration('explorer_scan_timeout_sec')
     explorer_max_speed_mps = LaunchConfiguration('explorer_max_speed_mps')
     explorer_min_speed_mps = LaunchConfiguration('explorer_min_speed_mps')
+    explorer_max_lateral_speed_mps = LaunchConfiguration('explorer_max_lateral_speed_mps')
+    explorer_max_turn_rate_rad_s = LaunchConfiguration('explorer_max_turn_rate_rad_s')
+    explorer_turn_gain = LaunchConfiguration('explorer_turn_gain')
     explorer_obstacle_stop_distance_m = LaunchConfiguration(
         'explorer_obstacle_stop_distance_m'
     )
@@ -67,6 +70,21 @@ def generate_launch_description():
         'explorer_obstacle_slow_distance_m'
     )
     explorer_side_stop_distance_m = LaunchConfiguration('explorer_side_stop_distance_m')
+    explorer_wall_escape_enter_distance_m = LaunchConfiguration(
+        'explorer_wall_escape_enter_distance_m'
+    )
+    explorer_wall_escape_exit_distance_m = LaunchConfiguration(
+        'explorer_wall_escape_exit_distance_m'
+    )
+    explorer_wall_escape_exit_hold_sec = LaunchConfiguration(
+        'explorer_wall_escape_exit_hold_sec'
+    )
+    explorer_wall_escape_lateral_speed_mps = LaunchConfiguration(
+        'explorer_wall_escape_lateral_speed_mps'
+    )
+    explorer_wall_escape_turn_rate_rad_s = LaunchConfiguration(
+        'explorer_wall_escape_turn_rate_rad_s'
+    )
     explorer_desired_clearance_m = LaunchConfiguration('explorer_desired_clearance_m')
     explorer_crab_motion = LaunchConfiguration('explorer_crab_motion')
     explorer_reverse_allowed = LaunchConfiguration('explorer_reverse_allowed')
@@ -164,6 +182,46 @@ def generate_launch_description():
     explorer_bug_release_clearance_m = LaunchConfiguration('explorer_bug_release_clearance_m')
     explorer_bug_min_duration_sec = LaunchConfiguration('explorer_bug_min_duration_sec')
     explorer_bug_max_duration_sec = LaunchConfiguration('explorer_bug_max_duration_sec')
+    explorer_qr_spin_enabled = LaunchConfiguration('explorer_qr_spin_enabled')
+    explorer_qr_spin_cmd_angular_z_rad_s = LaunchConfiguration(
+        'explorer_qr_spin_cmd_angular_z_rad_s'
+    )
+    explorer_qr_spin_step_angle_deg = LaunchConfiguration('explorer_qr_spin_step_angle_deg')
+    explorer_qr_spin_step_duration_sec = LaunchConfiguration(
+        'explorer_qr_spin_step_duration_sec'
+    )
+    explorer_qr_spin_pause_duration_sec = LaunchConfiguration(
+        'explorer_qr_spin_pause_duration_sec'
+    )
+    explorer_qr_spin_total_angle_deg = LaunchConfiguration('explorer_qr_spin_total_angle_deg')
+    explorer_qr_spin_cooldown_sec = LaunchConfiguration('explorer_qr_spin_cooldown_sec')
+    explorer_qr_spin_max_count = LaunchConfiguration('explorer_qr_spin_max_count')
+    explorer_qr_spin_front_dead_end_distance_m = LaunchConfiguration(
+        'explorer_qr_spin_front_dead_end_distance_m'
+    )
+    explorer_qr_spin_side_dead_end_distance_m = LaunchConfiguration(
+        'explorer_qr_spin_side_dead_end_distance_m'
+    )
+    explorer_qr_spin_qr_text_topic = LaunchConfiguration('explorer_qr_spin_qr_text_topic')
+    explorer_qr_spin_pause_slam = LaunchConfiguration('explorer_qr_spin_pause_slam')
+    explorer_qr_spin_slam_node_name = LaunchConfiguration(
+        'explorer_qr_spin_slam_node_name'
+    )
+    explorer_qr_spin_stop_on_qr_detected = LaunchConfiguration(
+        'explorer_qr_spin_stop_on_qr_detected'
+    )
+    mission_return_home_after_qr_spin = LaunchConfiguration(
+        'mission_return_home_after_qr_spin'
+    )
+    mission_home_marker_state_topic = LaunchConfiguration('mission_home_marker_state_topic')
+    mission_home_marker_name = LaunchConfiguration('mission_home_marker_name')
+    mission_home_standoff_min_m = LaunchConfiguration('mission_home_standoff_min_m')
+    mission_home_standoff_max_m = LaunchConfiguration('mission_home_standoff_max_m')
+    mission_home_goal_tolerance_m = LaunchConfiguration('mission_home_goal_tolerance_m')
+    mission_return_home_replan_period_sec = LaunchConfiguration(
+        'mission_return_home_replan_period_sec'
+    )
+    mission_stop_when_home_reached = LaunchConfiguration('mission_stop_when_home_reached')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -351,28 +409,68 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_max_speed_mps',
-            default_value='0.035',
+            default_value='0.018',
             description='Maximum exploration translation speed.',
         ),
         DeclareLaunchArgument(
             'explorer_min_speed_mps',
-            default_value='0.012',
+            default_value='0.008',
             description='Minimum speed when moving through a narrowing opening.',
         ),
         DeclareLaunchArgument(
-            'explorer_obstacle_stop_distance_m',
+            'explorer_max_lateral_speed_mps',
+            default_value='0.012',
+            description='Maximum lateral crab speed used by the explorer.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_max_turn_rate_rad_s',
+            default_value='0.040',
+            description='Maximum yaw rate used outside the explicit QR spin maneuver.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_turn_gain',
             default_value='0.30',
+            description='Yaw correction gain when crab motion is disabled.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_obstacle_stop_distance_m',
+            default_value='0.40',
             description='Stop/turn if the selected direction is closer than this.',
         ),
         DeclareLaunchArgument(
             'explorer_obstacle_slow_distance_m',
-            default_value='0.60',
+            default_value='0.70',
             description='Start slowing below this selected-direction clearance.',
         ),
         DeclareLaunchArgument(
             'explorer_side_stop_distance_m',
-            default_value='0.20',
+            default_value='0.45',
             description='Minimum allowed left/right wall clearance before sliding away.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_escape_enter_distance_m',
+            default_value='0.45',
+            description='Enter wall escape when either side is closer than this.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_escape_exit_distance_m',
+            default_value='0.60',
+            description='Wall escape exits only after both sides stay above this clearance.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_escape_exit_hold_sec',
+            default_value='0.75',
+            description='Seconds side clearances must remain restored before wall escape exits.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_escape_lateral_speed_mps',
+            default_value='0.012',
+            description='Slow lateral crab speed used while escaping a wall.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_wall_escape_turn_rate_rad_s',
+            default_value='0.020',
+            description='Gentle turn rate used for front-blocked recovery, not wall escape yaw.',
         ),
         DeclareLaunchArgument(
             'explorer_desired_clearance_m',
@@ -436,12 +534,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'explorer_path_clearance_m',
-            default_value='0.22',
+            default_value='0.40',
             description='Required clearance for traversed BFS/DFS path cells.',
         ),
         DeclareLaunchArgument(
             'explorer_goal_clearance_m',
-            default_value='0.20',
+            default_value='0.33',
             description='Softer clearance for final known-free viewpoint goals near doorways.',
         ),
         DeclareLaunchArgument(
@@ -589,6 +687,116 @@ def generate_launch_description():
             default_value='15.0',
             description='Maximum time spent in Bug recovery before rejecting the current frontier path.',
         ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_enabled',
+            default_value='true',
+            description='Allow a slow stepped QR scan spin at a dead end.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_cmd_angular_z_rad_s',
+            default_value='0.08',
+            description='Yaw rate for each QR scan spin step.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_step_angle_deg',
+            default_value='25.0',
+            description='Approximate angle covered by each QR scan spin step.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_step_duration_sec',
+            default_value='0.0',
+            description='Explicit spin-step duration, or 0 to compute from angle and speed.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_pause_duration_sec',
+            default_value='0.6',
+            description='Stop time between QR scan spin steps.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_total_angle_deg',
+            default_value='360.0',
+            description='Total angle to cover during the QR scan spin maneuver.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_cooldown_sec',
+            default_value='60.0',
+            description='Minimum seconds between QR scan spin maneuvers.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_max_count',
+            default_value='2',
+            description='Maximum number of QR scan spin maneuvers per explorer run.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_front_dead_end_distance_m',
+            default_value='0.55',
+            description='Front clearance below this value contributes to QR spin dead-end detection.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_side_dead_end_distance_m',
+            default_value='0.55',
+            description='Both side clearances must be below this value to trigger QR spin.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_qr_text_topic',
+            default_value=qr_text_topic,
+            description='QR text topic watched during the spin for early stop.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_pause_slam',
+            default_value='true',
+            description='Deactivate slam_toolbox while the robot spins in place for QR scanning.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_slam_node_name',
+            default_value='/slam_toolbox',
+            description='slam_toolbox lifecycle node name used around QR spin.',
+        ),
+        DeclareLaunchArgument(
+            'explorer_qr_spin_stop_on_qr_detected',
+            default_value='true',
+            description='Stop the QR spin early when QR text is detected after spin start.',
+        ),
+        DeclareLaunchArgument(
+            'mission_return_home_after_qr_spin',
+            default_value='true',
+            description='After the QR spin, switch to RETURN_HOME when a home QR marker is known.',
+        ),
+        DeclareLaunchArgument(
+            'mission_home_marker_state_topic',
+            default_value=qr_marker_state_topic,
+            description='JSON marker-state topic used to remember the home QR location.',
+        ),
+        DeclareLaunchArgument(
+            'mission_home_marker_name',
+            default_value='',
+            description='Specific QR marker name to use as home, or empty for first marker seen.',
+        ),
+        DeclareLaunchArgument(
+            'mission_home_standoff_min_m',
+            default_value='0.35',
+            description='Minimum safe standoff distance from the QR wall marker.',
+        ),
+        DeclareLaunchArgument(
+            'mission_home_standoff_max_m',
+            default_value='0.85',
+            description='Maximum safe standoff distance from the QR wall marker.',
+        ),
+        DeclareLaunchArgument(
+            'mission_home_goal_tolerance_m',
+            default_value='0.22',
+            description='Distance from the selected home standoff target considered reached.',
+        ),
+        DeclareLaunchArgument(
+            'mission_return_home_replan_period_sec',
+            default_value='2.0',
+            description='How often RETURN_HOME replans its path to the home standoff target.',
+        ),
+        DeclareLaunchArgument(
+            'mission_stop_when_home_reached',
+            default_value='true',
+            description='Stop the mission after reaching the home standoff target.',
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(pose_stack_launch)),
             launch_arguments={
@@ -666,9 +874,17 @@ def generate_launch_description():
                 ),
                 'max_speed_mps': explorer_max_speed_mps,
                 'min_speed_mps': explorer_min_speed_mps,
+                'max_lateral_speed_mps': explorer_max_lateral_speed_mps,
+                'max_turn_rate_rad_s': explorer_max_turn_rate_rad_s,
+                'turn_gain': explorer_turn_gain,
                 'obstacle_stop_distance_m': explorer_obstacle_stop_distance_m,
                 'obstacle_slow_distance_m': explorer_obstacle_slow_distance_m,
                 'side_stop_distance_m': explorer_side_stop_distance_m,
+                'wall_escape_enter_distance_m': explorer_wall_escape_enter_distance_m,
+                'wall_escape_exit_distance_m': explorer_wall_escape_exit_distance_m,
+                'wall_escape_exit_hold_sec': explorer_wall_escape_exit_hold_sec,
+                'wall_escape_lateral_speed_mps': explorer_wall_escape_lateral_speed_mps,
+                'wall_escape_turn_rate_rad_s': explorer_wall_escape_turn_rate_rad_s,
                 'desired_clearance_m': explorer_desired_clearance_m,
                 'crab_motion': explorer_crab_motion,
                 'reverse_allowed': explorer_reverse_allowed,
@@ -722,6 +938,34 @@ def generate_launch_description():
                 'bug_release_clearance_m': explorer_bug_release_clearance_m,
                 'bug_min_duration_sec': explorer_bug_min_duration_sec,
                 'bug_max_duration_sec': explorer_bug_max_duration_sec,
+                'qr_spin_enabled': explorer_qr_spin_enabled,
+                'qr_spin_cmd_angular_z_rad_s': explorer_qr_spin_cmd_angular_z_rad_s,
+                'qr_spin_step_angle_deg': explorer_qr_spin_step_angle_deg,
+                'qr_spin_step_duration_sec': explorer_qr_spin_step_duration_sec,
+                'qr_spin_pause_duration_sec': explorer_qr_spin_pause_duration_sec,
+                'qr_spin_total_angle_deg': explorer_qr_spin_total_angle_deg,
+                'qr_spin_cooldown_sec': explorer_qr_spin_cooldown_sec,
+                'qr_spin_max_count': explorer_qr_spin_max_count,
+                'qr_spin_front_dead_end_distance_m': (
+                    explorer_qr_spin_front_dead_end_distance_m
+                ),
+                'qr_spin_side_dead_end_distance_m': (
+                    explorer_qr_spin_side_dead_end_distance_m
+                ),
+                'qr_spin_qr_text_topic': explorer_qr_spin_qr_text_topic,
+                'qr_spin_pause_slam': explorer_qr_spin_pause_slam,
+                'qr_spin_slam_node_name': explorer_qr_spin_slam_node_name,
+                'qr_spin_stop_on_qr_detected': explorer_qr_spin_stop_on_qr_detected,
+                'mission_return_home_after_qr_spin': mission_return_home_after_qr_spin,
+                'mission_home_marker_state_topic': mission_home_marker_state_topic,
+                'mission_home_marker_name': mission_home_marker_name,
+                'mission_home_standoff_min_m': mission_home_standoff_min_m,
+                'mission_home_standoff_max_m': mission_home_standoff_max_m,
+                'mission_home_goal_tolerance_m': mission_home_goal_tolerance_m,
+                'mission_return_home_replan_period_sec': (
+                    mission_return_home_replan_period_sec
+                ),
+                'mission_stop_when_home_reached': mission_stop_when_home_reached,
             }],
         ),
     ])

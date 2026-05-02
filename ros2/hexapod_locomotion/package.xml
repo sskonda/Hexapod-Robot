@@ -12,6 +12,7 @@
   <exec_depend>hexapod_interfaces</exec_depend>
   <depend>diagnostic_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>lifecycle_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>

@@ -6,6 +6,7 @@ widest/deepest safe direction, and publishes cmd_vel for slow exploration while
 slam_toolbox builds the map.
 """
 
+import json
 import math
 import heapq
 from collections import deque
@@ -13,11 +14,15 @@ from dataclasses import dataclass
 
 import rclpy
 from geometry_msgs.msg import Point, Twist
+from lifecycle_msgs.msg import Transition
+from lifecycle_msgs.srv import ChangeState
 from nav_msgs.msg import OccupancyGrid
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
@@ -210,6 +215,28 @@ class LidarOpenSpaceExplorer(Node):
         self.declare_parameter('bug_max_duration_sec', 15.0)
         self.declare_parameter('bug_front_angle_deg', 30.0)
         self.declare_parameter('bug_side_angle_deg', 75.0)
+        self.declare_parameter('qr_spin_enabled', True)
+        self.declare_parameter('qr_spin_cmd_angular_z_rad_s', 0.08)
+        self.declare_parameter('qr_spin_step_angle_deg', 25.0)
+        self.declare_parameter('qr_spin_step_duration_sec', 0.0)
+        self.declare_parameter('qr_spin_pause_duration_sec', 0.6)
+        self.declare_parameter('qr_spin_total_angle_deg', 360.0)
+        self.declare_parameter('qr_spin_cooldown_sec', 60.0)
+        self.declare_parameter('qr_spin_max_count', 2)
+        self.declare_parameter('qr_spin_front_dead_end_distance_m', 0.55)
+        self.declare_parameter('qr_spin_side_dead_end_distance_m', 0.55)
+        self.declare_parameter('qr_spin_qr_text_topic', '/qr_code/text')
+        self.declare_parameter('qr_spin_pause_slam', True)
+        self.declare_parameter('qr_spin_slam_node_name', '/slam_toolbox')
+        self.declare_parameter('qr_spin_stop_on_qr_detected', True)
+        self.declare_parameter('mission_return_home_after_qr_spin', True)
+        self.declare_parameter('mission_home_marker_state_topic', '/qr_code/marker_state')
+        self.declare_parameter('mission_home_marker_name', '')
+        self.declare_parameter('mission_home_standoff_min_m', 0.35)
+        self.declare_parameter('mission_home_standoff_max_m', 0.85)
+        self.declare_parameter('mission_home_goal_tolerance_m', 0.22)
+        self.declare_parameter('mission_return_home_replan_period_sec', 2.0)
+        self.declare_parameter('mission_stop_when_home_reached', True)
 
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.map_topic = str(self.get_parameter('map_topic').value)
@@ -242,6 +269,26 @@ class LidarOpenSpaceExplorer(Node):
         self.wall_escape_side = 0
         self.wall_escape_started_sec = 0.0
         self.wall_escape_clear_since_sec = None
+        self.mission_mode = 'explore'
+        self.home_marker_name = None
+        self.home_marker_xy = None
+        self.home_target = None
+        self.home_path_index = 0
+        self.last_home_plan_time = None
+        self.last_qr_text = ''
+        self.last_qr_seen_sec = None
+        self.qr_spin_active = False
+        self.qr_spin_phase = 'idle'
+        self.qr_spin_started_sec = 0.0
+        self.qr_spin_phase_started_sec = 0.0
+        self.qr_spin_accumulated_yaw_rad = 0.0
+        self.qr_spin_accumulated_angle_rad = 0.0
+        self.qr_spin_last_start_sec = -math.inf
+        self.qr_spin_count = 0
+        self.qr_spin_slam_was_paused = False
+        self.slam_transition_future = None
+        self.qr_spin_waiting_for_slam_pause = False
+        self.qr_spin_slam_pause_requested_sec = 0.0
 
         self._load_parameters()
 
@@ -251,6 +298,20 @@ class LidarOpenSpaceExplorer(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.create_subscription(LaserScan, self.scan_topic, self.scan_callback, 10)
         self.create_subscription(OccupancyGrid, self.map_topic, self.map_callback, 10)
+        self.create_subscription(String, self.qr_spin_qr_text_topic, self.qr_text_callback, 10)
+        marker_state_qos = QoSProfile(depth=1)
+        marker_state_qos.reliability = ReliabilityPolicy.RELIABLE
+        marker_state_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.create_subscription(
+            String,
+            self.mission_home_marker_state_topic,
+            self.marker_state_callback,
+            marker_state_qos,
+        )
+        self.slam_change_state_client = self.create_client(
+            ChangeState,
+            self.slam_change_state_service_name(),
+        )
         self.add_on_set_parameters_callback(self.parameter_update_callback)
         self.create_timer(1.0 / self.cmd_vel_rate_hz, self.control_loop)
 
@@ -535,6 +596,76 @@ class LidarOpenSpaceExplorer(Node):
         self.bug_side_angle_rad = math.radians(
             max(10.0, min(120.0, float(self.get_parameter('bug_side_angle_deg').value)))
         )
+        self.qr_spin_enabled = as_bool(self.get_parameter('qr_spin_enabled').value)
+        self.qr_spin_cmd_angular_z_rad_s = max(
+            0.01,
+            abs(float(self.get_parameter('qr_spin_cmd_angular_z_rad_s').value)),
+        )
+        self.qr_spin_step_angle_rad = math.radians(
+            max(1.0, float(self.get_parameter('qr_spin_step_angle_deg').value))
+        )
+        self.qr_spin_step_duration_sec = max(
+            0.0,
+            float(self.get_parameter('qr_spin_step_duration_sec').value),
+        )
+        self.qr_spin_pause_duration_sec = max(
+            0.0,
+            float(self.get_parameter('qr_spin_pause_duration_sec').value),
+        )
+        self.qr_spin_total_angle_rad = math.radians(
+            max(1.0, float(self.get_parameter('qr_spin_total_angle_deg').value))
+        )
+        self.qr_spin_cooldown_sec = max(
+            0.0,
+            float(self.get_parameter('qr_spin_cooldown_sec').value),
+        )
+        self.qr_spin_max_count = max(0, int(self.get_parameter('qr_spin_max_count').value))
+        self.qr_spin_front_dead_end_distance_m = max(
+            0.0,
+            float(self.get_parameter('qr_spin_front_dead_end_distance_m').value),
+        )
+        self.qr_spin_side_dead_end_distance_m = max(
+            0.0,
+            float(self.get_parameter('qr_spin_side_dead_end_distance_m').value),
+        )
+        self.qr_spin_qr_text_topic = str(
+            self.get_parameter('qr_spin_qr_text_topic').value
+        )
+        self.qr_spin_pause_slam = as_bool(self.get_parameter('qr_spin_pause_slam').value)
+        self.qr_spin_slam_node_name = str(
+            self.get_parameter('qr_spin_slam_node_name').value
+        )
+        self.qr_spin_stop_on_qr_detected = as_bool(
+            self.get_parameter('qr_spin_stop_on_qr_detected').value
+        )
+        self.mission_return_home_after_qr_spin = as_bool(
+            self.get_parameter('mission_return_home_after_qr_spin').value
+        )
+        self.mission_home_marker_state_topic = str(
+            self.get_parameter('mission_home_marker_state_topic').value
+        )
+        self.mission_home_marker_name = str(
+            self.get_parameter('mission_home_marker_name').value
+        ).strip().lower()
+        self.mission_home_standoff_min_m = max(
+            0.0,
+            float(self.get_parameter('mission_home_standoff_min_m').value),
+        )
+        self.mission_home_standoff_max_m = max(
+            self.mission_home_standoff_min_m,
+            float(self.get_parameter('mission_home_standoff_max_m').value),
+        )
+        self.mission_home_goal_tolerance_m = max(
+            0.03,
+            float(self.get_parameter('mission_home_goal_tolerance_m').value),
+        )
+        self.mission_return_home_replan_period_sec = max(
+            0.5,
+            float(self.get_parameter('mission_return_home_replan_period_sec').value),
+        )
+        self.mission_stop_when_home_reached = as_bool(
+            self.get_parameter('mission_stop_when_home_reached').value
+        )
 
     def normalized_mode(self, value: str) -> str:
         mode = value.strip().lower()
@@ -707,6 +838,63 @@ class LidarOpenSpaceExplorer(Node):
                 self.bug_side_angle_rad = math.radians(
                     max(10.0, min(120.0, float(parameter.value)))
                 )
+            elif parameter.name == 'qr_spin_enabled':
+                self.qr_spin_enabled = as_bool(parameter.value)
+            elif parameter.name == 'qr_spin_cmd_angular_z_rad_s':
+                self.qr_spin_cmd_angular_z_rad_s = max(0.01, abs(float(parameter.value)))
+            elif parameter.name == 'qr_spin_step_angle_deg':
+                self.qr_spin_step_angle_rad = math.radians(max(1.0, float(parameter.value)))
+            elif parameter.name == 'qr_spin_step_duration_sec':
+                self.qr_spin_step_duration_sec = max(0.0, float(parameter.value))
+            elif parameter.name == 'qr_spin_pause_duration_sec':
+                self.qr_spin_pause_duration_sec = max(0.0, float(parameter.value))
+            elif parameter.name == 'qr_spin_total_angle_deg':
+                self.qr_spin_total_angle_rad = math.radians(max(1.0, float(parameter.value)))
+            elif parameter.name == 'qr_spin_cooldown_sec':
+                self.qr_spin_cooldown_sec = max(0.0, float(parameter.value))
+            elif parameter.name == 'qr_spin_max_count':
+                self.qr_spin_max_count = max(0, int(parameter.value))
+            elif parameter.name == 'qr_spin_front_dead_end_distance_m':
+                self.qr_spin_front_dead_end_distance_m = max(0.0, float(parameter.value))
+            elif parameter.name == 'qr_spin_side_dead_end_distance_m':
+                self.qr_spin_side_dead_end_distance_m = max(0.0, float(parameter.value))
+            elif parameter.name == 'qr_spin_qr_text_topic':
+                self.qr_spin_qr_text_topic = str(parameter.value)
+            elif parameter.name == 'qr_spin_pause_slam':
+                self.qr_spin_pause_slam = as_bool(parameter.value)
+            elif parameter.name == 'qr_spin_slam_node_name':
+                self.qr_spin_slam_node_name = str(parameter.value)
+                self.slam_change_state_client = self.create_client(
+                    ChangeState,
+                    self.slam_change_state_service_name(),
+                )
+            elif parameter.name == 'qr_spin_stop_on_qr_detected':
+                self.qr_spin_stop_on_qr_detected = as_bool(parameter.value)
+            elif parameter.name == 'mission_return_home_after_qr_spin':
+                self.mission_return_home_after_qr_spin = as_bool(parameter.value)
+            elif parameter.name == 'mission_home_marker_state_topic':
+                self.mission_home_marker_state_topic = str(parameter.value)
+            elif parameter.name == 'mission_home_marker_name':
+                self.mission_home_marker_name = str(parameter.value).strip().lower()
+            elif parameter.name == 'mission_home_standoff_min_m':
+                self.mission_home_standoff_min_m = max(0.0, float(parameter.value))
+                self.mission_home_standoff_max_m = max(
+                    self.mission_home_standoff_min_m,
+                    self.mission_home_standoff_max_m,
+                )
+                self.clear_home_target()
+            elif parameter.name == 'mission_home_standoff_max_m':
+                self.mission_home_standoff_max_m = max(
+                    self.mission_home_standoff_min_m,
+                    float(parameter.value),
+                )
+                self.clear_home_target()
+            elif parameter.name == 'mission_home_goal_tolerance_m':
+                self.mission_home_goal_tolerance_m = max(0.03, float(parameter.value))
+            elif parameter.name == 'mission_return_home_replan_period_sec':
+                self.mission_return_home_replan_period_sec = max(0.5, float(parameter.value))
+            elif parameter.name == 'mission_stop_when_home_reached':
+                self.mission_stop_when_home_reached = as_bool(parameter.value)
             if parameter.name == 'base_frame':
                 self.base_frame = str(parameter.value)
             elif parameter.name == 'enabled':
@@ -814,11 +1002,90 @@ class LidarOpenSpaceExplorer(Node):
         self.latest_map_time = self.get_clock().now()
         if self.ensure_visited_grid(msg):
             self.clear_current_frontier()
+            self.clear_home_target()
+
+    def marker_state_callback(self, msg: String):
+        try:
+            state = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warn(
+                f'Ignoring malformed QR marker state JSON: {exc}.',
+                throttle_duration_sec=2.0,
+            )
+            return
+
+        if not isinstance(state, dict):
+            return
+
+        frame_id = str(state.get('frame_id', '')).strip()
+        if frame_id != self.map_frame:
+            self.get_logger().warn(
+                f'Ignoring QR marker state in frame "{frame_id}"; expected "{self.map_frame}".',
+                throttle_duration_sec=2.0,
+            )
+            return
+
+        markers = state.get('markers', {})
+        if not isinstance(markers, dict) or not markers:
+            return
+
+        marker_name = None
+        marker_data = None
+        if self.mission_home_marker_name:
+            marker_name = self.mission_home_marker_name
+            marker_data = markers.get(marker_name)
+            if marker_data is None:
+                return
+        elif self.home_marker_xy is None:
+            marker_name, marker_data = next(iter(markers.items()))
+        else:
+            return
+
+        if not isinstance(marker_data, dict):
+            return
+
+        try:
+            marker_xy = (float(marker_data['x']), float(marker_data['y']))
+        except (KeyError, TypeError, ValueError):
+            self.get_logger().warn(
+                f'Ignoring QR marker "{marker_name}" without numeric x/y coordinates.',
+                throttle_duration_sec=2.0,
+            )
+            return
+
+        changed = (
+            self.home_marker_name != marker_name
+            or self.home_marker_xy is None
+            or math.hypot(
+                marker_xy[0] - self.home_marker_xy[0],
+                marker_xy[1] - self.home_marker_xy[1],
+            )
+            > 0.01
+        )
+        self.home_marker_name = str(marker_name)
+        self.home_marker_xy = marker_xy
+        if changed:
+            self.clear_home_target()
+            self.get_logger().info(
+                f'Home QR marker set to {self.home_marker_name} at '
+                f'({marker_xy[0]:.2f}, {marker_xy[1]:.2f})'
+            )
+
+    def qr_text_callback(self, msg: String):
+        self.last_qr_text = msg.data.strip()
+        self.last_qr_seen_sec = self.now_sec()
+        if self.qr_spin_active:
+            self.get_logger().info(
+                f'QR text "{self.last_qr_text}" detected during spin.',
+                throttle_duration_sec=1.0,
+            )
 
     def control_loop(self):
         cmd = Twist()
 
         if not self.enabled or self.latest_scan is None or self.latest_scan_time is None:
+            if self.qr_spin_active:
+                self.finish_qr_spin_maneuver()
             self.clear_target_markers()
             self.cmd_pub.publish(cmd)
             return
@@ -827,11 +1094,42 @@ class LidarOpenSpaceExplorer(Node):
             self.get_clock().now() - self.latest_scan_time
         ).nanoseconds * 1e-9
         if scan_age_sec > self.scan_timeout_sec:
+            if self.qr_spin_active:
+                self.finish_qr_spin_maneuver()
             self.get_logger().warn(
                 f'Scan timeout ({scan_age_sec:.2f}s old). Stopping.',
                 throttle_duration_sec=2.0,
             )
             self.cmd_pub.publish(cmd)
+            return
+
+        if self.mission_mode == 'done':
+            self.clear_target_markers()
+            self.cmd_pub.publish(cmd)
+            return
+
+        if self.qr_spin_active or self.mission_mode == 'qr_spin':
+            spin_cmd = self.update_qr_spin_maneuver()
+            self.cmd_pub.publish(spin_cmd if spin_cmd is not None else cmd)
+            return
+
+        if self.mission_mode == 'return_home':
+            wall_escape_cmd = self.wall_escape_command()
+            if wall_escape_cmd is not None:
+                self.publish_reactive_markers(None)
+                self.cmd_pub.publish(wall_escape_cmd)
+                return
+
+            home_cmd = self.return_home_control()
+            if home_cmd is not None:
+                self.cmd_pub.publish(home_cmd)
+                return
+
+            if self.reactive_fallback:
+                self.cmd_pub.publish(self.reactive_fallback_command())
+            else:
+                self.clear_target_markers()
+                self.cmd_pub.publish(cmd)
             return
 
         wall_escape_cmd = self.wall_escape_command()
@@ -850,26 +1148,38 @@ class LidarOpenSpaceExplorer(Node):
                 'No map target; using simple LiDAR heading.',
                 throttle_duration_sec=4.0,
             )
+            if self.should_start_qr_spin_maneuver():
+                self.start_qr_spin_maneuver()
+                spin_cmd = self.update_qr_spin_maneuver()
+                self.cmd_pub.publish(spin_cmd if spin_cmd is not None else cmd)
+                return
 
+        self.cmd_pub.publish(self.reactive_fallback_command())
+
+    def reactive_fallback_command(self) -> Twist:
+        cmd = Twist()
         best = self.choose_best_direction(self.latest_scan)
         if best is None:
-            cmd.angular.z = self.max_turn_rate_rad_s
             self.publish_reactive_markers(None)
-            self.cmd_pub.publish(cmd)
-            return
+            self.get_logger().warn(
+                'No safe LiDAR heading found; stopping.',
+                throttle_duration_sec=2.0,
+            )
+            return cmd
 
         body_angle_rad = self.scan_angle_to_body_angle(self.latest_scan, best.angle_rad)
         self.publish_reactive_markers(best)
         if best.min_range_m < self.obstacle_stop_distance_m:
-            cmd.angular.z = clamp(
-                self.turn_gain * body_angle_rad,
-                -self.max_turn_rate_rad_s,
-                self.max_turn_rate_rad_s,
+            cmd.linear.x = 0.0
+            cmd.linear.y = 0.0
+            cmd.angular.z = self.front_escape_turn_direction(
+                *self.side_clearances(),
+            ) * min(self.wall_escape_turn_rate_rad_s, self.max_turn_rate_rad_s)
+            self.get_logger().warn(
+                'Front blocked: stopping forward motion and turning gently toward clearer side',
+                throttle_duration_sec=2.0,
             )
-            if abs(cmd.angular.z) < 1e-3:
-                cmd.angular.z = self.max_turn_rate_rad_s
-            self.cmd_pub.publish(cmd)
-            return
+            return cmd
 
         speed = self.speed_for_clearance(best.min_range_m)
         if self.crab_motion:
@@ -884,8 +1194,7 @@ class LidarOpenSpaceExplorer(Node):
                 cmd.linear.x = 0.0
             guard_cmd = self.wall_clearance_guard_command()
             if guard_cmd is not None:
-                self.cmd_pub.publish(guard_cmd)
-                return
+                return guard_cmd
             cmd.angular.z = 0.0
         else:
             turn = clamp(
@@ -897,7 +1206,544 @@ class LidarOpenSpaceExplorer(Node):
             cmd.angular.z = turn
 
         self.last_choice = best
-        self.cmd_pub.publish(cmd)
+        return cmd
+
+    def should_start_qr_spin_maneuver(self) -> bool:
+        if (
+            not self.qr_spin_enabled
+            or self.mission_mode != 'explore'
+            or self.qr_spin_active
+            or self.wall_escape_active
+        ):
+            return False
+        if self.qr_spin_count >= self.qr_spin_max_count:
+            return False
+        if self.current_frontier is not None:
+            return False
+        if self.latest_scan is None or self.latest_scan_time is None:
+            return False
+
+        now_sec = self.now_sec()
+        scan_age_sec = (self.get_clock().now() - self.latest_scan_time).nanoseconds * 1e-9
+        if scan_age_sec > self.scan_timeout_sec:
+            return False
+        if now_sec - self.qr_spin_last_start_sec < self.qr_spin_cooldown_sec:
+            return False
+        return self.qr_spin_dead_end_detected()
+
+    def qr_spin_dead_end_detected(self) -> bool:
+        front_clearance = self.min_scan_range_near_body_angle(
+            0.0,
+            self.direction_window_rad,
+        )
+        left_clearance, right_clearance = self.side_clearances()
+        detected = (
+            front_clearance is not None
+            and front_clearance < self.qr_spin_front_dead_end_distance_m
+            and left_clearance is not None
+            and left_clearance < self.qr_spin_side_dead_end_distance_m
+            and right_clearance is not None
+            and right_clearance < self.qr_spin_side_dead_end_distance_m
+        )
+        if detected:
+            self.get_logger().info(
+                'QR spin candidate: dead end detected '
+                f'front={self.format_clearance(front_clearance)} '
+                f'left={self.format_clearance(left_clearance)} '
+                f'right={self.format_clearance(right_clearance)}',
+                throttle_duration_sec=2.0,
+            )
+        return detected
+
+    def start_qr_spin_maneuver(self) -> bool:
+        if not self.should_start_qr_spin_maneuver():
+            return False
+
+        now_sec = self.now_sec()
+        self.mission_mode = 'qr_spin'
+        self.qr_spin_active = True
+        self.qr_spin_phase = 'spin'
+        self.qr_spin_started_sec = now_sec
+        self.qr_spin_phase_started_sec = now_sec
+        self.qr_spin_accumulated_angle_rad = 0.0
+        self.qr_spin_accumulated_yaw_rad = 0.0
+        self.qr_spin_last_start_sec = now_sec
+        self.qr_spin_count += 1
+        self.reset_frontier_progress()
+        self.pause_slam_for_qr_spin()
+        self.get_logger().info(
+            f'Starting QR spin maneuver {self.qr_spin_count}/'
+            f'{self.qr_spin_max_count}: step={math.degrees(self.qr_spin_step_angle_rad):.1f} deg, '
+            f'pause={self.qr_spin_pause_duration_sec:.1f}s.'
+        )
+        return True
+
+    def update_qr_spin_maneuver(self) -> Twist | None:
+        if not self.qr_spin_active:
+            return None
+
+        cmd = Twist()
+
+        if self.qr_spin_waiting_for_slam_pause:
+            wait_sec = self.now_sec() - self.qr_spin_slam_pause_requested_sec
+            if (
+                self.slam_transition_future is not None
+                and not self.slam_transition_future.done()
+                and wait_sec < 2.0
+            ):
+                return cmd
+            if self.slam_transition_future is not None and not self.slam_transition_future.done():
+                self.get_logger().warn(
+                    'Timed out waiting for SLAM deactivate response; continuing QR spin anyway.',
+                    throttle_duration_sec=2.0,
+                )
+            self.qr_spin_waiting_for_slam_pause = False
+            self.qr_spin_started_sec = self.now_sec()
+            self.qr_spin_phase_started_sec = self.qr_spin_started_sec
+            try:
+                transition_done = (
+                    self.slam_transition_future is not None
+                    and self.slam_transition_future.done()
+                )
+                response = (
+                    self.slam_transition_future.result()
+                    if transition_done
+                    else None
+                )
+                if response is not None and not response.success:
+                    self.qr_spin_slam_was_paused = False
+                    self.get_logger().warn(
+                        'SLAM deactivate request was rejected; continuing QR spin anyway.',
+                        throttle_duration_sec=2.0,
+                    )
+            except Exception as exc:
+                self.qr_spin_slam_was_paused = False
+                self.get_logger().warn(
+                    f'SLAM deactivate request failed: {exc}. Continuing QR spin anyway.',
+                    throttle_duration_sec=2.0,
+                )
+            return cmd
+
+        now_sec = self.now_sec()
+        if self.qr_spin_qr_seen_during_spin():
+            self.get_logger().info(
+                f'QR text "{self.last_qr_text}" seen during spin; stopping QR scan early.'
+            )
+            self.finish_qr_spin_maneuver()
+            return cmd
+
+        if self.qr_spin_phase == 'spin':
+            spin_duration_sec = self.qr_spin_current_step_duration_sec()
+            elapsed_sec = now_sec - self.qr_spin_phase_started_sec
+            if elapsed_sec < spin_duration_sec:
+                cmd.angular.z = self.qr_spin_cmd_angular_z_rad_s
+                return cmd
+
+            self.qr_spin_accumulated_angle_rad += (
+                abs(self.qr_spin_cmd_angular_z_rad_s) * elapsed_sec
+            )
+            self.qr_spin_phase = 'pause'
+            self.qr_spin_phase_started_sec = now_sec
+            self.get_logger().info(
+                f'QR spin pause: accumulated='
+                f'{math.degrees(self.qr_spin_accumulated_angle_rad):.1f} deg.',
+                throttle_duration_sec=2.0,
+            )
+            return cmd
+
+        if self.qr_spin_phase == 'pause':
+            elapsed_sec = now_sec - self.qr_spin_phase_started_sec
+            if elapsed_sec < self.qr_spin_pause_duration_sec:
+                return cmd
+            if self.qr_spin_accumulated_angle_rad >= self.qr_spin_total_angle_rad:
+                self.finish_qr_spin_maneuver()
+                return cmd
+            self.qr_spin_phase = 'spin'
+            self.qr_spin_phase_started_sec = now_sec
+            return cmd
+
+        self.qr_spin_phase = 'spin'
+        self.qr_spin_phase_started_sec = now_sec
+        return cmd
+
+    def finish_qr_spin_maneuver(self):
+        if not self.qr_spin_active and self.mission_mode != 'qr_spin':
+            return
+
+        self.qr_spin_active = False
+        self.qr_spin_phase = 'idle'
+        self.qr_spin_phase_started_sec = 0.0
+        self.qr_spin_accumulated_yaw_rad = 0.0
+        self.qr_spin_accumulated_angle_rad = 0.0
+        self.resume_slam_after_qr_spin()
+        self.get_logger().info('Finished QR spin maneuver.')
+
+        if self.mission_return_home_after_qr_spin and self.home_marker_xy is not None:
+            self.start_return_home_mode()
+        else:
+            self.mission_mode = 'explore'
+
+    def qr_spin_current_step_duration_sec(self) -> float:
+        if self.qr_spin_step_duration_sec > 0.0:
+            return self.qr_spin_step_duration_sec
+        if self.qr_spin_cmd_angular_z_rad_s <= 0.0:
+            return 0.0
+        return self.qr_spin_step_angle_rad / self.qr_spin_cmd_angular_z_rad_s
+
+    def qr_spin_qr_seen_during_spin(self) -> bool:
+        return (
+            self.qr_spin_stop_on_qr_detected
+            and self.last_qr_seen_sec is not None
+            and self.last_qr_seen_sec >= self.qr_spin_started_sec
+        )
+
+    def slam_change_state_service_name(self) -> str:
+        node_name = self.qr_spin_slam_node_name.strip() or '/slam_toolbox'
+        node_name = '/' + node_name.strip('/')
+        return f'{node_name}/change_state'
+
+    def pause_slam_for_qr_spin(self):
+        if not self.qr_spin_pause_slam:
+            return
+        if not self.slam_change_state_client.service_is_ready():
+            self.get_logger().warn(
+                f'SLAM lifecycle service {self.slam_change_state_service_name()} '
+                'is not ready; QR spin will continue without pausing SLAM.',
+                throttle_duration_sec=5.0,
+            )
+            return
+        request = ChangeState.Request()
+        request.transition.id = Transition.TRANSITION_DEACTIVATE
+        self.qr_spin_slam_was_paused = True
+        self.qr_spin_waiting_for_slam_pause = True
+        self.qr_spin_slam_pause_requested_sec = self.now_sec()
+        self.slam_transition_future = self.slam_change_state_client.call_async(request)
+        self.get_logger().info('Requested SLAM deactivate before QR spin.')
+
+    def resume_slam_after_qr_spin(self):
+        if not self.qr_spin_slam_was_paused:
+            return
+        self.qr_spin_slam_was_paused = False
+        self.qr_spin_waiting_for_slam_pause = False
+        if not self.slam_change_state_client.service_is_ready():
+            self.get_logger().warn(
+                f'SLAM lifecycle service {self.slam_change_state_service_name()} '
+                'is not ready; could not reactivate SLAM after QR spin.',
+                throttle_duration_sec=5.0,
+            )
+            return
+        request = ChangeState.Request()
+        request.transition.id = Transition.TRANSITION_ACTIVATE
+        self.slam_transition_future = self.slam_change_state_client.call_async(request)
+        self.get_logger().info('Requested SLAM activate after QR spin.')
+
+    def start_return_home_mode(self) -> bool:
+        if self.home_marker_xy is None:
+            self.get_logger().warn(
+                'Cannot switch to RETURN_HOME: no home QR marker is available.',
+                throttle_duration_sec=2.0,
+            )
+            return False
+
+        self.mission_mode = 'return_home'
+        self.clear_current_frontier()
+        self.clear_home_target()
+        self.clear_target_markers()
+        self.get_logger().info('Switching mission mode to RETURN_HOME')
+        return True
+
+    def return_home_control(self) -> Twist | None:
+        cmd = Twist()
+
+        if self.home_marker_xy is None:
+            self.get_logger().warn(
+                'RETURN_HOME requested without a home QR marker; stopping.',
+                throttle_duration_sec=2.0,
+            )
+            return cmd
+        if self.latest_map is None or self.latest_map_time is None:
+            self.get_logger().warn(
+                'RETURN_HOME waiting for /map before planning home path.',
+                throttle_duration_sec=2.0,
+            )
+            return cmd
+
+        map_age_sec = (self.get_clock().now() - self.latest_map_time).nanoseconds * 1e-9
+        if map_age_sec > self.map_timeout_sec:
+            self.get_logger().warn(
+                f'RETURN_HOME map timeout ({map_age_sec:.2f}s old); stopping.',
+                throttle_duration_sec=2.0,
+            )
+            return cmd
+
+        robot_pose = self.robot_pose_in_map()
+        if robot_pose is None:
+            self.get_logger().warn(
+                'RETURN_HOME cannot find robot pose in map; stopping.',
+                throttle_duration_sec=2.0,
+            )
+            return cmd
+
+        if self.home_target is not None:
+            distance_to_home_target = math.hypot(
+                robot_pose[0] - self.home_target.x_m,
+                robot_pose[1] - self.home_target.y_m,
+            )
+            if distance_to_home_target <= self.mission_home_goal_tolerance_m:
+                return self.finish_return_home()
+
+        if self.home_target is None or self.home_replan_due():
+            self.plan_home_target()
+
+        if self.home_target is None:
+            self.get_logger().warn(
+                'RETURN_HOME could not find a reachable standoff near the home QR marker.',
+                throttle_duration_sec=2.0,
+            )
+            return None
+
+        while self.home_target is not None:
+            waypoint = self.active_home_waypoint()
+            if waypoint is None:
+                return self.finish_return_home()
+
+            body_vector = self.map_target_vector_in_body(waypoint[0], waypoint[1])
+            if body_vector is None:
+                return cmd
+
+            body_x, body_y = body_vector
+            distance_m = math.hypot(body_x, body_y)
+            if distance_m < self.mission_home_goal_tolerance_m:
+                if self.advance_home_waypoint():
+                    continue
+                return self.finish_return_home()
+
+            body_angle = math.atan2(body_y, body_x)
+            scan_clearance = self.min_scan_range_near_body_angle(
+                body_angle,
+                self.direction_window_rad,
+            )
+            if scan_clearance is not None and scan_clearance < self.obstacle_stop_distance_m:
+                self.get_logger().warn(
+                    'RETURN_HOME path direction is blocked by scan; stopping.',
+                    throttle_duration_sec=2.0,
+                )
+                return cmd
+
+            speed = self.speed_for_clearance(
+                scan_clearance if scan_clearance is not None else self.obstacle_slow_distance_m
+            )
+            if self.crab_motion:
+                cmd.linear.x = speed * (body_x / distance_m)
+                cmd.linear.y = speed * (body_y / distance_m)
+                cmd.linear.y = clamp(
+                    cmd.linear.y,
+                    -self.max_lateral_speed_mps,
+                    self.max_lateral_speed_mps,
+                )
+                if not self.reverse_allowed and cmd.linear.x < 0.0:
+                    cmd.linear.x = 0.0
+                cmd.angular.z = 0.0
+            else:
+                cmd.linear.x = speed * max(0.0, math.cos(body_angle))
+                cmd.angular.z = clamp(
+                    self.turn_gain * body_angle,
+                    -self.max_turn_rate_rad_s,
+                    self.max_turn_rate_rad_s,
+                )
+            return cmd
+
+        return cmd
+
+    def finish_return_home(self) -> Twist:
+        cmd = Twist()
+        self.clear_home_target()
+        self.clear_current_frontier()
+        self.clear_target_markers()
+        if self.mission_stop_when_home_reached:
+            self.mission_mode = 'done'
+            self.get_logger().info('Reached home QR standoff target; mission done.')
+        else:
+            self.mission_mode = 'explore'
+            self.get_logger().info('Reached home QR standoff target; resuming exploration.')
+        return cmd
+
+    def home_replan_due(self) -> bool:
+        if self.last_home_plan_time is None:
+            return True
+        elapsed = (self.get_clock().now() - self.last_home_plan_time).nanoseconds * 1e-9
+        return elapsed >= self.mission_return_home_replan_period_sec
+
+    def active_home_waypoint(self):
+        if self.home_target is None or not self.home_target.path:
+            return None
+        index = min(self.home_path_index, len(self.home_target.path) - 1)
+        return self.home_target.path[index]
+
+    def advance_home_waypoint(self) -> bool:
+        if self.home_target is None:
+            return False
+        next_index = self.home_path_index + 1
+        if next_index >= len(self.home_target.path):
+            return False
+        self.home_path_index = next_index
+        return True
+
+    def clear_home_target(self):
+        self.home_target = None
+        self.home_path_index = 0
+        self.last_home_plan_time = None
+
+    def plan_home_target(self):
+        grid = self.latest_map
+        marker_xy = self.home_marker_xy
+        if marker_xy is None or grid is None or grid.info.width <= 0 or grid.info.height <= 0:
+            return
+        if grid.info.resolution <= 0.0:
+            self.get_logger().warn(
+                'RETURN_HOME planner cannot use a map with invalid resolution.',
+                throttle_duration_sec=2.0,
+            )
+            return
+
+        self.last_home_plan_time = self.get_clock().now()
+        robot_pose = self.robot_pose_in_map()
+        if robot_pose is None:
+            return
+
+        planner = self.build_planner_grid(grid)
+        start = self.world_to_grid(grid, robot_pose[0], robot_pose[1])
+        if start is None:
+            return
+
+        width = grid.info.width
+        height = grid.info.height
+        cell_count = width * height
+        start_index = self.grid_index(start[0], start[1], width)
+        if not planner.safe[start_index]:
+            nearest = self.nearest_safe_cell(planner, start[0], start[1])
+            if nearest is None:
+                self.get_logger().warn(
+                    'RETURN_HOME planner cannot find a safe start cell near the robot.',
+                    throttle_duration_sec=2.0,
+                )
+                return
+            start_index = self.grid_index(nearest[0], nearest[1], width)
+
+        reachable = bytearray(cell_count)
+        parent = [-1] * cell_count
+        path_cost_cells = [math.inf] * cell_count
+        pending = deque([start_index])
+        reachable[start_index] = 1
+        parent[start_index] = start_index
+        path_cost_cells[start_index] = 0.0
+        searched = 0
+
+        while pending:
+            current = pending.popleft()
+            searched += 1
+            for neighbor in self.safe_neighbor_indices(current, planner):
+                if reachable[neighbor]:
+                    continue
+                reachable[neighbor] = 1
+                parent[neighbor] = current
+                path_cost_cells[neighbor] = (
+                    path_cost_cells[current] + self.grid_step_cost(current, neighbor, width)
+                )
+                pending.append(neighbor)
+
+        origin = grid.info.origin.position
+        resolution = grid.info.resolution
+        home_grid_x = int((marker_xy[0] - origin.x) / resolution)
+        home_grid_y = int((marker_xy[1] - origin.y) / resolution)
+        max_radius_cells = max(
+            1,
+            int(math.ceil(self.mission_home_standoff_max_m / resolution)),
+        )
+        desired_standoff_m = (
+            self.mission_home_standoff_min_m + self.mission_home_standoff_max_m
+        ) * 0.5
+        candidates = []
+        for grid_y in range(
+            max(0, home_grid_y - max_radius_cells),
+            min(height, home_grid_y + max_radius_cells + 1),
+        ):
+            for grid_x in range(
+                max(0, home_grid_x - max_radius_cells),
+                min(width, home_grid_x + max_radius_cells + 1),
+            ):
+                candidate_index = self.grid_index(grid_x, grid_y, width)
+                if not planner.goal_safe[candidate_index] and not planner.path_safe[candidate_index]:
+                    continue
+                candidate_world = self.grid_to_world(grid, grid_x, grid_y)
+                standoff_m = math.hypot(
+                    candidate_world[0] - marker_xy[0],
+                    candidate_world[1] - marker_xy[1],
+                )
+                if (
+                    standoff_m < self.mission_home_standoff_min_m
+                    or standoff_m > self.mission_home_standoff_max_m
+                ):
+                    continue
+                parent_index = self.reachable_goal_parent(candidate_index, planner, reachable)
+                if parent_index < 0:
+                    continue
+                path_cost = path_cost_cells[candidate_index]
+                if not math.isfinite(path_cost):
+                    path_cost = path_cost_cells[parent_index] + self.grid_step_cost(
+                        parent_index,
+                        candidate_index,
+                        width,
+                    )
+                if not math.isfinite(path_cost):
+                    continue
+                candidates.append(
+                    (
+                        abs(standoff_m - desired_standoff_m),
+                        path_cost * resolution,
+                        candidate_index,
+                        parent_index,
+                        standoff_m,
+                    )
+                )
+
+        if not candidates:
+            return
+
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        _, path_length_m, target_index, parent_index, standoff_m = candidates[0]
+        if parent_index == target_index:
+            path = self.reconstruct_world_path(grid, parent, start_index, target_index)
+        else:
+            path = self.reconstruct_world_path(grid, parent, start_index, parent_index)
+            target_x = target_index % width
+            target_y = target_index // width
+            path = path + (self.grid_to_world(grid, target_x, target_y),)
+        if not path:
+            return
+
+        target_x = target_index % width
+        target_y = target_index // width
+        target_world = self.grid_to_world(grid, target_x, target_y)
+        self.home_target = FrontierTarget(
+            x_m=target_world[0],
+            y_m=target_world[1],
+            grid_x=target_x,
+            grid_y=target_y,
+            searched_cells=searched,
+            path=path,
+            target_reason='return_home',
+            clearance_m=planner.clearance_m[target_index],
+            path_length_m=path_length_m,
+            score=-path_length_m,
+        )
+        self.home_path_index = 0
+        self.get_logger().info(
+            f'Planned RETURN_HOME target near {self.home_marker_name}: '
+            f'({target_world[0]:.2f}, {target_world[1]:.2f}), '
+            f'standoff={standoff_m:.2f} m, path={path_length_m:.2f} m, '
+            f'waypoints={len(path)}.'
+        )
 
     def frontier_control(self):
         cmd = Twist()
@@ -1130,6 +1976,13 @@ class LidarOpenSpaceExplorer(Node):
                 clear_long_enough = (
                     now_sec - self.wall_escape_clear_since_sec
                 ) >= self.wall_escape_exit_hold_sec
+                if not clear_long_enough:
+                    self.get_logger().warn(
+                        'Wall escape holding until clearance stable: '
+                        f'left={self.format_clearance(left_clearance)} '
+                        f'right={self.format_clearance(right_clearance)}',
+                        throttle_duration_sec=1.0,
+                    )
             else:
                 self.wall_escape_clear_since_sec = None
                 clear_long_enough = False
@@ -1170,15 +2023,12 @@ class LidarOpenSpaceExplorer(Node):
                 self.wall_escape_started_sec = now_sec
                 self.wall_escape_clear_since_sec = None
                 self.reset_frontier_progress()
-                reason = 'side clearance low'
-                if side_close_with_front_blocked and not side_too_close:
-                    reason = 'front blocked with nearby side wall'
                 self.get_logger().warn(
                     'Entering wall escape: '
-                    f'{reason}; wall on {self.wall_side_name(self.wall_escape_side)}, '
-                    f'front_clearance={self.format_clearance(front_clearance)}, '
-                    f'left_clearance={self.format_clearance(left_clearance)}, '
-                    f'right_clearance={self.format_clearance(right_clearance)}',
+                    f'wall={self.wall_side_name(self.wall_escape_side)}, '
+                    f'left={self.format_clearance(left_clearance)}, '
+                    f'right={self.format_clearance(right_clearance)}, '
+                    f'front={self.format_clearance(front_clearance)}',
                     throttle_duration_sec=1.0,
                 )
 
@@ -1195,9 +2045,7 @@ class LidarOpenSpaceExplorer(Node):
                 right_clearance,
             ) * min(self.wall_escape_turn_rate_rad_s, self.max_turn_rate_rad_s)
             self.get_logger().warn(
-                f'Front clearance {front_clearance:.2f} m is below '
-                f'{self.obstacle_stop_distance_m:.2f} m; stopping forward motion '
-                'and gently turning toward clearer side.',
+                'Front blocked: stopping forward motion and turning gently toward clearer side',
                 throttle_duration_sec=2.0,
             )
             return cmd
@@ -1206,7 +2054,7 @@ class LidarOpenSpaceExplorer(Node):
 
     def wall_escape_cmd_for_side(self, wall_side: int) -> Twist:
         # wall_side = +1 means wall on left; -1 means wall on right.
-        # Move laterally away from that side and add only a tiny yaw away from it.
+        # Move laterally away from that side without yawing into nearby walls.
         away_direction = -float(wall_side)
         cmd = Twist()
         cmd.linear.x = 0.0
@@ -1217,10 +2065,7 @@ class LidarOpenSpaceExplorer(Node):
             )
         else:
             cmd.linear.y = 0.0
-        cmd.angular.z = away_direction * min(
-            self.wall_escape_turn_rate_rad_s,
-            self.max_turn_rate_rad_s,
-        )
+        cmd.angular.z = 0.0
         self.reset_frontier_progress()
         self.get_logger().warn(
             f'Wall escape active: moving away from {self.wall_side_name(wall_side)} wall '
@@ -1331,7 +2176,8 @@ class LidarOpenSpaceExplorer(Node):
             cmd.linear.x = 0.0
             cmd.linear.y = away_direction * lateral_speed
         else:
-            cmd.angular.z = away_direction * self.max_turn_rate_rad_s
+            cmd.linear.x = 0.0
+            cmd.angular.z = 0.0
         self.get_logger().warn(
             f'Side clearance {clearance:.2f} m is below {self.side_stop_distance_m:.2f} m; '
             'moving away from wall.',
