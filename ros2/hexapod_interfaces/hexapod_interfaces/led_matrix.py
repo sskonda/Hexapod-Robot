@@ -1,9 +1,10 @@
-"""Set the onboard LED matrix to a solid color."""
+"""Set the onboard LED matrix to a solid color with optional QR trigger."""
 
 import re
 
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import String
 
 from .led import LedController
 
@@ -70,12 +71,19 @@ def parse_color(color_value):
 
 
 class LedMatrixNode(Node):
-    """Set every LED in the robot matrix/strip to one solid color."""
+    """Set every LED in the robot matrix/strip to one selected color."""
 
     def __init__(self):
         super().__init__('led_matrix')
 
         self.declare_parameter('color', 'cyan')
+        self.declare_parameter('qr_trigger_text_topic', '')
+        self.declare_parameter('qr_trigger_text', 'blue')
+        self.declare_parameter('qr_trigger_color', 'cyan')
+        self.declare_parameter('qr_trigger_timeout_sec', 10.0)
+        self.declare_parameter('arm_command_topic', '')
+        self.declare_parameter('arm_command_on_value', 'True')
+        self.declare_parameter('arm_command_off_value', 'False')
         self.declare_parameter('brightness_percent', 75.0)
         self.declare_parameter('led_backend', 'spi')
         self.declare_parameter('led_count', 7)
@@ -90,7 +98,31 @@ class LedMatrixNode(Node):
         self.declare_parameter('reapply_period_sec', 0.0)
         self.declare_parameter('dry_run', False)
 
-        self.color = self._read_color_parameter()
+        self.color = self._read_color_parameter('color', 'cyan')
+        self.inactive_color = list(self.color)
+        self.qr_trigger_color = self._read_color_parameter(
+            'qr_trigger_color',
+            'cyan',
+        )
+        self.qr_trigger_text_topic = str(
+            self.get_parameter('qr_trigger_text_topic').value
+        ).strip()
+        self.qr_trigger_text = self.normalize_trigger_text(
+            self.get_parameter('qr_trigger_text').value
+        )
+        self.qr_trigger_timeout_sec = max(
+            0.0,
+            float(self.get_parameter('qr_trigger_timeout_sec').value),
+        )
+        self.arm_command_topic = str(
+            self.get_parameter('arm_command_topic').value
+        ).strip()
+        self.arm_command_on_value = str(
+            self.get_parameter('arm_command_on_value').value
+        )
+        self.arm_command_off_value = str(
+            self.get_parameter('arm_command_off_value').value
+        )
         self.brightness_percent = max(
             0.0,
             min(100.0, float(self.get_parameter('brightness_percent').value)),
@@ -98,6 +130,11 @@ class LedMatrixNode(Node):
         self.brightness = brightness_percent_to_byte(self.brightness_percent)
         self.dry_run = bool(self.get_parameter('dry_run').value)
         self.led = None
+        self.arm_command_pub = None
+        self.qr_trigger_sub = None
+        self.qr_trigger_timer = None
+        self.qr_trigger_active = False
+        self.last_qr_trigger_seen_sec = None
         self._reported_status = False
 
         if not self.dry_run:
@@ -116,6 +153,28 @@ class LedMatrixNode(Node):
             )
 
         self._apply_color()
+        if self.arm_command_topic:
+            self.arm_command_pub = self.create_publisher(
+                String,
+                self.arm_command_topic,
+                10,
+            )
+            self.publish_arm_command(self.arm_command_off_value)
+        if self.qr_trigger_text_topic and self.qr_trigger_text:
+            self.qr_trigger_sub = self.create_subscription(
+                String,
+                self.qr_trigger_text_topic,
+                self.qr_trigger_callback,
+                10,
+            )
+            self.qr_trigger_timer = self.create_timer(
+                0.25,
+                self.check_qr_trigger_timeout,
+            )
+            self.get_logger().info(
+                f'Watching {self.qr_trigger_text_topic} for QR text '
+                f'"{self.qr_trigger_text}" to set RGB {self.qr_trigger_color}.'
+            )
 
         reapply_period_sec = max(
             0.0,
@@ -129,24 +188,77 @@ class LedMatrixNode(Node):
             )
 
     def destroy_node(self):
+        if self.qr_trigger_active:
+            self.deactivate_qr_trigger('shutdown')
         if self.led is not None:
             self.led.close()
         return super().destroy_node()
 
-    def _read_color_parameter(self):
-        color_value = self.get_parameter('color').value
+    def _read_color_parameter(self, parameter_name, fallback_color_name):
+        color_value = self.get_parameter(parameter_name).value
         try:
             return parse_color(color_value)
         except ValueError as exc:
-            self.get_logger().warn(f'{exc} Falling back to cyan.')
-            return list(NAMED_COLORS['cyan'])
+            self.get_logger().warn(
+                f'{exc} Falling back to {fallback_color_name}.'
+            )
+            return list(NAMED_COLORS[fallback_color_name])
 
-    def _apply_color(self):
+    def now_sec(self):
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def normalize_trigger_text(self, value):
+        return str(value).strip().lower()
+
+    def qr_trigger_callback(self, msg: String):
+        if self.normalize_trigger_text(msg.data) != self.qr_trigger_text:
+            return
+
+        self.last_qr_trigger_seen_sec = self.now_sec()
+        if self.qr_trigger_active:
+            return
+
+        self.qr_trigger_active = True
+        self.publish_arm_command(self.arm_command_on_value)
+        self.set_color(
+            self.qr_trigger_color,
+            f'QR text "{self.qr_trigger_text}"',
+        )
+
+    def check_qr_trigger_timeout(self):
+        if (
+            not self.qr_trigger_active
+            or self.last_qr_trigger_seen_sec is None
+            or self.qr_trigger_timeout_sec <= 0.0
+        ):
+            return
+
+        if self.now_sec() - self.last_qr_trigger_seen_sec >= self.qr_trigger_timeout_sec:
+            self.deactivate_qr_trigger('QR timeout')
+
+    def deactivate_qr_trigger(self, reason):
+        self.qr_trigger_active = False
+        self.last_qr_trigger_seen_sec = None
+        self.publish_arm_command(self.arm_command_off_value)
+        self.set_color(self.inactive_color, reason)
+
+    def publish_arm_command(self, value):
+        if self.arm_command_pub is None:
+            return
+
+        self.arm_command_pub.publish(String(data=str(value)))
+
+    def set_color(self, color, source):
+        self.color = list(color)
+        self._reported_status = False
+        self._apply_color(source=source)
+
+    def _apply_color(self, source='parameter'):
         if self.dry_run:
             if not self._reported_status:
                 self.get_logger().info(
                     f'Dry run: would set LED matrix to RGB {self.color} '
-                    f'at {self.brightness_percent:.1f}% brightness.'
+                    f'from {source} at {self.brightness_percent:.1f}% brightness.'
                 )
                 self._reported_status = True
             return
@@ -165,7 +277,7 @@ class LedMatrixNode(Node):
         self.led.show_color(self.color)
         if not self._reported_status:
             self.get_logger().info(
-                f'Set LED matrix to RGB {self.color} at '
+                f'Set LED matrix to RGB {self.color} from {source} at '
                 f'{self.brightness_percent:.1f}% brightness '
                 f'using {self.led.driver_name} mode with {self.led.count} pixels.'
             )

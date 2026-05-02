@@ -44,6 +44,7 @@ def generate_launch_description():
     camera_framerate = LaunchConfiguration('camera_framerate')
     camera_image_topic = LaunchConfiguration('camera_image_topic')
     qr_text_topic = LaunchConfiguration('qr_text_topic')
+    qr_seen_text_topic = LaunchConfiguration('qr_seen_text_topic')
     qr_image_topic = LaunchConfiguration('qr_image_topic')
     qr_show_rqt = LaunchConfiguration('qr_show_rqt')
     qr_republish_same_text = LaunchConfiguration('qr_republish_same_text')
@@ -59,6 +60,17 @@ def generate_launch_description():
     led_matrix_backend = LaunchConfiguration('led_matrix_backend')
     led_matrix_count = LaunchConfiguration('led_matrix_count')
     led_matrix_sequence = LaunchConfiguration('led_matrix_sequence')
+    led_matrix_qr_trigger_text_topic = LaunchConfiguration(
+        'led_matrix_qr_trigger_text_topic'
+    )
+    led_matrix_qr_trigger_text = LaunchConfiguration('led_matrix_qr_trigger_text')
+    led_matrix_qr_trigger_color = LaunchConfiguration('led_matrix_qr_trigger_color')
+    led_matrix_qr_trigger_timeout_sec = LaunchConfiguration(
+        'led_matrix_qr_trigger_timeout_sec'
+    )
+    arm_command_topic = LaunchConfiguration('arm_command_topic')
+    arm_command_on_value = LaunchConfiguration('arm_command_on_value')
+    arm_command_off_value = LaunchConfiguration('arm_command_off_value')
 
     explorer_enabled = LaunchConfiguration('explorer_enabled')
     explorer_mode = LaunchConfiguration('explorer_mode')
@@ -351,6 +363,11 @@ def generate_launch_description():
             description='String topic where decoded QR text is published.',
         ),
         DeclareLaunchArgument(
+            'qr_seen_text_topic',
+            default_value='/qr_code/seen_text',
+            description='String topic where every visible QR text frame is published.',
+        ),
+        DeclareLaunchArgument(
             'qr_image_topic',
             default_value='/qr_code/image',
             description='Annotated image topic for QR visualization.',
@@ -388,12 +405,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'launch_led_matrix',
             default_value='true',
-            description='Launch the solid-color LED matrix node.',
+            description='Launch the QR-triggered LED matrix node.',
         ),
         DeclareLaunchArgument(
             'led_matrix_color',
-            default_value='cyan',
-            description='LED matrix color name, #RRGGBB value, or comma-separated RGB value.',
+            default_value='black',
+            description='Inactive LED matrix color name, #RRGGBB, or RGB triplet.',
         ),
         DeclareLaunchArgument(
             'led_matrix_brightness_percent',
@@ -414,6 +431,41 @@ def generate_launch_description():
             'led_matrix_sequence',
             default_value='GRB',
             description='LED color channel order for the matrix.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_qr_trigger_text_topic',
+            default_value=qr_seen_text_topic,
+            description='QR heartbeat topic used to trigger the LED matrix.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_qr_trigger_text',
+            default_value='blue',
+            description='QR text that activates the LED matrix and arm command.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_qr_trigger_color',
+            default_value='cyan',
+            description='LED matrix color while the QR trigger is active.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_qr_trigger_timeout_sec',
+            default_value='10.0',
+            description='Seconds since last matching QR sighting before turning off.',
+        ),
+        DeclareLaunchArgument(
+            'arm_command_topic',
+            default_value='/arm/command',
+            description='String topic commanded by the QR-triggered LED node.',
+        ),
+        DeclareLaunchArgument(
+            'arm_command_on_value',
+            default_value='True',
+            description='String published to arm_command_topic when QR is active.',
+        ),
+        DeclareLaunchArgument(
+            'arm_command_off_value',
+            default_value='False',
+            description='String published to arm_command_topic when QR times out.',
         ),
         DeclareLaunchArgument(
             'explorer_enabled',
@@ -865,6 +917,7 @@ def generate_launch_description():
                 'framerate': camera_framerate,
                 'image_topic': camera_image_topic,
                 'text_topic': qr_text_topic,
+                'seen_text_topic': qr_seen_text_topic,
                 'output_image_topic': qr_image_topic,
                 'show_rqt': qr_show_rqt,
                 'republish_same_text': qr_republish_same_text,
@@ -902,6 +955,16 @@ def generate_launch_description():
                 'led_backend': led_matrix_backend,
                 'led_count': ParameterValue(led_matrix_count, value_type=int),
                 'led_sequence': led_matrix_sequence,
+                'qr_trigger_text_topic': led_matrix_qr_trigger_text_topic,
+                'qr_trigger_text': led_matrix_qr_trigger_text,
+                'qr_trigger_color': led_matrix_qr_trigger_color,
+                'qr_trigger_timeout_sec': ParameterValue(
+                    led_matrix_qr_trigger_timeout_sec,
+                    value_type=float,
+                ),
+                'arm_command_topic': arm_command_topic,
+                'arm_command_on_value': arm_command_on_value,
+                'arm_command_off_value': arm_command_off_value,
             }],
         ),
         Node(

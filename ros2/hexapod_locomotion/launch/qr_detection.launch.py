@@ -16,6 +16,7 @@ def generate_launch_description():
     framerate = LaunchConfiguration('framerate')
     image_topic = LaunchConfiguration('image_topic')
     text_topic = LaunchConfiguration('text_topic')
+    seen_text_topic = LaunchConfiguration('seen_text_topic')
     output_image_topic = LaunchConfiguration('output_image_topic')
     republish_same_text = LaunchConfiguration('republish_same_text')
     publish_annotated_image = LaunchConfiguration('publish_annotated_image')
@@ -69,6 +70,11 @@ def generate_launch_description():
             'text_topic',
             default_value='/qr_code/text',
             description='String topic where decoded QR text is published.',
+        ),
+        DeclareLaunchArgument(
+            'seen_text_topic',
+            default_value='',
+            description='Optional topic where every visible QR text frame is published.',
         ),
         DeclareLaunchArgument(
             'output_image_topic',
@@ -127,6 +133,7 @@ def generate_launch_description():
             parameters=[{
                 'image_topic': image_topic,
                 'text_topic': text_topic,
+                'seen_text_topic': seen_text_topic,
                 'annotated_image_topic': output_image_topic,
                 'publish_annotated_image': ParameterValue(
                     publish_annotated_image,

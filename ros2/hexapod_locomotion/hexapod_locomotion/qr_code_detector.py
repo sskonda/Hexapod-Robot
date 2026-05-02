@@ -24,6 +24,7 @@ class QrCodeDetectorNode(Node):
 
         self.declare_parameter('image_topic', '/image_raw')
         self.declare_parameter('text_topic', '/qr_code/text')
+        self.declare_parameter('seen_text_topic', '')
         self.declare_parameter('annotated_image_topic', '/qr_code/image')
         self.declare_parameter('publish_annotated_image', True)
         self.declare_parameter('qos_depth', 10)
@@ -36,6 +37,7 @@ class QrCodeDetectorNode(Node):
 
         image_topic = str(self.get_parameter('image_topic').value)
         text_topic = str(self.get_parameter('text_topic').value)
+        seen_text_topic = str(self.get_parameter('seen_text_topic').value).strip()
         annotated_image_topic = str(self.get_parameter('annotated_image_topic').value)
         qos_depth = int(self.get_parameter('qos_depth').value)
 
@@ -78,6 +80,13 @@ class QrCodeDetectorNode(Node):
             qos_profile_sensor_data,
         )
         self.text_pub = self.create_publisher(String, text_topic, qos_depth)
+        self.seen_text_pub = None
+        if seen_text_topic:
+            self.seen_text_pub = self.create_publisher(
+                String,
+                seen_text_topic,
+                qos_depth,
+            )
         self.image_pub = None
         if self.publish_annotated_image:
             self.image_pub = self.create_publisher(
@@ -88,6 +97,10 @@ class QrCodeDetectorNode(Node):
 
         self.get_logger().info(f'Subscribed to {image_topic}')
         self.get_logger().info(f'Publishing QR text on {text_topic}')
+        if self.seen_text_pub is not None:
+            self.get_logger().info(
+                f'Publishing visible QR text heartbeat on {seen_text_topic}'
+            )
         if self.publish_annotated_image:
             self.get_logger().info(
                 f'Publishing annotated QR images on {annotated_image_topic}'
@@ -113,6 +126,10 @@ class QrCodeDetectorNode(Node):
         texts_to_publish = [text for text in decoded_texts if text]
 
         if texts_to_publish:
+            if self.seen_text_pub is not None:
+                for text in texts_to_publish:
+                    self.seen_text_pub.publish(String(data=text))
+
             if self.republish_same_text:
                 publishable_texts = texts_to_publish
             else:
