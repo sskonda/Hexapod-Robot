@@ -65,6 +65,9 @@ def generate_launch_description():
     )
     led_matrix_qr_trigger_text = LaunchConfiguration('led_matrix_qr_trigger_text')
     led_matrix_qr_trigger_color = LaunchConfiguration('led_matrix_qr_trigger_color')
+    led_matrix_qr_trigger_inactive_color = LaunchConfiguration(
+        'led_matrix_qr_trigger_inactive_color'
+    )
     led_matrix_qr_trigger_timeout_sec = LaunchConfiguration(
         'led_matrix_qr_trigger_timeout_sec'
     )
@@ -446,6 +449,11 @@ def generate_launch_description():
             'led_matrix_qr_trigger_color',
             default_value='cyan',
             description='LED matrix color while the QR trigger is active.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_qr_trigger_inactive_color',
+            default_value='black',
+            description='LED matrix color when no matching QR has been seen recently.',
         ),
         DeclareLaunchArgument(
             'led_matrix_qr_trigger_timeout_sec',
@@ -947,24 +955,46 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(launch_led_matrix),
             parameters=[{
-                'color': led_matrix_color,
+                'color': ParameterValue(led_matrix_color, value_type=str),
                 'brightness_percent': ParameterValue(
                     led_matrix_brightness_percent,
                     value_type=float,
                 ),
-                'led_backend': led_matrix_backend,
+                'led_backend': ParameterValue(led_matrix_backend, value_type=str),
                 'led_count': ParameterValue(led_matrix_count, value_type=int),
-                'led_sequence': led_matrix_sequence,
-                'qr_trigger_text_topic': led_matrix_qr_trigger_text_topic,
-                'qr_trigger_text': led_matrix_qr_trigger_text,
-                'qr_trigger_color': led_matrix_qr_trigger_color,
+                'led_sequence': ParameterValue(led_matrix_sequence, value_type=str),
+                'qr_trigger_text_topic': ParameterValue(
+                    led_matrix_qr_trigger_text_topic,
+                    value_type=str,
+                ),
+                'qr_trigger_text': ParameterValue(
+                    led_matrix_qr_trigger_text,
+                    value_type=str,
+                ),
+                'qr_trigger_color': ParameterValue(
+                    led_matrix_qr_trigger_color,
+                    value_type=str,
+                ),
+                'qr_trigger_inactive_color': ParameterValue(
+                    led_matrix_qr_trigger_inactive_color,
+                    value_type=str,
+                ),
                 'qr_trigger_timeout_sec': ParameterValue(
                     led_matrix_qr_trigger_timeout_sec,
                     value_type=float,
                 ),
-                'arm_command_topic': arm_command_topic,
-                'arm_command_on_value': arm_command_on_value,
-                'arm_command_off_value': arm_command_off_value,
+                'arm_command_topic': ParameterValue(
+                    arm_command_topic,
+                    value_type=str,
+                ),
+                'arm_command_on_value': ParameterValue(
+                    arm_command_on_value,
+                    value_type=str,
+                ),
+                'arm_command_off_value': ParameterValue(
+                    arm_command_off_value,
+                    value_type=str,
+                ),
             }],
         ),
         Node(
