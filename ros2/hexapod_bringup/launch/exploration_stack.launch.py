@@ -49,6 +49,7 @@ def generate_launch_description():
     qr_show_rqt = LaunchConfiguration('qr_show_rqt')
     qr_republish_same_text = LaunchConfiguration('qr_republish_same_text')
     qr_publish_annotated_image = LaunchConfiguration('qr_publish_annotated_image')
+    launch_qr_wall_marker = LaunchConfiguration('launch_qr_wall_marker')
     qr_marker_topic = LaunchConfiguration('qr_marker_topic')
     qr_marker_state_topic = LaunchConfiguration('qr_marker_state_topic')
     cam_angle = LaunchConfiguration('cam_angle')
@@ -328,7 +329,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'launch_camera',
             default_value='false',
-            description='Launch usb_cam and the QR code detector.',
+            description='Launch usb_cam. The QR detector still runs and waits for images.',
         ),
         DeclareLaunchArgument(
             'camera_video_device',
@@ -389,6 +390,11 @@ def generate_launch_description():
             'qr_publish_annotated_image',
             default_value='false',
             description='Publish annotated QR debug images. Disabled by default to reduce camera load.',
+        ),
+        DeclareLaunchArgument(
+            'launch_qr_wall_marker',
+            default_value='true',
+            description='Launch the QR map marker node and startup stale-marker clearer.',
         ),
         DeclareLaunchArgument(
             'qr_marker_topic',
@@ -937,7 +943,7 @@ def generate_launch_description():
             executable='qr_wall_marker',
             name='qr_wall_marker',
             output='screen',
-            condition=IfCondition(launch_camera),
+            condition=IfCondition(launch_qr_wall_marker),
             parameters=[{
                 'qr_text_topic': qr_text_topic,
                 'scan_topic': scan_topic,

@@ -50,6 +50,8 @@ class QrWallMarkerNode(Node):
         self.declare_parameter('marker_height_m', 0.18)
         self.declare_parameter('label_height_m', 0.34)
         self.declare_parameter('marker_lifetime_sec', 0.0)
+        self.declare_parameter('startup_clear_duration_sec', 8.0)
+        self.declare_parameter('startup_clear_period_sec', 0.5)
 
         self.qr_text_topic = str(self.get_parameter('qr_text_topic').value)
         self.scan_topic = str(self.get_parameter('scan_topic').value)
@@ -71,10 +73,20 @@ class QrWallMarkerNode(Node):
             0.0,
             float(self.get_parameter('marker_lifetime_sec').value),
         )
+        self.startup_clear_duration_sec = max(
+            0.0,
+            float(self.get_parameter('startup_clear_duration_sec').value),
+        )
+        self.startup_clear_period_sec = max(
+            0.1,
+            float(self.get_parameter('startup_clear_period_sec').value),
+        )
 
         self.latest_scan: Optional[LaserScan] = None
         self.latest_scan_stamp = None
         self.detected_markers: Dict[str, Tuple[float, float]] = {}
+        self.startup_clear_started_sec = self.now_sec()
+        self.startup_clear_timer = None
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -94,6 +106,31 @@ class QrWallMarkerNode(Node):
         )
         self.publish_markers()
         self.publish_marker_state()
+        if self.startup_clear_duration_sec > 0.0:
+            self.startup_clear_timer = self.create_timer(
+                self.startup_clear_period_sec,
+                self.startup_clear_callback,
+            )
+            self.get_logger().info(
+                f'Clearing stale QR markers on {self.marker_topic} for '
+                f'{self.startup_clear_duration_sec:.1f} seconds after startup.'
+            )
+
+    def now_sec(self):
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def startup_clear_callback(self):
+        self.publish_markers()
+        self.publish_marker_state()
+
+        clear_elapsed_sec = self.now_sec() - self.startup_clear_started_sec
+        if clear_elapsed_sec < self.startup_clear_duration_sec:
+            return
+
+        if self.startup_clear_timer is not None:
+            self.startup_clear_timer.cancel()
+            self.startup_clear_timer = None
+        self.get_logger().info('Finished startup QR marker clear window.')
 
     def scan_callback(self, msg: LaserScan):
         self.latest_scan = msg
@@ -101,6 +138,7 @@ class QrWallMarkerNode(Node):
 
     def qr_text_callback(self, msg: String):
         color_name = msg.data.strip().lower()
+        self.get_logger().info(f'Received QR text for map marker: {msg.data!r}')
         if color_name not in COLOR_TABLE:
             self.get_logger().warn(
                 f'Ignoring unsupported QR text {msg.data!r}. Expected one of {sorted(COLOR_TABLE)}.',
@@ -223,6 +261,11 @@ class QrWallMarkerNode(Node):
         now = self.get_clock().now().to_msg()
         markers = MarkerArray()
         markers.markers.append(self.delete_all_marker(now))
+        for marker_id, _ in COLOR_TABLE.values():
+            markers.markers.append(self.delete_marker('qr_wall', marker_id, now))
+            markers.markers.append(
+                self.delete_marker('qr_wall_label', marker_id + 100, now)
+            )
         marker_lifetime = self.duration_message(self.marker_lifetime_sec)
 
         for color_name, (x_pos, y_pos) in sorted(self.detected_markers.items()):
@@ -270,6 +313,15 @@ class QrWallMarkerNode(Node):
         marker.header.frame_id = self.map_frame
         marker.header.stamp = stamp
         marker.action = Marker.DELETEALL
+        return marker
+
+    def delete_marker(self, namespace, marker_id, stamp):
+        marker = Marker()
+        marker.header.frame_id = self.map_frame
+        marker.header.stamp = stamp
+        marker.ns = namespace
+        marker.id = marker_id
+        marker.action = Marker.DELETE
         return marker
 
     def publish_marker_state(self):

@@ -34,6 +34,8 @@ class QrCodeDetectorNode(Node):
         self.declare_parameter('output_image_width', 320)
         self.declare_parameter('output_image_height', 240)
         self.declare_parameter('output_image_grayscale', True)
+        self.declare_parameter('image_watchdog_period_sec', 5.0)
+        self.declare_parameter('no_qr_log_period_sec', 5.0)
 
         image_topic = str(self.get_parameter('image_topic').value)
         text_topic = str(self.get_parameter('text_topic').value)
@@ -63,10 +65,24 @@ class QrCodeDetectorNode(Node):
         self.output_image_grayscale = bool(
             self.get_parameter('output_image_grayscale').value
         )
+        self.image_watchdog_period_sec = max(
+            0.0,
+            float(self.get_parameter('image_watchdog_period_sec').value),
+        )
+        self.no_qr_log_period_sec = max(
+            0.0,
+            float(self.get_parameter('no_qr_log_period_sec').value),
+        )
         self.log_throttle_ns = int(
             float(self.get_parameter('log_throttle_sec').value) * 1_000_000_000
         )
         self.last_log_ns = -self.log_throttle_ns
+        self.image_topic = image_topic
+        self.last_image_received_monotonic = None
+        self.first_image_logged = False
+        self.image_count = 0
+        self.decoded_qr_count = 0
+        self.last_no_qr_log_monotonic = -self.no_qr_log_period_sec
         self.last_published_texts = set()
         self.last_processed_monotonic = 0.0
 
@@ -94,6 +110,12 @@ class QrCodeDetectorNode(Node):
                 annotated_image_topic,
                 qos_depth,
             )
+        self.image_watchdog_timer = None
+        if self.image_watchdog_period_sec > 0.0:
+            self.image_watchdog_timer = self.create_timer(
+                self.image_watchdog_period_sec,
+                self.image_watchdog_callback,
+            )
 
         self.get_logger().info(f'Subscribed to {image_topic}')
         self.get_logger().info(f'Publishing QR text on {text_topic}')
@@ -108,6 +130,15 @@ class QrCodeDetectorNode(Node):
 
     def image_callback(self, msg):
         now = time.monotonic()
+        self.last_image_received_monotonic = now
+        self.image_count += 1
+        if not self.first_image_logged:
+            self.first_image_logged = True
+            self.get_logger().info(
+                f'Receiving camera images on {self.image_topic}: '
+                f'{msg.width}x{msg.height}, encoding={msg.encoding!r}.'
+            )
+
         if (
             self.processing_period_sec > 0.0
             and now - self.last_processed_monotonic < self.processing_period_sec
@@ -126,6 +157,9 @@ class QrCodeDetectorNode(Node):
         texts_to_publish = [text for text in decoded_texts if text]
 
         if texts_to_publish:
+            self.decoded_qr_count += len(texts_to_publish)
+            self._log_detected_texts(texts_to_publish)
+
             if self.seen_text_pub is not None:
                 for text in texts_to_publish:
                     self.seen_text_pub.publish(String(data=text))
@@ -142,11 +176,9 @@ class QrCodeDetectorNode(Node):
 
             for text in publishable_texts:
                 self.text_pub.publish(String(data=text))
-
-            if publishable_texts:
-                self._log_detected_texts(publishable_texts)
         else:
             self.last_published_texts.clear()
+            self._log_no_qr(frame)
 
         if self.image_pub is not None:
             annotated = frame.copy()
@@ -261,8 +293,41 @@ class QrCodeDetectorNode(Node):
             return
 
         joined = ', '.join(repr(text) for text in texts)
-        self.get_logger().info(f'Detected QR text: {joined}')
+        self.get_logger().info(f'QR scan decoded text: {joined}')
         self.last_log_ns = now_ns
+
+    def _log_no_qr(self, frame):
+        if self.no_qr_log_period_sec <= 0.0:
+            return
+
+        now = time.monotonic()
+        if now - self.last_no_qr_log_monotonic < self.no_qr_log_period_sec:
+            return
+
+        height, width = frame.shape[:2]
+        self.get_logger().info(
+            f'Camera frames are arriving on {self.image_topic}, but no QR '
+            f'code has decoded yet ({width}x{height}, '
+            f'{self.image_count} frames received).'
+        )
+        self.last_no_qr_log_monotonic = now
+
+    def image_watchdog_callback(self):
+        now = time.monotonic()
+        if self.last_image_received_monotonic is None:
+            self.get_logger().warn(
+                f'No camera images received on {self.image_topic}; QR detection '
+                f'is idle. Launch usb_cam with launch_camera:=true or publish '
+                f'a camera stream to {self.image_topic}.'
+            )
+            return
+
+        idle_sec = now - self.last_image_received_monotonic
+        if idle_sec >= self.image_watchdog_period_sec:
+            self.get_logger().warn(
+                f'No camera images received on {self.image_topic} for '
+                f'{idle_sec:.1f} seconds; QR detection is idle.'
+            )
 
 
 def main(args=None):
