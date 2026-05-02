@@ -51,6 +51,14 @@ def generate_launch_description():
     qr_marker_topic = LaunchConfiguration('qr_marker_topic')
     qr_marker_state_topic = LaunchConfiguration('qr_marker_state_topic')
     cam_angle = LaunchConfiguration('cam_angle')
+    launch_led_matrix = LaunchConfiguration('launch_led_matrix')
+    led_matrix_color = LaunchConfiguration('led_matrix_color')
+    led_matrix_brightness_percent = LaunchConfiguration(
+        'led_matrix_brightness_percent'
+    )
+    led_matrix_backend = LaunchConfiguration('led_matrix_backend')
+    led_matrix_count = LaunchConfiguration('led_matrix_count')
+    led_matrix_sequence = LaunchConfiguration('led_matrix_sequence')
 
     explorer_enabled = LaunchConfiguration('explorer_enabled')
     explorer_mode = LaunchConfiguration('explorer_mode')
@@ -376,6 +384,36 @@ def generate_launch_description():
             'cam_angle',
             default_value='90.0',
             description='Extra rotation applied when projecting the front-wall QR marker from the LiDAR scan.',
+        ),
+        DeclareLaunchArgument(
+            'launch_led_matrix',
+            default_value='true',
+            description='Launch the solid-color LED matrix node.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_color',
+            default_value='cyan',
+            description='LED matrix color name, #RRGGBB value, or comma-separated RGB value.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_brightness_percent',
+            default_value='75.0',
+            description='LED matrix brightness percentage from 0 to 100.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_backend',
+            default_value='spi',
+            description='LED backend for the onboard matrix: spi, pwm, or auto.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_count',
+            default_value='7',
+            description='Number of LEDs in the onboard matrix.',
+        ),
+        DeclareLaunchArgument(
+            'led_matrix_sequence',
+            default_value='GRB',
+            description='LED color channel order for the matrix.',
         ),
         DeclareLaunchArgument(
             'explorer_enabled',
@@ -847,6 +885,23 @@ def generate_launch_description():
                 'base_frame': base_frame,
                 'map_frame': map_frame,
                 'front_direction_offset_deg': ParameterValue(cam_angle, value_type=float),
+            }],
+        ),
+        Node(
+            package='hexapod_interfaces',
+            executable='led_matrix',
+            name='led_matrix',
+            output='screen',
+            condition=IfCondition(launch_led_matrix),
+            parameters=[{
+                'color': led_matrix_color,
+                'brightness_percent': ParameterValue(
+                    led_matrix_brightness_percent,
+                    value_type=float,
+                ),
+                'led_backend': led_matrix_backend,
+                'led_count': ParameterValue(led_matrix_count, value_type=int),
+                'led_sequence': led_matrix_sequence,
             }],
         ),
         Node(

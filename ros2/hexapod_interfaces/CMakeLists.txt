@@ -17,6 +17,7 @@ ament_python_install_package(${PROJECT_NAME})
 install(
   PROGRAMS
     scripts/camera_led
+    scripts/led_matrix
   DESTINATION lib/${PROJECT_NAME}
 )
 
